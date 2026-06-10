@@ -29,17 +29,43 @@ o altre dipendenze.
 
 ## Installazione (plugin, consigliata)
 
-Dentro Claude Code, due comandi:
+Dentro Claude Code, due comandi, **da eseguire uno alla volta** (incollati insieme nello
+stesso invio la CLI li concatena in un unico URL malformato):
 
 ```
-/plugin marketplace add ilmondovero/perseveranza
+/plugin marketplace add https://github.com/ilmondovero/perseveranza
 /plugin install perseveranza@perseveranza
 ```
+
+Usare l'**URL HTTPS completo** come sopra: la forma breve `ilmondovero/perseveranza`
+clona via SSH (`git@github.com:...`) e fallisce con `Host key verification failed` sulle
+macchine senza chiavi SSH configurate — caso tipico su Windows, dove inoltre l'OpenSSH
+di sistema (`C:\Windows\System32\OpenSSH`) puo' essere troppo vecchio per il key
+exchange con GitHub (`unsupported KEX method sntrup761x25519...`).
 
 Fatto: hook e comando sono registrati dal plugin system su qualunque OS, senza toccare
 `settings.json`. Il comando si invoca come `/perseveranza` (forma completa:
 `/perseveranza:perseveranza`). Gli **aggiornamenti** si prendono dal pannello `/plugin`
 quando esce una nuova versione.
+
+### Risoluzione problemi
+
+- **`Host key verification failed` / errori SSH**: e' stata usata la forma breve
+  `owner/repo`. Ripetere con l'URL HTTPS completo. In alternativa, per continuare a
+  usare la forma breve senza configurare SSH, dirottare GitHub su HTTPS a livello git:
+
+  ```bash
+  git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+  git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+  ```
+
+  (nota: vale per TUTTI i repo `git@github.com:...` — chi usa chiavi SSH per i propri
+  repo privati non la metta, o la rimuova poi con
+  `git config --global --unset-all url.https://github.com/.insteadof`)
+- **`EBUSY: resource busy or locked, rename ... marketplaces\...`**: residuo di un
+  tentativo precedente fallito; rilanciare il comando (a cache pulita sparisce).
+- **`URL rejected: Malformed input to a URL function`**: sono stati incollati piu'
+  comandi nello stesso invio; eseguirli uno alla volta.
 
 ## Installazione manuale (alternativa)
 
