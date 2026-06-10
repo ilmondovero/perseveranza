@@ -30,10 +30,13 @@ o altre dipendenze.
 ## Installazione
 
 ```bash
-git clone <url-del-repo>
+git clone https://github.com/ilmondovero/perseveranza.git
 cd perseveranza
 node install.mjs
 ```
+
+Su Windows i comandi sono identici (PowerShell o Git Bash). Aggiornamento a una nuova
+versione: `git pull` nella cartella del repo e di nuovo `node install.mjs`.
 
 Lo script copia i file in `~/.claude/` e registra lo Stop hook in `~/.claude/settings.json`
 (idempotente: rilanciarlo non duplica nulla; prima di modificare `settings.json` ne crea un
