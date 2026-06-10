@@ -1,0 +1,15 @@
+{
+  "name": "perseveranza",
+  "owner": {
+    "name": "ilmondovero"
+  },
+  "description": "Marketplace del plugin perseveranza",
+  "plugins": [
+    {
+      "name": "perseveranza",
+      "source": "./",
+      "description": "Ciclo autonomo a feedback: plan -> implement -> review -> verifica finale avversariale, con routing dei modelli per complessita'",
+      "category": "development"
+    }
+  ]
+}

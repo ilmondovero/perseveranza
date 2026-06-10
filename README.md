@@ -27,7 +27,21 @@ o altre dipendenze.
   - macOS: `osascript` (gia' presente)
   - Linux: `notify-send` (pacchetto `libnotify`)
 
-## Installazione
+## Installazione (plugin, consigliata)
+
+Dentro Claude Code, due comandi:
+
+```
+/plugin marketplace add ilmondovero/perseveranza
+/plugin install perseveranza@perseveranza
+```
+
+Fatto: hook e comando sono registrati dal plugin system su qualunque OS, senza toccare
+`settings.json`. Il comando si invoca come `/perseveranza` (forma completa:
+`/perseveranza:perseveranza`). Gli **aggiornamenti** si prendono dal pannello `/plugin`
+quando esce una nuova versione.
+
+## Installazione manuale (alternativa)
 
 ```bash
 git clone https://github.com/ilmondovero/perseveranza.git
@@ -35,8 +49,14 @@ cd perseveranza
 node install.mjs
 ```
 
-Su Windows i comandi sono identici (PowerShell o Git Bash). Aggiornamento a una nuova
-versione: `git pull` nella cartella del repo e di nuovo `node install.mjs`.
+Copia gli script in `~/.claude/` e registra lo Stop hook in `~/.claude/settings.json`
+(idempotente, con backup; sostituisce automaticamente installazioni precedenti, comprese
+le vecchie versioni PowerShell). Aggiornamento: `git pull` + di nuovo `node install.mjs`.
+Disinstallazione: `node install.mjs --uninstall`.
+
+**Non usare le due modalita' insieme**: due Stop hook guiderebbero lo stesso loop facendo
+avanzare le fasi due volte per risposta. Prima di passare al plugin, eseguire
+`node install.mjs --uninstall`.
 
 Lo script copia i file in `~/.claude/` e registra lo Stop hook in `~/.claude/settings.json`
 (idempotente: rilanciarlo non duplica nulla; prima di modificare `settings.json` ne crea un
@@ -51,14 +71,13 @@ versioni PowerShell). Riavviare Claude Code dopo l'installazione.
 ```
 
 Claude scrive il piano in `.omc-loop/plan.md` (checklist), valuta la complessita' del
-task e poi il ciclo procede da solo. Si interrompe in qualsiasi momento con:
+task e poi il ciclo procede da solo. Per interromperlo in qualsiasi momento basta
+eliminare la cartella `.omc-loop/` del progetto (equivale al verbo `disarm`), o chiedere
+a Claude di eseguire il disarm.
 
-```bash
-node "$HOME/.claude/hooks/omc-loop.mjs" disarm
-```
-
-Altri verbi utili (`status`, `pause`, `resume`) sono documentati in testa a
-`hooks/omc-loop.mjs`. Lo storico delle transizioni e' in `.omc-loop/history.log`.
+Tutti i verbi (`status`, `report`, `claim-done`, `pause`, `resume`, `disarm`) sono
+documentati in testa a `scripts/omc-loop.mjs`. Lo storico delle transizioni e' in
+`.omc-loop/history.log`.
 
 ## Routing dei modelli per complessita'
 
@@ -82,6 +101,6 @@ modelli usati dalle fasi (hint per i subagent):
 
 ## Disinstallazione
 
-Rimuovere `hooks/omc-loop.mjs`, `hooks/loop-drive.mjs` e `commands/perseveranza.md`
-da `~/.claude/`, e togliere da `~/.claude/settings.json` la voce `hooks.Stop` il cui
-`command` contiene `loop-drive.mjs`.
+- Plugin: disinstallare dal pannello `/plugin` (o disattivarlo con il toggle).
+- Manuale: `node install.mjs --uninstall` dalla cartella del repo (rimuove file e voce
+  hook da `settings.json`).

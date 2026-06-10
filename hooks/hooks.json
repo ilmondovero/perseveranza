@@ -1,0 +1,17 @@
+{
+  "description": "Stop hook dormiente del ciclo perseveranza: attivo solo quando .omc-loop/state.json esiste nel progetto",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/loop-drive.mjs\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
