@@ -1,6 +1,6 @@
 ---
 description: Arma il ciclo OMC-loop a feedback (plan -> implement -> review -> verifica finale avversariale) e inizia il task
-argument-hint: <descrizione del task> [--max N] [--commit] [--external off]
+argument-hint: <descrizione del task> [--max N] [--commit] [--external off] [--test "cmd"]
 ---
 
 Attiva la modalita' "perseveranza" per il task indicato e comincia a lavorarci.
@@ -11,15 +11,18 @@ $ARGUMENTS
 
 Passi da eseguire ORA, in ordine:
 
-1. Se il testo sopra contiene flag (`--max N`, `--commit`, `--external off`), RIMUOVILI
-   dalla descrizione del task e passali al comando; altrimenti lascia i default. Se il
-   task contiene virgolette doppie, escapale. Arma il ciclo:
+1. Se il testo sopra contiene flag (`--max N`, `--commit`, `--external off`,
+   `--test "cmd"`), RIMUOVILI dalla descrizione del task e passali al comando; altrimenti
+   lascia i default. Se il task contiene virgolette doppie, escapale. Se il progetto ha
+   una suite di test e l'utente non ha passato `--test`, individuala tu (package.json,
+   Makefile, pytest...) e passala. Arma il ciclo:
 
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" arm "<task senza flag>" [--max N] [--commit] [--external off]
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" arm "<task senza flag>" [--max N] [--commit] [--external off] [--test "npm test"]
 
    (`--commit` = commit atomico dopo ogni step validato; `--external off` = niente
    confronto con modelli esterni, che altrimenti vengono auto-rilevati: codex, gemini,
-   antigravity)
+   antigravity; `--test` = comando della suite, il claim-done richiedera' la prova di un
+   run verde fresco)
 
 2. Verifica che sia armato:
 
@@ -50,21 +53,28 @@ La complessita' instrada i modelli delle fasi (hint per i subagent):
 
 Come funziona il ciclo (a feedback):
 
-- implement -> code-review (delegata a un subagent con contesto pulito) -> registri l'esito:
-  node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" report pass|fail
-  - `fail` -> torni a correggere lo STESSO step (al 3o fallimento il loop si mette in pausa
-    e notifica l'utente);
-  - `pass` -> spunti lo step in `plan.md` (`- [x]`) e passi al successivo.
+- implement -> code-review (delegata a un subagent con contesto pulito): il revisore
+  scrive il verdetto in `.omc-loop/review.json` (`{"blocking": N, "findings": [...]}`)
+  ed e' quel file a instradare il loop; solo se manca, registri tu l'esito con
+  `report pass|fail`.
+  - blocking > 0 -> torni a correggere lo STESSO step, e il fix verra' ri-revisionato
+    (al 3o fallimento il loop si mette in pausa e notifica l'utente);
+  - blocking = 0 -> spunti lo step in `plan.md` (`- [x]`) e passi al successivo.
+- Per eseguire la suite di test usa SEMPRE il verbo dedicato (e' lo script a lanciare il
+  comando e registrare l'exit code reale: la prova non e' autodichiarata):
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" test -- <comando>
 - Con `--commit`, dopo ogni review passata committi lo step validato (commit atomico).
 - Se un fix fallisce due volte, la fase successiva include una diagnosi indipendente
   chiesta a un modello esterno (se rilevato).
 - Quando TUTTI gli step sono spuntati e il progetto e' completo:
   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" claim-done
-  -> prima un giro di cleanup (solo al primo claim: codice morto, duplicazioni, docs),
-  poi la verifica finale avversariale (subagent indipendente + falsificazione chiesta a
-  un modello esterno se rilevato; lente security per complessita' high). `report pass`
-  chiude il ciclo (disarma + notifica "Progetto finito"); `report fail` ti rimanda a
-  correggere.
+  Il claim viene ACCETTATO solo se nella stessa risposta c'e' un run verde fresco del
+  verbo `test` (quando una suite e' nota). -> prima un giro di cleanup (solo al primo
+  claim: codice morto, duplicazioni, docs), poi la verifica finale avversariale (subagent
+  indipendente + falsificazione da modello esterno se rilevato; lente security per
+  complessita' high): il verificatore scrive `.omc-loop/verify.json`
+  (`{"pass": true|false, "findings": [...]}`); `pass` chiude il ciclo (disarma +
+  notifica "Progetto finito"), `fail` ti rimanda a correggere.
 - Se ti serve input dell'utente: esegui `pause`, poi fai la domanda; quando l'utente risponde,
   esegui `resume` e prosegui.
 - Limite globale di iterazioni (default 25): raggiunto quello, il loop si ferma da solo.

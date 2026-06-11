@@ -72,6 +72,7 @@ const s = {
   retries: 0, maxRetries: 3, finalFails: 0, lastReport: 'none',
   claimedDone: false, paused: false, repeated: false,
   commitSteps: false, externals: [], cleanedOnce: false,
+  testCmd: null, lastTest: null,
   ...rawState,
 };
 for (const k of ['iterations', 'max', 'retries', 'maxRetries', 'finalFails']) {
@@ -99,12 +100,39 @@ if (s.iterations >= s.max) {
 }
 
 // --- consuma i segnali scritti da Claude ---
-const report = s.lastReport;
+let report = s.lastReport;
 const claimed = s.claimedDone === true;
 s.lastReport = 'none';
 s.claimedDone = false;
 
 const phase = s.phase;
+
+// verdetto scritto dal subagent come artefatto: ha priorita' sul verbo `report`
+// e viene consumato alla lettura (un verdetto non si riusa mai)
+function readVerdictArtifact(name) {
+  const p = join(gateDir, name);
+  if (!existsSync(p)) return null;
+  let v = null;
+  try { v = JSON.parse(readFileSync(p, 'utf8')); } catch { /* malformato: si ricade sul verbo */ }
+  try { rmSync(p); } catch { /* gia' rimosso */ }
+  return v;
+}
+const dropStaleArtifact = (name) => { try { rmSync(join(gateDir, name)); } catch { /* assente */ } };
+
+let verdictSrc = 'verbo';
+if (phase === 'review') {
+  const art = readVerdictArtifact('review.json');
+  if (art && Number.isFinite(Number(art.blocking))) {
+    report = Number(art.blocking) === 0 ? 'pass' : 'fail';
+    verdictSrc = 'review.json';
+  }
+} else if (phase === 'final-verify') {
+  const art = readVerdictArtifact('verify.json');
+  if (art && typeof art.pass === 'boolean') {
+    report = art.pass ? 'pass' : 'fail';
+    verdictSrc = 'verify.json';
+  }
+}
 const header = `[OMC-loop | iter ${s.iterations + 1}/${s.max}] Task: ${s.task}.`;
 let reason = null;
 
@@ -138,7 +166,7 @@ const commitHint = s.commitSteps
   : '';
 
 const finalVerifyReason = () =>
-  `${header} FASE: verifica finale avversariale. Hai dichiarato il progetto completo: ora va falsificato. Delega a un subagent INDIPENDENTE con model=${verifyModel} (contesto pulito) la verifica, passandogli nel prompt il piano completo e il diff totale (se enorme: elenco dei file + estratti rilevanti): assuma che il lavoro sia SBAGLIATO, costruisca casi limite e input ostili, esegua DAVVERO test e build, verifichi ogni claim contro l'esecuzione reale, e riporti i difetti in un report sintetico con severita'.${secHint}${extVerifyHint} NON correggere nulla in questa fase. Alla fine esegui OBBLIGATORIAMENTE: ${LOOP} report pass (nessun difetto) oppure: ${LOOP} report fail`;
+  `${header} FASE: verifica finale avversariale. Hai dichiarato il progetto completo: ora va falsificato. Delega a un subagent INDIPENDENTE con model=${verifyModel} (contesto pulito) la verifica, passandogli nel prompt il piano completo e il diff totale (se enorme: elenco dei file + estratti rilevanti): assuma che il lavoro sia SBAGLIATO, costruisca casi limite e input ostili, esegua DAVVERO test e build, verifichi ogni claim contro l'esecuzione reale, e riporti i difetti in un report sintetico con severita'.${secHint}${extVerifyHint} NON correggere nulla in questa fase. Il subagent DEVE scrivere il verdetto in .omc-loop/verify.json nel formato {"pass": true|false, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. Solo se il subagent non ha potuto scriverlo, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail`;
 
 // sospende il loop quando i fallimenti consecutivi superano il limite: serve un umano
 function pauseForHuman(why) {
@@ -150,14 +178,24 @@ function pauseForHuman(why) {
 }
 
 if (claimed) {
-  // da qualunque fase: la dichiarazione di completamento innesca la rampa di uscita
-  s.repeated = false; s.retries = 0;
-  if (!s.cleanedOnce) {
+  // gate d'ingresso alla rampa di uscita: serve la PROVA di un test verde fresco, non la parola
+  const testRequired = !!(s.testCmd || s.lastTest);
+  const freshGreen = s.lastTest
+    && Number(s.lastTest.exitCode) === 0
+    && Number(s.lastTest.iteration) === s.iterations;
+  const testRun = s.testCmd ? `${LOOP} test -- ${s.testCmd}` : `${LOOP} test -- <comando dei test>`;
+  if (testRequired && !freshGreen) {
+    // niente transizione: il claim va ripetuto con la prova
+    reason = `${header} claim-done RIFIUTATO: manca la prova di un test verde fresco. Esegui ORA: ${testRun} e, se l'esito e' verde, rilancia ${LOOP} claim-done NELLA STESSA RISPOSTA. Se e' rosso, correggi prima i fallimenti.`;
+  } else if (!s.cleanedOnce) {
     // pulizia una tantum PRIMA del gate, cosi' la verifica valida il codice gia' ripulito
+    s.repeated = false; s.retries = 0;
     s.cleanedOnce = true; s.phase = 'cleanup';
-    reason = `${header} FASE: cleanup pre-verifica. Hai dichiarato il progetto completo: prima del gate finale fai una passata di pulizia SENZA aggiungere funzionalita': rimuovi codice morto e duplicazioni, semplifica dove possibile senza cambiare comportamento, allinea lo stile al resto del repo, aggiorna README/docstring se il comportamento e' cambiato. Riesegui i test dopo la pulizia. Al prossimo stop parte la verifica finale.`;
+    reason = `${header} FASE: cleanup pre-verifica. Hai dichiarato il progetto completo: prima del gate finale fai una passata di pulizia SENZA aggiungere funzionalita': rimuovi codice morto e duplicazioni, semplifica dove possibile senza cambiare comportamento, allinea lo stile al resto del repo, aggiorna README/docstring se il comportamento e' cambiato. Dopo la pulizia dimostra che i test restano verdi con: ${testRun}. Al prossimo stop parte la verifica finale.`;
   } else {
+    s.repeated = false; s.retries = 0;
     s.phase = 'final-verify';
+    dropStaleArtifact('verify.json');
     reason = finalVerifyReason();
   }
 } else {
@@ -175,12 +213,14 @@ if (claimed) {
     case 'cleanup': {
       // pulizia fatta: si passa sempre al gate finale
       s.phase = 'final-verify'; s.repeated = false;
+      dropStaleArtifact('verify.json');
       reason = finalVerifyReason();
       break;
     }
     case 'implement': {
       s.phase = 'review'; s.repeated = false;
-      reason = `${header} FASE: code-review. Delega a un subagent code-reviewer con model=${reviewModel} (contesto pulito) la review dello step appena implementato, passandogli nel prompt: lo step del piano, l'elenco dei file toccati e il diff (se enorme: elenco dei file + estratti rilevanti). Chiedigli un report sintetico e strutturato (findings con severita', senza narrazione) su: correttezza, edge case, regressioni, sicurezza, adeguatezza dei test. Correggi subito i problemi bloccanti emersi. Alla fine esegui OBBLIGATORIAMENTE: ${LOOP} report pass (nessun bloccante residuo) oppure: ${LOOP} report fail (restano problemi). NON modificare .omc-loop/state.json a mano.`;
+      dropStaleArtifact('review.json');
+      reason = `${header} FASE: code-review. Delega a un subagent code-reviewer con model=${reviewModel} (contesto pulito) la review dello step appena implementato, passandogli nel prompt: lo step del piano, l'elenco dei file toccati e il diff (se enorme: elenco dei file + estratti rilevanti). Verifichi: correttezza, edge case, regressioni, sicurezza, adeguatezza dei test. Il subagent DEVE scrivere il verdetto in .omc-loop/review.json nel formato {"blocking": <numero di problemi bloccanti>, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. NON correggere nulla in questa fase: le correzioni appartengono alla fase di fix, dove verranno ri-revisionate. Solo se il subagent non ha potuto scrivere il file, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail. NON modificare .omc-loop/state.json a mano.`;
       break;
     }
     case 'review': {
@@ -236,7 +276,7 @@ if (claimed) {
 // persisti fase + contatore PRIMA di bloccare, poi logga la transizione
 s.iterations += 1;
 saveState();
-logStep(`${phase} -> ${s.phase} | report=${report}${claimed ? ' | claim-done' : ''}`);
+logStep(`${phase} -> ${s.phase} | report=${report}${verdictSrc !== 'verbo' ? ` (${verdictSrc})` : ''}${claimed ? ' | claim-done' : ''}`);
 
 // blocca lo stop e inietta l'istruzione della fase
 process.stdout.write(JSON.stringify({ decision: 'block', reason }));

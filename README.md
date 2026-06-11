@@ -24,14 +24,14 @@ flowchart TD
     START(["/perseveranza «task»"]) --> PLAN
     PLAN["<b>plan</b><br/>esplora il codice → checklist in plan.md<br/>critica del piano da modello esterno<br/>registra la complessità"] --> IMPL
     IMPL["<b>implement</b><br/>uno step della checklist"] --> REV
-    REV["<b>review</b><br/>subagent code-reviewer<br/>(modello scelto per complessità)"] -- "report fail" --> FIX
-    FIX["<b>fix</b> · stesso step<br/>dal 2º fallimento: diagnosi<br/>da modello esterno"] --> REV
-    REV -- "report pass<br/>spunta lo step (+ commit opz.)" --> NEXT{"restano step?"}
+    REV["<b>review</b><br/>subagent code-reviewer<br/>verdetto scritto in review.json"] -- "blocking > 0" --> FIX
+    FIX["<b>fix</b> · stesso step, ri-revisionato<br/>dal 2º fallimento: diagnosi<br/>da modello esterno"] --> REV
+    REV -- "blocking = 0<br/>spunta lo step (+ commit opz.)" --> NEXT{"restano step?"}
     NEXT -- "sì" --> IMPL
-    NEXT -- "no → claim-done" --> CLEAN
+    NEXT -- "no → test verde fresco<br/>+ claim-done" --> CLEAN
     CLEAN["<b>cleanup</b> · una tantum<br/>codice morto, duplicazioni, docs"] --> VERIFY
-    VERIFY["<b>verifica finale avversariale</b><br/>subagent indipendente che prova a falsificare<br/>+ falsificazione da modello esterno<br/>+ lente security (high)"] -- "report pass" --> DONE
-    VERIFY -- "report fail" --> POSTFIX["fix post-verifica"] --> IMPL
+    VERIFY["<b>verifica finale avversariale</b><br/>subagent indipendente che prova a falsificare<br/>+ falsificazione da modello esterno<br/>+ lente security (high)<br/>verdetto scritto in verify.json"] -- "pass" --> DONE
+    VERIFY -- "fail" --> POSTFIX["fix post-verifica"] --> IMPL
     FIX -. "3 fallimenti consecutivi" .-> PAUSE
     VERIFY -. "3 bocciature" .-> PAUSE
     DONE(["✅ disarm + notifica «Progetto finito»"])
@@ -42,15 +42,20 @@ flowchart TD
     style VERIFY fill:#0969da,color:#fff
 ```
 
-Due principi guidano il disegno:
+Tre principi guidano il disegno:
 
 1. **Anello chiuso, non metronomo.** L'hook non ruota le fasi alla cieca: instrada in
-   base agli esiti che Claude registra (`report pass|fail`). Una review bocciata rimanda
-   al fix dello stesso step; una promossa fa avanzare la checklist.
+   base agli esiti delle fasi. Una review bocciata rimanda al fix dello stesso step; una
+   promossa fa avanzare la checklist.
 2. **Ciclo interno economico, gate di uscita severo.** La review per step è leggera; il
    controllo costoso (verifica avversariale, security, modello esterno) scatta una sola
    volta, quando Claude dichiara di aver finito. Dichiararsi finiti non chiude il ciclo:
    **innesca il controllo**. Niente auto-certificazione.
+3. **Prove, non parole.** I test li esegue lo script stesso (verbo `test`: è lui a
+   lanciare il comando e registrare l'exit code reale), e il `claim-done` è accettato
+   solo con un run verde fresco. I verdetti di review e verifica sono file JSON scritti
+   dai revisori (`review.json`, `verify.json`) che l'hook parsa e consuma — non
+   dichiarazioni di chi ha fatto il lavoro.
 
 ## Installazione (plugin, consigliata)
 
@@ -126,8 +131,8 @@ eseguire il disarm.
 |---|---|---|
 | **plan** | esplorazione del codice rilevante, checklist in `plan.md`, critica del piano da un modello esterno, registrazione della complessità | sessione |
 | **implement** | un solo step della checklist, niente anticipi | sessione (high: subagent `executor` opus) |
-| **review** | revisione dello step appena fatto — riceve nel prompt step, file toccati e diff, restituisce findings sintetici con severità | subagent `code-reviewer`, contesto pulito |
-| **fix** | correzione dei problemi lasciati aperti dalla review, stesso step | sessione; dal 2º tentativo con diagnosi esterna |
+| **review** | revisione dello step appena fatto — riceve nel prompt step, file toccati e diff; scrive il verdetto in `review.json` (blocking + findings) | subagent `code-reviewer`, contesto pulito |
+| **fix** | correzione dei problemi segnalati dalla review, stesso step; il fix viene poi ri-revisionato | sessione; dal 2º tentativo con diagnosi esterna |
 | **cleanup** | una tantum dopo il `claim-done`: codice morto, duplicazioni, semplificazioni, docs — *prima* del gate, così la verifica valida il codice già ripulito | sessione |
 | **verifica finale** | un verificatore indipendente parte dal piano e dal diff e **prova a falsificare** il lavoro: casi limite, input ostili, test e build eseguiti davvero | subagent indipendente + modello esterno |
 
@@ -140,8 +145,9 @@ comunica solo attraverso questi verbi (mai editando lo stato a mano):
 |---|---|---|
 | `arm "<task>" [flag]` | lo esegue il comando `/perseveranza` | arma il ciclo, rileva le CLI esterne |
 | `complexity low\|medium\|high` | in fase plan | instrada i modelli delle fasi |
-| `report pass\|fail` | a fine review e verifica finale | è l'esito che instrada il loop |
-| `claim-done` | a checklist completa | innesca cleanup + verifica finale |
+| `test -- <comando>` | dopo implement/fix e prima del claim | esegue la suite LUI STESSO e registra l'exit code reale |
+| `report pass\|fail` | fallback se il subagent non ha scritto il verdetto su file | esito che instrada il loop |
+| `claim-done` | a checklist completa | accettato solo con test verde fresco; innesca cleanup + verifica finale |
 | `pause` / `resume` | quando serve input dell'utente | sospende / riprende il loop |
 | `status` / `disarm` | quando vuoi | ispeziona / smonta tutto |
 
@@ -184,6 +190,11 @@ Senza CLI esterne il ciclo è identico, solo senza questi confronti. Disattivabi
 ## Reti di sicurezza
 
 - limite globale di iterazioni (default 25, `--max N` per cambiarlo)
+- il `claim-done` è accettato solo con la prova di un test verde fresco (verbo `test`:
+  l'exit code lo misura lo script, non è autodichiarato) quando una suite è nota
+- i verdetti di review e verifica finale sono artefatti scritti dai subagent
+  (`review.json` / `verify.json`), consumati dall'hook alla lettura: un verdetto vecchio
+  non viene mai riusato
 - 3 review fallite sullo stesso step → pausa + notifica «serve intervento umano»
 - la chiusura richiede il pass della verifica finale avversariale (niente
   auto-certificazione), preceduta da un giro di cleanup e, per complessità high, estesa

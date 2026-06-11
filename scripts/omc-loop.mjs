@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // Arma / disarma / pilota il ciclo "OMC-loop" nel progetto corrente.
 // Uso (dal prompt di Claude Code con il prefisso !, o da Claude stesso):
-//   node ... arm "implementa la feature X" [--max 25] [--max-retries 3] [--complexity low|medium|high] [--commit] [--external off]
+//   node ... arm "implementa la feature X" [--max 25] [--max-retries 3] [--complexity low|medium|high] [--commit] [--external off] [--test "npm test"]
 //     --commit        dopo ogni review passata, commit atomico dello step
 //     --external off  disattiva il confronto con modelli esterni (default: auto-rilevati codex/gemini)
+//     --test "<cmd>"  comando della suite: il claim-done richiedera' un test verde fresco
+//   node ... test -- <comando>             esegue il comando LUI STESSO e registra l'exit code reale
+//                                          (prova non falsificabile: e' lo script a misurare)
 //   node ... report pass|fail              esito della fase corrente (review / verifica finale)
 //   node ... complexity low|medium|high    registra la complessita' del task (instrada i modelli)
 //   node ... claim-done                    dichiara il progetto completo -> innesca la verifica finale
@@ -26,13 +29,16 @@ let maxRetries = 3;
 let complexity = '';
 let commitSteps = false;
 let external = 'auto';
+let testCmd = '';
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
+  if (a === '--') break; // tutto cio' che segue appartiene al verbo `test`
   if (a === '--max') max = parseInt(argv[++i], 10);
   else if (a === '--max-retries') maxRetries = parseInt(argv[++i], 10);
   else if (a === '--complexity') complexity = String(argv[++i] ?? '');
   else if (a === '--commit') commitSteps = true;
   else if (a === '--external') external = String(argv[++i] ?? 'auto');
+  else if (a === '--test') testCmd = String(argv[++i] ?? '');
   else if (!value) value = a;
 }
 if (!Number.isFinite(max) || max < 1) max = 25;
@@ -67,6 +73,8 @@ switch (action) {
       commitSteps,                         // commit atomico dopo ogni review passata
       externals,                           // CLI esterne rilevate: confronto nel plan, nei fix ripetuti e al gate
       cleanedOnce: false,                  // la fase cleanup gira solo al primo claim-done
+      testCmd: testCmd || null,            // comando della suite (se noto): il claim richiede un test verde fresco
+      lastTest: null,                      // ultimo run registrato dal verbo `test`: {cmd, exitCode, iteration, at}
       iterations: 0,
       max,
       retries: 0,                          // review fallite consecutive sullo stesso step
@@ -79,6 +87,7 @@ switch (action) {
     });
     console.log(`OMC-loop ARMATO (max ${max} iterazioni, ${maxRetries} retry per step${commitSteps ? ', commit per step' : ''}). Task: ${value}`);
     console.log(`Modelli esterni per il confronto: ${externals.length ? externals.join(', ') : 'nessuno'}`);
+    if (testCmd) console.log(`Suite di test configurata: ${testCmd} (il claim-done richiedera' un run verde fresco via verbo test)`);
     console.log("Fase iniziale: plan. Scrivi il piano in .omc-loop/plan.md come checklist '- [ ] step', poi fermati: da li' guida lo Stop hook.");
     break;
   }
@@ -97,6 +106,23 @@ switch (action) {
     saveState(s);
     console.log(`Complessita' registrata: ${value} (instrada i modelli di review, verifica finale e implement).`);
     break;
+  }
+  case 'test': {
+    const s = loadState();
+    const sep = process.argv.indexOf('--');
+    const cmd = sep !== -1 && process.argv.length > sep + 1
+      ? process.argv.slice(sep + 1).join(' ')
+      : (s.testCmd || '');
+    if (!cmd) { console.log("Uso: test -- <comando> (oppure configura --test all'arm)"); process.exit(1); }
+    console.log(`Eseguo: ${cmd}`);
+    // esegue il comando in prima persona e registra l'exit code REALE: la prova non e' autodichiarata
+    const r = spawnSync(cmd, { shell: true, stdio: 'inherit', timeout: 600000 });
+    const exitCode = r.status === null ? 124 : r.status; // null = timeout o kill
+    s.lastTest = { cmd, exitCode, iteration: Number(s.iterations) || 0, at: new Date().toISOString() };
+    if (!s.testCmd) s.testCmd = cmd;
+    saveState(s);
+    console.log(exitCode === 0 ? 'TEST VERDE (exit 0): registrato.' : `TEST ROSSO (exit ${exitCode}): registrato.`);
+    process.exit(exitCode === 0 ? 0 : 1);
   }
   case 'claim-done': {
     const s = loadState();
