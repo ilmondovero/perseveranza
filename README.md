@@ -30,10 +30,15 @@ o altre dipendenze.
 ## Installazione (plugin, consigliata)
 
 Dentro Claude Code, due comandi, **da eseguire uno alla volta** (incollati insieme nello
-stesso invio la CLI li concatena in un unico URL malformato):
+stesso invio la CLI li concatena in un unico URL malformato). Primo:
 
 ```
 /plugin marketplace add https://github.com/ilmondovero/perseveranza
+```
+
+Secondo:
+
+```
 /plugin install perseveranza@perseveranza
 ```
 
