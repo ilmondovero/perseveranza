@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Arma / disarma / pilota il ciclo "OMC-loop" nel progetto corrente.
 // Uso (dal prompt di Claude Code con il prefisso !, o da Claude stesso):
-//   node "$HOME/.claude/hooks/omc-loop.mjs" arm "implementa la feature X" [--max 25] [--max-retries 3] [--complexity low|medium|high]
+//   node ... arm "implementa la feature X" [--max 25] [--max-retries 3] [--complexity low|medium|high] [--commit] [--external off]
+//     --commit        dopo ogni review passata, commit atomico dello step
+//     --external off  disattiva il confronto con modelli esterni (default: auto-rilevati codex/gemini)
 //   node ... report pass|fail              esito della fase corrente (review / verifica finale)
 //   node ... complexity low|medium|high    registra la complessita' del task (instrada i modelli)
 //   node ... claim-done                    dichiara il progetto completo -> innesca la verifica finale
@@ -10,6 +12,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const gateDir = join(process.cwd(), '.omc-loop');
 const statePath = join(gateDir, 'state.json');
@@ -21,11 +24,15 @@ let value = '';
 let max = 25;
 let maxRetries = 3;
 let complexity = '';
+let commitSteps = false;
+let external = 'auto';
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--max') max = parseInt(argv[++i], 10);
   else if (a === '--max-retries') maxRetries = parseInt(argv[++i], 10);
   else if (a === '--complexity') complexity = String(argv[++i] ?? '');
+  else if (a === '--commit') commitSteps = true;
+  else if (a === '--external') external = String(argv[++i] ?? 'auto');
   else if (!value) value = a;
 }
 if (!Number.isFinite(max) || max < 1) max = 25;
@@ -49,10 +56,17 @@ switch (action) {
       console.log('Valore non valido per --complexity: usare low|medium|high'); process.exit(1);
     }
     if (!existsSync(gateDir)) mkdirSync(gateDir, { recursive: true });
+    // CLI di modelli esterni disponibili su questa macchina (per il confronto indipendente)
+    const probe = (name) =>
+      spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore', timeout: 4000 }).status === 0;
+    const externals = external === 'off' ? [] : ['codex', 'gemini', 'antigravity'].filter(probe);
     saveState({
       task: value,
-      phase: 'plan',                       // plan -> implement -> review -> ... -> final-verify
+      phase: 'plan',                       // plan -> implement -> review -> ... -> cleanup -> final-verify
       complexity: complexity || 'medium',  // low|medium|high - instrada i modelli delle fasi
+      commitSteps,                         // commit atomico dopo ogni review passata
+      externals,                           // CLI esterne rilevate: confronto nel plan, nei fix ripetuti e al gate
+      cleanedOnce: false,                  // la fase cleanup gira solo al primo claim-done
       iterations: 0,
       max,
       retries: 0,                          // review fallite consecutive sullo stesso step
@@ -63,7 +77,8 @@ switch (action) {
       paused: false,                       // scritto da `pause`/`resume` (o dall'hook al limite retry)
       repeated: false,                     // la fase corrente e' gia' stata ripetuta una volta
     });
-    console.log(`OMC-loop ARMATO (max ${max} iterazioni, ${maxRetries} retry per step). Task: ${value}`);
+    console.log(`OMC-loop ARMATO (max ${max} iterazioni, ${maxRetries} retry per step${commitSteps ? ', commit per step' : ''}). Task: ${value}`);
+    console.log(`Modelli esterni per il confronto: ${externals.length ? externals.join(', ') : 'nessuno'}`);
     console.log("Fase iniziale: plan. Scrivi il piano in .omc-loop/plan.md come checklist '- [ ] step', poi fermati: da li' guida lo Stop hook.");
     break;
   }

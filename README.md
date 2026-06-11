@@ -6,10 +6,10 @@ dopo una verifica finale avversariale indipendente. Una notifica desktop avvisa 
 progetto e' finito o quando serve intervento umano.
 
 ```
-plan -> implement -> review --fail--> fix (stesso step, max 3 tentativi)
-                         \---pass--> step successivo
-claim-done -> verifica finale avversariale --pass--> fine (notifica)
-                                           \--fail--> fix
+plan (con esplorazione) -> implement -> review --fail--> fix (stesso step, max 3 tentativi)
+                                            \---pass--> step successivo (opz. commit atomico)
+claim-done -> cleanup -> verifica finale avversariale --pass--> fine (notifica)
+                                                      \--fail--> fix
 ```
 
 Il motore e' uno Stop hook **dormiente**: non fa nulla finche' non lo si arma con il
@@ -97,8 +97,10 @@ versioni PowerShell). Riavviare Claude Code dopo l'installazione.
 ## Uso
 
 ```
-/perseveranza implementa la feature X     # default: max 25 iterazioni
+/perseveranza implementa la feature X         # default: max 25 iterazioni
 /perseveranza rifai il modulo Y --max 40
+/perseveranza feature Z --commit              # commit atomico dopo ogni step validato
+/perseveranza fix veloce --external off       # senza confronto con modelli esterni
 ```
 
 Claude scrive il piano in `.omc-loop/plan.md` (checklist), valuta la complessita' del
@@ -121,11 +123,28 @@ modelli usati dalle fasi (hint per i subagent):
 | verifica finale (subagent) | sonnet | opus   | opus |
 | implement                  | in sessione | in sessione | delega a executor `model=opus` |
 
+## Confronto con modelli esterni
+
+All'arm vengono auto-rilevate le CLI di modelli esterni presenti sulla macchina
+(`codex`, `gemini`, `antigravity`). Se ce n'e' almeno una, il ciclo aggiunge un secondo
+parere indipendente nei tre punti a maggior leva, senza costare iterazioni:
+
+- **piano**: critica del piano prima di iniziare a implementare;
+- **fix ripetuti**: dal secondo fallimento consecutivo sullo stesso step, diagnosi
+  indipendente del problema;
+- **gate finale**: falsificazione del lavoro chiesta anche al modello esterno, oltre che
+  al subagent avversariale.
+
+Senza CLI esterne il ciclo e' identico, solo senza questi confronti. Disattivabile con
+`--external off`.
+
 ## Reti di sicurezza
 
 - limite globale di iterazioni (default 25, `--max N` per cambiarlo)
 - 3 review fallite sullo stesso step -> pausa + notifica "serve intervento umano"
-- la chiusura richiede il pass della verifica finale avversariale (niente auto-certificazione)
+- la chiusura richiede il pass della verifica finale avversariale (niente
+  auto-certificazione), preceduta da un giro di cleanup e, per complessita' high, estesa
+  a una lente security
 - stato corrotto -> disarmo pulito con notifica
 - a fine progetto la cartella `.omc-loop/` viene rimossa (aggiungerla comunque al
   `.gitignore` dei progetti su cui la si usa)
