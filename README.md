@@ -1,31 +1,56 @@
 # Perseveranza
 
-Ciclo autonomo a feedback per Claude Code (Windows, macOS, Linux): dato un task, Claude
-pianifica, implementa step per step, fa revisionare ogni step da un subagent e chiude solo
-dopo una verifica finale avversariale indipendente. Una notifica desktop avvisa quando il
-progetto e' finito o quando serve intervento umano.
+![versione](https://img.shields.io/badge/versione-1.1.0-blue)
+![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
+![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
 
+**Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
+
+Perseveranza è un ciclo autonomo a feedback: Claude esplora il codice, scrive un piano,
+implementa uno step alla volta, fa revisionare ogni step da un subagent con contesto
+pulito e può dichiararsi "finito" solo superando una verifica finale avversariale
+indipendente. Una notifica desktop ti avvisa quando il progetto è completo o quando
+serve il tuo intervento.
+
+Il motore è uno **Stop hook dormiente**: non fa nulla finché non lo armi con
+`/perseveranza`, quindi non interferisce con le chat normali. Tutta la logica gira su
+Node.js — lo stesso runtime di Claude Code — senza altre dipendenze.
+
+## Il loop in un colpo d'occhio
+
+```mermaid
+flowchart TD
+    START(["/perseveranza «task»"]) --> PLAN
+    PLAN["<b>plan</b><br/>esplora il codice → checklist in plan.md<br/>critica del piano da modello esterno<br/>registra la complessità"] --> IMPL
+    IMPL["<b>implement</b><br/>uno step della checklist"] --> REV
+    REV["<b>review</b><br/>subagent code-reviewer<br/>(modello scelto per complessità)"] -- "report fail" --> FIX
+    FIX["<b>fix</b> · stesso step<br/>dal 2º fallimento: diagnosi<br/>da modello esterno"] --> REV
+    REV -- "report pass<br/>spunta lo step (+ commit opz.)" --> NEXT{"restano step?"}
+    NEXT -- "sì" --> IMPL
+    NEXT -- "no → claim-done" --> CLEAN
+    CLEAN["<b>cleanup</b> · una tantum<br/>codice morto, duplicazioni, docs"] --> VERIFY
+    VERIFY["<b>verifica finale avversariale</b><br/>subagent indipendente che prova a falsificare<br/>+ falsificazione da modello esterno<br/>+ lente security (high)"] -- "report pass" --> DONE
+    VERIFY -- "report fail" --> POSTFIX["fix post-verifica"] --> IMPL
+    FIX -. "3 fallimenti consecutivi" .-> PAUSE
+    VERIFY -. "3 bocciature" .-> PAUSE
+    DONE(["✅ disarm + notifica «Progetto finito»"])
+    PAUSE(["⏸️ pausa + notifica<br/>«serve intervento umano»"])
+
+    style DONE fill:#1a7f37,color:#fff
+    style PAUSE fill:#9a6700,color:#fff
+    style VERIFY fill:#0969da,color:#fff
 ```
-plan (con esplorazione) -> implement -> review --fail--> fix (stesso step, max 3 tentativi)
-                                            \---pass--> step successivo (opz. commit atomico)
-claim-done -> cleanup -> verifica finale avversariale --pass--> fine (notifica)
-                                                      \--fail--> fix
-```
 
-Il motore e' uno Stop hook **dormiente**: non fa nulla finche' non lo si arma con il
-comando `/perseveranza`, quindi non interferisce con le chat normali. Tutta la logica
-gira su Node.js — lo stesso runtime di Claude Code — quindi non servono bash, PowerShell
-o altre dipendenze.
+Due principi guidano il disegno:
 
-## Requisiti
-
-- [Claude Code](https://claude.com/claude-code) (Node.js arriva con lui)
-- Consigliato: plugin **oh-my-claudecode** (fornisce i subagent `code-reviewer` ed
-  `executor` citati nelle fasi; senza, Claude usa subagent generici)
-- Notifiche desktop (opzionali, fallback silenzioso):
-  - Windows: modulo PowerShell **BurntToast** (`Install-Module BurntToast`); senza, beep
-  - macOS: `osascript` (gia' presente)
-  - Linux: `notify-send` (pacchetto `libnotify`)
+1. **Anello chiuso, non metronomo.** L'hook non ruota le fasi alla cieca: instrada in
+   base agli esiti che Claude registra (`report pass|fail`). Una review bocciata rimanda
+   al fix dello stesso step; una promossa fa avanzare la checklist.
+2. **Ciclo interno economico, gate di uscita severo.** La review per step è leggera; il
+   controllo costoso (verifica avversariale, security, modello esterno) scatta una sola
+   volta, quando Claude dichiara di aver finito. Dichiararsi finiti non chiude il ciclo:
+   **innesca il controllo**. Niente auto-certificazione.
 
 ## Installazione (plugin, consigliata)
 
@@ -45,17 +70,124 @@ Secondo:
 Usare l'**URL HTTPS completo** come sopra: la forma breve `ilmondovero/perseveranza`
 clona via SSH (`git@github.com:...`) e fallisce con `Host key verification failed` sulle
 macchine senza chiavi SSH configurate — caso tipico su Windows, dove inoltre l'OpenSSH
-di sistema (`C:\Windows\System32\OpenSSH`) puo' essere troppo vecchio per il key
-exchange con GitHub (`unsupported KEX method sntrup761x25519...`).
+di sistema (`C:\Windows\System32\OpenSSH`) può essere troppo vecchio per il key exchange
+con GitHub (`unsupported KEX method sntrup761x25519...`).
 
 Fatto: hook e comando sono registrati dal plugin system su qualunque OS, senza toccare
-`settings.json`. Il comando si invoca come `/perseveranza` (forma completa:
-`/perseveranza:perseveranza`). Gli **aggiornamenti** si prendono dal pannello `/plugin`
-quando esce una nuova versione.
+`settings.json`. Gli **aggiornamenti** si prendono dal pannello `/plugin` quando esce
+una nuova versione.
 
-### Risoluzione problemi
+### Requisiti
 
-- **`Host key verification failed` / errori SSH**: e' stata usata la forma breve
+- [Claude Code](https://claude.com/claude-code) (Node.js arriva con lui)
+- Consigliato: plugin **oh-my-claudecode** (fornisce i subagent `code-reviewer` ed
+  `executor` citati nelle fasi; senza, Claude usa subagent generici)
+- Opzionali, auto-rilevati: CLI di modelli esterni (`codex`, `gemini`, `antigravity`)
+  per il secondo parere indipendente
+- Notifiche desktop (opzionali, fallback silenzioso): BurntToast su Windows
+  (`Install-Module BurntToast`, senza: beep), `osascript` su macOS (già presente),
+  `notify-send` su Linux (pacchetto `libnotify`)
+
+### Installazione manuale (alternativa)
+
+```bash
+git clone https://github.com/ilmondovero/perseveranza.git
+cd perseveranza
+node install.mjs
+```
+
+Copia gli script in `~/.claude/` e registra lo Stop hook in `~/.claude/settings.json`
+(idempotente, con backup; sostituisce automaticamente installazioni precedenti).
+Aggiornamento: `git pull` + di nuovo `node install.mjs`. Disinstallazione:
+`node install.mjs --uninstall`.
+
+**Non usare le due modalità insieme**: due Stop hook guiderebbero lo stesso loop facendo
+avanzare le fasi due volte per risposta. Prima di passare al plugin, eseguire
+`node install.mjs --uninstall`.
+
+## Uso
+
+```
+/perseveranza implementa la feature X         # default: max 25 iterazioni
+/perseveranza rifai il modulo Y --max 40
+/perseveranza feature Z --commit              # commit atomico dopo ogni step validato
+/perseveranza fix veloce --external off       # senza confronto con modelli esterni
+```
+
+Claude scrive il piano in `.omc-loop/plan.md` (checklist), registra la complessità e da
+lì il ciclo procede da solo: a ogni fine risposta lo Stop hook inietta l'istruzione
+della fase successiva. Per interromperlo in qualsiasi momento basta eliminare la
+cartella `.omc-loop/` del progetto (equivale al verbo `disarm`), o chiedere a Claude di
+eseguire il disarm.
+
+## Le fasi, una per una
+
+| fase | cosa succede | chi lavora |
+|---|---|---|
+| **plan** | esplorazione del codice rilevante, checklist in `plan.md`, critica del piano da un modello esterno, registrazione della complessità | sessione |
+| **implement** | un solo step della checklist, niente anticipi | sessione (high: subagent `executor` opus) |
+| **review** | revisione dello step appena fatto: correttezza, edge case, regressioni, test | subagent `code-reviewer`, contesto pulito |
+| **fix** | correzione dei problemi lasciati aperti dalla review, stesso step | sessione; dal 2º tentativo con diagnosi esterna |
+| **cleanup** | una tantum dopo il `claim-done`: codice morto, duplicazioni, semplificazioni, docs — *prima* del gate, così la verifica valida il codice già ripulito | sessione |
+| **verifica finale** | un verificatore indipendente parte dal piano e dal diff e **prova a falsificare** il lavoro: casi limite, input ostili, test e build eseguiti davvero | subagent indipendente + modello esterno |
+
+## Il contratto: chi possiede cosa
+
+Lo stato vive in `.omc-loop/state.json`. L'hook possiede fase e contatori; Claude
+comunica solo attraverso questi verbi (mai editando lo stato a mano):
+
+| verbo | quando | effetto |
+|---|---|---|
+| `arm "<task>" [flag]` | lo esegue il comando `/perseveranza` | arma il ciclo, rileva le CLI esterne |
+| `complexity low\|medium\|high` | in fase plan | instrada i modelli delle fasi |
+| `report pass\|fail` | a fine review e verifica finale | è l'esito che instrada il loop |
+| `claim-done` | a checklist completa | innesca cleanup + verifica finale |
+| `pause` / `resume` | quando serve input dell'utente | sospende / riprende il loop |
+| `status` / `disarm` | quando vuoi | ispeziona / smonta tutto |
+
+Ogni transizione finisce in `.omc-loop/history.log` — utile per ricostruire cosa è
+successo durante una sessione notturna.
+
+## Routing dei modelli per complessità
+
+In fase plan Claude valuta il task e registra la complessità, che instrada i modelli
+delle fasi (hint per i subagent):
+
+| fase | low | medium | high |
+|---|---|---|---|
+| code-review (subagent) | haiku | sonnet | opus |
+| verifica finale (subagent) | sonnet | opus | opus |
+| implement | in sessione | in sessione | delega a executor `model=opus` |
+
+## Confronto con modelli esterni
+
+All'arm vengono auto-rilevate le CLI di modelli esterni presenti sulla macchina
+(`codex`, `gemini`, `antigravity`). Se ce n'è almeno una, il ciclo aggiunge un secondo
+parere indipendente nei tre punti a maggior leva, senza costare iterazioni:
+
+- **piano**: critica del piano prima di iniziare a implementare;
+- **fix ripetuti**: dal secondo fallimento consecutivo sullo stesso step, diagnosi
+  indipendente del problema;
+- **gate finale**: falsificazione del lavoro chiesta anche al modello esterno, oltre che
+  al subagent avversariale.
+
+Senza CLI esterne il ciclo è identico, solo senza questi confronti. Disattivabile con
+`--external off`.
+
+## Reti di sicurezza
+
+- limite globale di iterazioni (default 25, `--max N` per cambiarlo)
+- 3 review fallite sullo stesso step → pausa + notifica «serve intervento umano»
+- la chiusura richiede il pass della verifica finale avversariale (niente
+  auto-certificazione), preceduta da un giro di cleanup e, per complessità high, estesa
+  a una lente security
+- stato corrotto → disarmo pulito con notifica
+- a fine progetto la cartella `.omc-loop/` viene rimossa (aggiungerla comunque al
+  `.gitignore` dei progetti su cui la si usa)
+
+## Risoluzione problemi
+
+- **`Host key verification failed` / errori SSH**: è stata usata la forma breve
   `owner/repo`. Ripetere con l'URL HTTPS completo. In alternativa, per continuare a
   usare la forma breve senza configurare SSH, dirottare GitHub su HTTPS a livello git:
 
@@ -69,85 +201,8 @@ quando esce una nuova versione.
   `git config --global --unset-all url.https://github.com/.insteadof`)
 - **`EBUSY: resource busy or locked, rename ... marketplaces\...`**: residuo di un
   tentativo precedente fallito; rilanciare il comando (a cache pulita sparisce).
-- **`URL rejected: Malformed input to a URL function`**: sono stati incollati piu'
+- **`URL rejected: Malformed input to a URL function`**: sono stati incollati più
   comandi nello stesso invio; eseguirli uno alla volta.
-
-## Installazione manuale (alternativa)
-
-```bash
-git clone https://github.com/ilmondovero/perseveranza.git
-cd perseveranza
-node install.mjs
-```
-
-Copia gli script in `~/.claude/` e registra lo Stop hook in `~/.claude/settings.json`
-(idempotente, con backup; sostituisce automaticamente installazioni precedenti, comprese
-le vecchie versioni PowerShell). Aggiornamento: `git pull` + di nuovo `node install.mjs`.
-Disinstallazione: `node install.mjs --uninstall`.
-
-**Non usare le due modalita' insieme**: due Stop hook guiderebbero lo stesso loop facendo
-avanzare le fasi due volte per risposta. Prima di passare al plugin, eseguire
-`node install.mjs --uninstall`.
-
-Lo script copia i file in `~/.claude/` e registra lo Stop hook in `~/.claude/settings.json`
-(idempotente: rilanciarlo non duplica nulla; prima di modificare `settings.json` ne crea un
-backup; sostituisce automaticamente eventuali installazioni precedenti, comprese le vecchie
-versioni PowerShell). Riavviare Claude Code dopo l'installazione.
-
-## Uso
-
-```
-/perseveranza implementa la feature X         # default: max 25 iterazioni
-/perseveranza rifai il modulo Y --max 40
-/perseveranza feature Z --commit              # commit atomico dopo ogni step validato
-/perseveranza fix veloce --external off       # senza confronto con modelli esterni
-```
-
-Claude scrive il piano in `.omc-loop/plan.md` (checklist), valuta la complessita' del
-task e poi il ciclo procede da solo. Per interromperlo in qualsiasi momento basta
-eliminare la cartella `.omc-loop/` del progetto (equivale al verbo `disarm`), o chiedere
-a Claude di eseguire il disarm.
-
-Tutti i verbi (`status`, `report`, `claim-done`, `pause`, `resume`, `disarm`) sono
-documentati in testa a `scripts/omc-loop.mjs`. Lo storico delle transizioni e' in
-`.omc-loop/history.log`.
-
-## Routing dei modelli per complessita'
-
-In fase di piano Claude registra la complessita' (`low|medium|high`), che instrada i
-modelli usati dalle fasi (hint per i subagent):
-
-| fase                       | low    | medium | high |
-|----------------------------|--------|--------|------|
-| code-review (subagent)     | haiku  | sonnet | opus |
-| verifica finale (subagent) | sonnet | opus   | opus |
-| implement                  | in sessione | in sessione | delega a executor `model=opus` |
-
-## Confronto con modelli esterni
-
-All'arm vengono auto-rilevate le CLI di modelli esterni presenti sulla macchina
-(`codex`, `gemini`, `antigravity`). Se ce n'e' almeno una, il ciclo aggiunge un secondo
-parere indipendente nei tre punti a maggior leva, senza costare iterazioni:
-
-- **piano**: critica del piano prima di iniziare a implementare;
-- **fix ripetuti**: dal secondo fallimento consecutivo sullo stesso step, diagnosi
-  indipendente del problema;
-- **gate finale**: falsificazione del lavoro chiesta anche al modello esterno, oltre che
-  al subagent avversariale.
-
-Senza CLI esterne il ciclo e' identico, solo senza questi confronti. Disattivabile con
-`--external off`.
-
-## Reti di sicurezza
-
-- limite globale di iterazioni (default 25, `--max N` per cambiarlo)
-- 3 review fallite sullo stesso step -> pausa + notifica "serve intervento umano"
-- la chiusura richiede il pass della verifica finale avversariale (niente
-  auto-certificazione), preceduta da un giro di cleanup e, per complessita' high, estesa
-  a una lente security
-- stato corrotto -> disarmo pulito con notifica
-- a fine progetto la cartella `.omc-loop/` viene rimossa (aggiungerla comunque al
-  `.gitignore` dei progetti su cui la si usa)
 
 ## Disinstallazione
 
