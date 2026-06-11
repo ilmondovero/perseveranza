@@ -138,7 +138,7 @@ const commitHint = s.commitSteps
   : '';
 
 const finalVerifyReason = () =>
-  `${header} FASE: verifica finale avversariale. Hai dichiarato il progetto completo: ora va falsificato. Delega a un subagent INDIPENDENTE con model=${verifyModel} (contesto pulito) la verifica: parta da .omc-loop/plan.md e dalle modifiche reali, assuma che il lavoro sia SBAGLIATO, costruisca casi limite e input ostili, esegua DAVVERO test e build, verifichi ogni claim contro l'esecuzione reale.${secHint}${extVerifyHint} NON correggere nulla in questa fase. Alla fine esegui OBBLIGATORIAMENTE: ${LOOP} report pass (nessun difetto) oppure: ${LOOP} report fail`;
+  `${header} FASE: verifica finale avversariale. Hai dichiarato il progetto completo: ora va falsificato. Delega a un subagent INDIPENDENTE con model=${verifyModel} (contesto pulito) la verifica, passandogli nel prompt il piano completo e il diff totale (se enorme: elenco dei file + estratti rilevanti): assuma che il lavoro sia SBAGLIATO, costruisca casi limite e input ostili, esegua DAVVERO test e build, verifichi ogni claim contro l'esecuzione reale, e riporti i difetti in un report sintetico con severita'.${secHint}${extVerifyHint} NON correggere nulla in questa fase. Alla fine esegui OBBLIGATORIAMENTE: ${LOOP} report pass (nessun difetto) oppure: ${LOOP} report fail`;
 
 // sospende il loop quando i fallimenti consecutivi superano il limite: serve un umano
 function pauseForHuman(why) {
@@ -180,7 +180,7 @@ if (claimed) {
     }
     case 'implement': {
       s.phase = 'review'; s.repeated = false;
-      reason = `${header} FASE: code-review. Delega a un subagent code-reviewer con model=${reviewModel} (contesto pulito) la review delle modifiche appena fatte: correttezza, edge case, regressioni, sicurezza, adeguatezza dei test. Correggi subito i problemi bloccanti emersi. Alla fine esegui OBBLIGATORIAMENTE: ${LOOP} report pass (nessun bloccante residuo) oppure: ${LOOP} report fail (restano problemi). NON modificare .omc-loop/state.json a mano.`;
+      reason = `${header} FASE: code-review. Delega a un subagent code-reviewer con model=${reviewModel} (contesto pulito) la review dello step appena implementato, passandogli nel prompt: lo step del piano, l'elenco dei file toccati e il diff (se enorme: elenco dei file + estratti rilevanti). Chiedigli un report sintetico e strutturato (findings con severita', senza narrazione) su: correttezza, edge case, regressioni, sicurezza, adeguatezza dei test. Correggi subito i problemi bloccanti emersi. Alla fine esegui OBBLIGATORIAMENTE: ${LOOP} report pass (nessun bloccante residuo) oppure: ${LOOP} report fail (restano problemi). NON modificare .omc-loop/state.json a mano.`;
       break;
     }
     case 'review': {
@@ -191,14 +191,14 @@ if (claimed) {
         reason = `${header} FASE: fix (tentativo ${s.retries}/${s.maxRetries}). La review ha lasciato problemi aperti: correggili TUTTI restando sullo stesso step del piano ed esegui i test pertinenti.${implHint}${s.retries >= 2 ? extFixHint : ''} NON spuntare lo step.`;
       } else if (report === 'pass') {
         s.retries = 0; s.phase = 'implement'; s.repeated = false;
-        reason = `${header} FASE: implement. Review superata: spunta lo step completato in .omc-loop/plan.md ('- [x]').${commitHint} Se restano step non spuntati, implementa il PROSSIMO.${implHint} Se invece TUTTI gli step sono spuntati e il progetto e' completo, esegui: ${LOOP} claim-done (innesca la verifica finale). Se serve input dell'utente: ${LOOP} pause e poi fai la domanda.`;
+        reason = `${header} FASE: implement. Review superata: spunta lo step completato in .omc-loop/plan.md ('- [x]') e appendi 2-3 righe a .omc-loop/notes.md (decisioni prese, trappole incontrate).${commitHint} Se restano step non spuntati, implementa il PROSSIMO; se la sua complessita' e' chiaramente diversa da quella registrata, prima aggiornala con: ${LOOP} complexity low|medium|high.${implHint} Se hai perso il filo, rileggi .omc-loop/plan.md e .omc-loop/notes.md. Se invece TUTTI gli step sono spuntati e il progetto e' completo, esegui: ${LOOP} claim-done (innesca la verifica finale). Se serve input dell'utente: ${LOOP} pause e poi fai la domanda.`;
       } else if (!s.repeated) {
         s.repeated = true; // resta in review, chiedi l'esito una volta sola
         reason = `${header} FASE: code-review (esito mancante). Non hai registrato l'esito della review. Completala se serve, poi esegui ORA: ${LOOP} report pass oppure: ${LOOP} report fail`;
       } else {
         // esito mancante due volte: avanza comunque (ciclo interno tollerante)
         s.retries = 0; s.phase = 'implement'; s.repeated = false;
-        reason = `${header} FASE: implement (review senza esito registrato, considerata superata). Spunta lo step completato in .omc-loop/plan.md.${commitHint} Implementa il PROSSIMO step non spuntato.${implHint} Se tutti gli step sono spuntati: ${LOOP} claim-done. D'ora in poi registra SEMPRE l'esito con report pass|fail.`;
+        reason = `${header} FASE: implement (review senza esito registrato, considerata superata). Spunta lo step completato in .omc-loop/plan.md e appendi 2-3 righe a .omc-loop/notes.md.${commitHint} Implementa il PROSSIMO step non spuntato.${implHint} Se tutti gli step sono spuntati: ${LOOP} claim-done. D'ora in poi registra SEMPRE l'esito con report pass|fail.`;
       }
       break;
     }

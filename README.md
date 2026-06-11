@@ -126,7 +126,7 @@ eseguire il disarm.
 |---|---|---|
 | **plan** | esplorazione del codice rilevante, checklist in `plan.md`, critica del piano da un modello esterno, registrazione della complessità | sessione |
 | **implement** | un solo step della checklist, niente anticipi | sessione (high: subagent `executor` opus) |
-| **review** | revisione dello step appena fatto: correttezza, edge case, regressioni, test | subagent `code-reviewer`, contesto pulito |
+| **review** | revisione dello step appena fatto — riceve nel prompt step, file toccati e diff, restituisce findings sintetici con severità | subagent `code-reviewer`, contesto pulito |
 | **fix** | correzione dei problemi lasciati aperti dalla review, stesso step | sessione; dal 2º tentativo con diagnosi esterna |
 | **cleanup** | una tantum dopo il `claim-done`: codice morto, duplicazioni, semplificazioni, docs — *prima* del gate, così la verifica valida il codice già ripulito | sessione |
 | **verifica finale** | un verificatore indipendente parte dal piano e dal diff e **prova a falsificare** il lavoro: casi limite, input ostili, test e build eseguiti davvero | subagent indipendente + modello esterno |
@@ -147,6 +147,13 @@ comunica solo attraverso questi verbi (mai editando lo stato a mano):
 
 Ogni transizione finisce in `.omc-loop/history.log` — utile per ricostruire cosa è
 successo durante una sessione notturna.
+
+Oltre alla checklist `plan.md`, Claude mantiene `.omc-loop/notes.md`: 2-3 righe per step
+completato (decisioni prese, trappole incontrate). È la memoria del loop che sopravvive
+alla compattazione del contesto nelle sessioni lunghe: se il filo si perde, si riparte
+da piano + note invece di reinventare scelte già fatte. La complessità registrata non è
+scolpita: a ogni nuovo step Claude la rivaluta e può aggiornarla, adattando i modelli al
+punto in cui si trova.
 
 ## Routing dei modelli per complessità
 

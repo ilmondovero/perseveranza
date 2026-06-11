@@ -74,5 +74,12 @@ Come funziona il ciclo (a feedback):
 Regole:
 - NON modificare mai a mano `.omc-loop/state.json`: usa solo i verbi `report`, `complexity`,
   `claim-done`, `pause`, `resume`.
-- L'unico file del ciclo che gestisci tu e' `.omc-loop/plan.md` (checklist degli step).
+- I file del ciclo che gestisci tu sono `.omc-loop/plan.md` (checklist degli step) e
+  `.omc-loop/notes.md` (2-3 righe per step completato: decisioni prese, trappole — e' la
+  memoria che sopravvive alla compattazione del contesto; rileggila se perdi il filo).
+- A ogni nuovo step, se la sua complessita' e' chiaramente diversa da quella registrata,
+  aggiornala con il verbo `complexity` prima di implementare.
+- Quando deleghi review o verifica a un subagent, passagli nel prompt step/piano, elenco
+  dei file toccati e diff (se enorme: elenco + estratti) e chiedigli un report sintetico
+  con severita': il subagent parte da contesto vuoto, non farlo scavare.
 - Lo storico delle transizioni e' in `.omc-loop/history.log` (utile per diagnosi).
