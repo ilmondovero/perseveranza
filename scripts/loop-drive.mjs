@@ -166,7 +166,7 @@ const verifyModel = { low: 'sonnet', medium: 'opus', high: 'opus' }[s.complexity
 // riferimento a un agente del plugin con fallback: funziona sia da plugin (namespaced)
 // sia da installazione manuale (agente utente), sia senza (subagent generico)
 const agentRef = (name, fallback) =>
-  `l'agente ${name} (subagent_type "perseveranza:${name}" se hai il plugin, "${name}" se installazione manuale; se nessuno esiste, ${fallback})`;
+  `l'agente ${name} (subagent_type "${name}"; se l'hai installato come plugin diventa "perseveranza:${name}"; se nessuno dei due esiste, ${fallback})`;
 const implHint = s.complexity === 'high'
   ? ` Il task e' ad alta complessita': delega l'implementazione a ${agentRef('pf-executor', 'un subagent executor generico')} con model=opus, tu coordina e controlla il risultato.`
   : '';
