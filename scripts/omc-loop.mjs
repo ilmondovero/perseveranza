@@ -5,6 +5,7 @@
 //     --commit        dopo ogni review passata, commit atomico dello step
 //     --external off  disattiva il confronto con modelli esterni (default: auto-rilevati codex/gemini)
 //     --test "<cmd>"  comando della suite: il claim-done richiedera' un test verde fresco
+//     --no-git-finish a fine progetto NON fare commit+push automatico (default: si', se in un repo git)
 //   node ... test -- <comando>             esegue il comando LUI STESSO e registra l'exit code reale
 //                                          (prova non falsificabile: e' lo script a misurare)
 //   node ... report pass|fail              esito della fase corrente (review / verifica finale)
@@ -30,6 +31,7 @@ let complexity = '';
 let commitSteps = false;
 let external = 'auto';
 let testCmd = '';
+let gitFinish = true;
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--') break; // tutto cio' che segue appartiene al verbo `test`
@@ -39,6 +41,7 @@ for (let i = 1; i < argv.length; i++) {
   else if (a === '--commit') commitSteps = true;
   else if (a === '--external') external = String(argv[++i] ?? 'auto');
   else if (a === '--test') testCmd = String(argv[++i] ?? '');
+  else if (a === '--no-git-finish') gitFinish = false;
   else if (!value) value = a;
 }
 if (!Number.isFinite(max) || max < 1) max = 25;
@@ -79,6 +82,7 @@ switch (action) {
       cleanedOnce: false,                  // la fase cleanup gira solo al primo claim-done
       testCmd: testCmd || null,            // comando della suite (se noto): il claim richiede un test verde fresco
       lastTest: null,                      // ultimo run registrato dal verbo `test`: {cmd, exitCode, iteration, at}
+      gitFinish,                           // a fine progetto: commit+push automatico se si e' dentro un repo git
       iterations: 0,
       max,
       retries: 0,                          // review fallite consecutive sullo stesso step

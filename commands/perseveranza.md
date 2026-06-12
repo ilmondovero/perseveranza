@@ -1,6 +1,6 @@
 ---
 description: Arma il ciclo OMC-loop a feedback (plan -> implement -> review -> verifica finale avversariale) e inizia il task
-argument-hint: <descrizione del task> [--max N] [--commit] [--external off] [--test "cmd"]
+argument-hint: <descrizione del task> [--max N] [--commit] [--external off] [--test "cmd"] [--no-git-finish]
 ---
 
 Attiva la modalita' "perseveranza" per il task indicato e comincia a lavorarci.
@@ -22,7 +22,7 @@ Passi da eseguire ORA, in ordine:
    (`--commit` = commit atomico dopo ogni step validato; `--external off` = niente
    confronto con modelli esterni, che altrimenti vengono auto-rilevati: codex, gemini,
    agy (quest'ultimo solo su macOS/Linux); `--test` = comando della suite, il claim-done richiedera' la prova di un
-   run verde fresco)
+   run verde fresco; `--no-git-finish` = a fine progetto NON fare commit+push automatico)
 
 2. Verifica che sia armato:
 
@@ -73,8 +73,12 @@ Come funziona il ciclo (a feedback):
   claim: codice morto, duplicazioni, docs), poi la verifica finale avversariale (subagent
   indipendente + falsificazione da modello esterno se rilevato; lente security per
   complessita' high): il verificatore scrive `.omc-loop/verify.json`
-  (`{"pass": true|false, "findings": [...]}`); `pass` chiude il ciclo (disarma +
-  notifica "Progetto finito"), `fail` ti rimanda a correggere.
+  (`{"pass": true|false, "findings": [...]}`); `pass` chiude il ciclo, `fail` ti rimanda
+  a correggere.
+- Alla chiusura, se la directory e' dentro un repo git, l'hook fa da solo `git add -A`
+  (escludendo `.omc-loop/`), commit `perseveranza: <task>` e `git push` (best-effort: un
+  push senza upstream/remote non blocca la chiusura). Se non e' un repo git, salta. Tu
+  non devi fare nulla: avviene nello Stop hook. Disattivabile con `--no-git-finish`.
 - Se ti serve input dell'utente: esegui `pause`, poi fai la domanda; quando l'utente risponde,
   esegui `resume` e prosegui.
 - Limite globale di iterazioni (default 25): raggiunto quello, il loop si ferma da solo.

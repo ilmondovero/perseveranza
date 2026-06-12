@@ -41,6 +41,28 @@ function notify(title, msg) {
   } catch { /* mai bloccare l'hook per una notifica */ }
 }
 
+// commit+push automatico a fine progetto, SOLO se si e' dentro un repo git; altrimenti salta.
+// Best-effort e mai bloccante: un push fallito (nessun upstream/remote/auth) non annulla la chiusura.
+// .omc-loop/ viene escluso dallo stage (lo stato non finisce nel commit).
+function gitFinish(cwd, task) {
+  const git = (args) => spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000 });
+  const inside = git(['rev-parse', '--is-inside-work-tree']);
+  if (inside.status !== 0 || String(inside.stdout).trim() !== 'true') return { ran: false };
+  git(['add', '-A']);
+  git(['reset', '-q', '--', '.omc-loop']); // non committare mai lo stato del loop
+  const msg = `perseveranza: ${task || 'progetto completato'}`;
+  const commit = git(['commit', '-m', msg]);
+  const committed = commit.status === 0;
+  const nothing = !committed && /nothing to commit|niente da committare/i.test(`${commit.stdout}${commit.stderr}`);
+  let pushed = false, pushErr = '';
+  if (committed) {
+    const push = git(['push']);
+    pushed = push.status === 0;
+    if (!pushed) pushErr = (String(push.stderr).trim().split('\n').pop() || 'push fallito').slice(0, 80);
+  }
+  return { ran: true, committed, nothing, pushed, pushErr };
+}
+
 // --- input evento ---
 let raw = '';
 try { raw = readFileSync(0, 'utf8'); } catch { /* stdin assente */ }
@@ -72,7 +94,7 @@ const s = {
   retries: 0, maxRetries: 3, finalFails: 0, lastReport: 'none',
   claimedDone: false, paused: false, repeated: false,
   commitSteps: false, externals: [], cleanedOnce: false,
-  testCmd: null, lastTest: null,
+  testCmd: null, lastTest: null, gitFinish: true,
   ...rawState,
 };
 for (const k of ['iterations', 'max', 'retries', 'maxRetries', 'finalFails']) {
@@ -245,8 +267,18 @@ if (claimed) {
     case 'final-verify': {
       if (report === 'pass') {
         logStep('final-verify -> DONE');
+        let extra = '';
+        if (s.gitFinish !== false) {
+          const g = gitFinish(cwd, s.task);
+          if (g.ran) {
+            if (g.committed) extra = g.pushed ? ' · commit+push' : ` · commit (push: ${g.pushErr || 'saltato'})`;
+            else if (g.nothing) extra = ' · git: niente da committare';
+            else extra = ' · git: commit fallito';
+            logStep(`git-finish: committed=${g.committed} pushed=${g.pushed}${g.pushErr ? ` (${g.pushErr})` : ''}`);
+          }
+        }
         disarm();
-        notify('Claude Code - OMC-loop', `Progetto finito e verificato - ${proj}`);
+        notify('Claude Code - OMC-loop', `Progetto finito e verificato - ${proj}${extra}`);
         process.exit(0);
       } else if (report === 'fail') {
         s.finalFails += 1;

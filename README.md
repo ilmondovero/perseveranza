@@ -34,7 +34,7 @@ flowchart TD
     VERIFY -- "fail" --> POSTFIX["fix post-verifica"] --> IMPL
     FIX -. "3 fallimenti consecutivi" .-> PAUSE
     VERIFY -. "3 bocciature" .-> PAUSE
-    DONE(["✅ disarm + notifica «Progetto finito»"])
+    DONE(["✅ commit + push se in git<br/>disarm + notifica «Progetto finito»"])
     PAUSE(["⏸️ pausa + notifica<br/>«serve intervento umano»"])
 
     style DONE fill:#1a7f37,color:#fff
@@ -118,6 +118,7 @@ avanzare le fasi due volte per risposta. Prima di passare al plugin, eseguire
 /perseveranza rifai il modulo Y --max 40
 /perseveranza feature Z --commit              # commit atomico dopo ogni step validato
 /perseveranza fix veloce --external off       # senza confronto con modelli esterni
+/perseveranza feature W --no-git-finish       # niente commit+push automatico a fine progetto
 ```
 
 Claude scrive il piano in `.omc-loop/plan.md` (checklist), registra la complessità e da
@@ -136,6 +137,7 @@ eseguire il disarm.
 | **fix** | correzione dei problemi segnalati dalla review, stesso step; il fix viene poi ri-revisionato | sessione; dal 2º tentativo con diagnosi esterna |
 | **cleanup** | una tantum dopo il `claim-done`: codice morto, duplicazioni, semplificazioni, docs — *prima* del gate, così la verifica valida il codice già ripulito | sessione |
 | **verifica finale** | un verificatore indipendente parte dal piano e dal diff e **prova a falsificare** il lavoro: casi limite, input ostili, test e build eseguiti davvero | subagent indipendente + modello esterno |
+| **chiusura** | se la dir è un repo git: `git add -A` (escluso `.omc-loop/`), commit `perseveranza: <task>`, `git push` best-effort; poi disarm + notifica. Fuori da git, salta il git | l'hook stesso |
 
 ## Il contratto: chi possiede cosa
 
@@ -201,6 +203,9 @@ Senza CLI esterne il ciclo è identico, solo senza questi confronti. Disattivabi
   auto-certificazione), preceduta da un giro di cleanup e, per complessità high, estesa
   a una lente security
 - stato corrotto → disarmo pulito con notifica
+- a fine progetto, se in un repo git, commit+push automatico del lavoro (escludendo
+  `.omc-loop/`); il push è best-effort e non blocca la chiusura — disattivabile con
+  `--no-git-finish`
 - a fine progetto la cartella `.omc-loop/` viene rimossa (aggiungerla comunque al
   `.gitignore` dei progetti su cui la si usa)
 
