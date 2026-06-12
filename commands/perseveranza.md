@@ -93,7 +93,9 @@ Regole:
   memoria che sopravvive alla compattazione del contesto; rileggila se perdi il filo).
 - A ogni nuovo step, se la sua complessita' e' chiaramente diversa da quella registrata,
   aggiornala con il verbo `complexity` prima di implementare.
-- Quando deleghi review o verifica a un subagent, passagli nel prompt step/piano, elenco
-  dei file toccati e diff (se enorme: elenco + estratti) e chiedigli un report sintetico
-  con severita': il subagent parte da contesto vuoto, non farlo scavare.
+- La review usa l'agente `pf-reviewer`, la verifica finale `pf-verifier`, l'implementazione
+  high `pf-executor` (inclusi nel plugin; `perseveranza:pf-*` da plugin o nome semplice da
+  installazione manuale; fallback a subagent generici se assenti). Passa loro nel prompt
+  step/piano, file toccati e diff (se enorme: elenco + estratti): partono da contesto
+  vuoto, non farli scavare.
 - Lo storico delle transizioni e' in `.omc-loop/history.log` (utile per diagnosi).

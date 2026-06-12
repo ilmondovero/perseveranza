@@ -163,8 +163,12 @@ let reason = null;
 if (!['low', 'medium', 'high'].includes(s.complexity)) s.complexity = 'medium';
 const reviewModel = { low: 'haiku', medium: 'sonnet', high: 'opus' }[s.complexity];
 const verifyModel = { low: 'sonnet', medium: 'opus', high: 'opus' }[s.complexity];
+// riferimento a un agente del plugin con fallback: funziona sia da plugin (namespaced)
+// sia da installazione manuale (agente utente), sia senza (subagent generico)
+const agentRef = (name, fallback) =>
+  `l'agente ${name} (subagent_type "perseveranza:${name}" se hai il plugin, "${name}" se installazione manuale; se nessuno esiste, ${fallback})`;
 const implHint = s.complexity === 'high'
-  ? " Il task e' ad alta complessita': delega l'implementazione a un subagent executor con model=opus, tu coordina e controlla il risultato."
+  ? ` Il task e' ad alta complessita': delega l'implementazione a ${agentRef('pf-executor', 'un subagent executor generico')} con model=opus, tu coordina e controlla il risultato.`
   : '';
 
 // confronto con modelli esterni (solo se rilevati all'arm) + lente security + commit per step
@@ -188,7 +192,7 @@ const commitHint = s.commitSteps
   : '';
 
 const finalVerifyReason = () =>
-  `${header} FASE: verifica finale avversariale. Hai dichiarato il progetto completo: ora va falsificato. Delega a un subagent INDIPENDENTE con model=${verifyModel} (contesto pulito) la verifica, passandogli nel prompt il piano completo e il diff totale (se enorme: elenco dei file + estratti rilevanti): assuma che il lavoro sia SBAGLIATO, costruisca casi limite e input ostili, esegua DAVVERO test e build, verifichi ogni claim contro l'esecuzione reale, e riporti i difetti in un report sintetico con severita'.${secHint}${extVerifyHint} NON correggere nulla in questa fase. Il subagent DEVE scrivere il verdetto in .omc-loop/verify.json nel formato {"pass": true|false, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. Solo se il subagent non ha potuto scriverlo, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail`;
+  `${header} FASE: verifica finale avversariale. Hai dichiarato il progetto completo: ora va falsificato. Delega a ${agentRef('pf-verifier', 'un subagent indipendente avversariale')} con model=${verifyModel} (contesto pulito) la verifica, passandogli nel prompt il piano completo e il diff totale (se enorme: elenco dei file + estratti rilevanti): assuma che il lavoro sia SBAGLIATO, costruisca casi limite e input ostili, esegua DAVVERO test e build, verifichi ogni claim contro l'esecuzione reale.${secHint}${extVerifyHint} NON correggere nulla in questa fase. L'agente DEVE scrivere il verdetto in .omc-loop/verify.json nel formato {"pass": true|false, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. Solo se non ha potuto scriverlo, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail`;
 
 // sospende il loop quando i fallimenti consecutivi superano il limite: serve un umano
 function pauseForHuman(why) {
@@ -242,7 +246,7 @@ if (claimed) {
     case 'implement': {
       s.phase = 'review'; s.repeated = false;
       dropStaleArtifact('review.json');
-      reason = `${header} FASE: code-review. Delega a un subagent code-reviewer con model=${reviewModel} (contesto pulito) la review dello step appena implementato, passandogli nel prompt: lo step del piano, l'elenco dei file toccati e il diff (se enorme: elenco dei file + estratti rilevanti). Verifichi: correttezza, edge case, regressioni, sicurezza, adeguatezza dei test. Il subagent DEVE scrivere il verdetto in .omc-loop/review.json nel formato {"blocking": <numero di problemi bloccanti>, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. NON correggere nulla in questa fase: le correzioni appartengono alla fase di fix, dove verranno ri-revisionate. Solo se il subagent non ha potuto scrivere il file, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail. NON modificare .omc-loop/state.json a mano.`;
+      reason = `${header} FASE: code-review. Delega a ${agentRef('pf-reviewer', 'un subagent code-reviewer generico')} con model=${reviewModel} (contesto pulito) la review dello step appena implementato, passandogli nel prompt: lo step del piano, l'elenco dei file toccati e il diff (se enorme: elenco dei file + estratti rilevanti). Verifichi: correttezza, edge case, regressioni, sicurezza, adeguatezza dei test. L'agente DEVE scrivere il verdetto in .omc-loop/review.json nel formato {"blocking": <numero di problemi bloccanti>, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. NON correggere nulla in questa fase: le correzioni appartengono alla fase di fix, dove verranno ri-revisionate. Solo se l'agente non ha potuto scrivere il file, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail. NON modificare .omc-loop/state.json a mano.`;
       break;
     }
     case 'review': {

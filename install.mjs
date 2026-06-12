@@ -23,9 +23,11 @@ const uninstall = argv.includes('--uninstall');
 
 const hooksDir = join(claudeDir, 'hooks');
 const commandsDir = join(claudeDir, 'commands');
+const agentsDir = join(claudeDir, 'agents');
 const settingsPath = join(claudeDir, 'settings.json');
 const loopPath = join(hooksDir, 'omc-loop.mjs');
 const drivePath = join(hooksDir, 'loop-drive.mjs');
+const AGENTS = ['pf-reviewer.md', 'pf-verifier.md', 'pf-executor.md'];
 
 function loadSettings() {
   if (!existsSync(settingsPath)) return {};
@@ -52,7 +54,9 @@ function saveSettings(settings) {
 }
 
 if (uninstall) {
-  for (const p of [loopPath, drivePath, join(hooksDir, 'omc-loop.ps1'), join(hooksDir, 'loop-drive.ps1'), join(commandsDir, 'perseveranza.md')]) {
+  const toRemove = [loopPath, drivePath, join(hooksDir, 'omc-loop.ps1'), join(hooksDir, 'loop-drive.ps1'), join(commandsDir, 'perseveranza.md')];
+  toRemove.push(...AGENTS.map((a) => join(agentsDir, a)));
+  for (const p of toRemove) {
     if (existsSync(p)) { rmSync(p); console.log(`Rimosso: ${p}`); }
   }
   const settings = loadSettings();
@@ -76,7 +80,11 @@ copyFileSync(join(src, 'scripts', 'loop-drive.mjs'), drivePath);
 const cmd = readFileSync(join(src, 'commands', 'perseveranza.md'), 'utf8')
   .replaceAll('${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs', loopPath.replaceAll('\\', '/'));
 writeFileSync(join(commandsDir, 'perseveranza.md'), cmd);
-console.log(`File copiati in ${claudeDir} (hooks/ e commands/).`);
+// agenti propri del ciclo (pf-reviewer/verifier/executor): nell'installazione manuale
+// vivono in ~/.claude/agents/ e si invocano col nome semplice (senza namespace plugin)
+mkdirSync(agentsDir, { recursive: true });
+for (const a of AGENTS) copyFileSync(join(src, 'agents', a), join(agentsDir, a));
+console.log(`File copiati in ${claudeDir} (hooks/, commands/, agents/).`);
 
 // rimuovi le versioni PowerShell superate, se presenti (erano la vecchia distribuzione)
 for (const old of ['omc-loop.ps1', 'loop-drive.ps1']) {

@@ -24,13 +24,13 @@ flowchart TD
     START(["/perseveranza «task»"]) --> PLAN
     PLAN["<b>plan</b><br/>esplora il codice → checklist in plan.md<br/>critica del piano da modello esterno<br/>registra la complessità"] --> IMPL
     IMPL["<b>implement</b><br/>uno step della checklist"] --> REV
-    REV["<b>review</b><br/>subagent code-reviewer<br/>verdetto scritto in review.json"] -- "blocking > 0" --> FIX
+    REV["<b>review</b><br/>agente pf-reviewer (read-only)<br/>verdetto scritto in review.json"] -- "blocking > 0" --> FIX
     FIX["<b>fix</b> · stesso step, ri-revisionato<br/>dal 2º fallimento: diagnosi<br/>da modello esterno"] --> REV
     REV -- "blocking = 0<br/>spunta lo step (+ commit opz.)" --> NEXT{"restano step?"}
     NEXT -- "sì" --> IMPL
     NEXT -- "no → test verde fresco<br/>+ claim-done" --> CLEAN
     CLEAN["<b>cleanup</b> · una tantum<br/>codice morto, duplicazioni, docs"] --> VERIFY
-    VERIFY["<b>verifica finale avversariale</b><br/>subagent indipendente che prova a falsificare<br/>+ falsificazione da modello esterno<br/>+ lente security (high)<br/>verdetto scritto in verify.json"] -- "pass" --> DONE
+    VERIFY["<b>verifica finale avversariale</b><br/>agente pf-verifier che prova a falsificare<br/>+ falsificazione da modello esterno<br/>+ lente security (high)<br/>verdetto scritto in verify.json"] -- "pass" --> DONE
     VERIFY -- "fail" --> POSTFIX["fix post-verifica"] --> IMPL
     FIX -. "3 fallimenti consecutivi" .-> PAUSE
     VERIFY -. "3 bocciature" .-> PAUSE
@@ -85,8 +85,9 @@ una nuova versione.
 ### Requisiti
 
 - [Claude Code](https://claude.com/claude-code) (Node.js arriva con lui)
-- Consigliato: plugin **oh-my-claudecode** (fornisce i subagent `code-reviewer` ed
-  `executor` citati nelle fasi; senza, Claude usa subagent generici)
+- **Nessuna dipendenza da altri plugin**: gli agenti del ciclo (`pf-reviewer`,
+  `pf-verifier`, `pf-executor`) sono inclusi. Se hai oh-my-claudecode i suoi agenti
+  restano usabili, ma non servono
 - Opzionali, auto-rilevati: CLI di modelli esterni (`codex`, `gemini`, e `agy` solo su
   macOS/Linux — su Windows la sua print mode è inutilizzabile, bug noto gemini-cli#27466)
   per il secondo parere indipendente
@@ -132,11 +133,11 @@ eseguire il disarm.
 | fase | cosa succede | chi lavora |
 |---|---|---|
 | **plan** | esplorazione del codice rilevante, checklist in `plan.md`, critica del piano da un modello esterno, registrazione della complessità | sessione |
-| **implement** | un solo step della checklist, niente anticipi | sessione (high: subagent `executor` opus) |
-| **review** | revisione dello step appena fatto — riceve nel prompt step, file toccati e diff; scrive il verdetto in `review.json` (blocking + findings) | subagent `code-reviewer`, contesto pulito |
+| **implement** | un solo step della checklist, niente anticipi | sessione (high: agente `pf-executor` opus) |
+| **review** | revisione dello step appena fatto — riceve nel prompt step, file toccati e diff; scrive il verdetto in `review.json` (blocking + findings) | agente `pf-reviewer`, read-only, contesto pulito |
 | **fix** | correzione dei problemi segnalati dalla review, stesso step; il fix viene poi ri-revisionato | sessione; dal 2º tentativo con diagnosi esterna |
 | **cleanup** | una tantum dopo il `claim-done`: codice morto, duplicazioni, semplificazioni, docs — *prima* del gate, così la verifica valida il codice già ripulito | sessione |
-| **verifica finale** | un verificatore indipendente parte dal piano e dal diff e **prova a falsificare** il lavoro: casi limite, input ostili, test e build eseguiti davvero | subagent indipendente + modello esterno |
+| **verifica finale** | un verificatore indipendente parte dal piano e dal diff e **prova a falsificare** il lavoro: casi limite, input ostili, test e build eseguiti davvero; scrive `verify.json` | agente `pf-verifier`, read-only + modello esterno |
 | **chiusura** | se la dir è un repo git: `git add -A` (escluso `.omc-loop/`), commit `perseveranza: <task>`, `git push` best-effort; poi disarm + notifica. Fuori da git, salta il git | l'hook stesso |
 
 ## Il contratto: chi possiede cosa
@@ -174,6 +175,23 @@ delle fasi (hint per i subagent):
 | code-review (subagent) | haiku | sonnet | opus |
 | verifica finale (subagent) | sonnet | opus | opus |
 | implement | in sessione | in sessione | delega a executor `model=opus` |
+
+## Agenti inclusi
+
+Il plugin spedisce i propri subagent, quindi il ciclo è autonomo (nessuna dipendenza da
+altri plugin). Vivono in `agents/` e il loro contratto è scritto nel system prompt, non
+solo nelle istruzioni iniettate:
+
+| agente | ruolo | accesso |
+|---|---|---|
+| `pf-reviewer` | review per-step, scrive `review.json` | read-only sul sorgente |
+| `pf-verifier` | verifica finale avversariale, esegue test/build, scrive `verify.json` | read-only sul sorgente |
+| `pf-executor` | implementazione degli step ad alta complessità | scrittura completa |
+
+Reviewer e verifier sono read-only *by design*: giudicano, non correggono (le correzioni
+stanno nella fase di fix). Installato come plugin si invocano `perseveranza:pf-reviewer`
+ecc.; via installazione manuale vivono in `~/.claude/agents/` col nome semplice. Se per
+qualche motivo non sono disponibili, il loop ripiega su subagent generici.
 
 ## Confronto con modelli esterni
 
