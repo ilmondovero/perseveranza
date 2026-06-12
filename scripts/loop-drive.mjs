@@ -5,7 +5,7 @@
 //                                               \---pass--> implement (step successivo, opz. commit)
 //   claim-done -> cleanup (solo la prima volta) -> final-verify --pass--> disarm + notifica
 //                                                              \--fail--> implement (fix, poi nuovo claim-done)
-//   Se all'arm sono state rilevate CLI esterne (codex/gemini/antigravity), il piano, i fix
+//   Se all'arm sono state rilevate CLI esterne (codex/gemini/agy), il piano, i fix
 //   ripetuti e il gate finale includono un confronto con un modello esterno.
 //
 // DORMIENTE di default: non fa nulla finche' nel progetto non esiste .omc-loop/state.json

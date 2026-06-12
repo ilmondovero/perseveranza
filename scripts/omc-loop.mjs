@@ -65,7 +65,7 @@ switch (action) {
     // CLI di modelli esterni disponibili su questa macchina (per il confronto indipendente)
     const probe = (name) =>
       spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore', timeout: 4000 }).status === 0;
-    const externals = external === 'off' ? [] : ['codex', 'gemini', 'antigravity'].filter(probe);
+    const externals = external === 'off' ? [] : ['codex', 'gemini', 'agy'].filter(probe);
     saveState({
       task: value,
       phase: 'plan',                       // plan -> implement -> review -> ... -> cleanup -> final-verify
