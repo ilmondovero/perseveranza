@@ -87,7 +87,8 @@ una nuova versione.
 - [Claude Code](https://claude.com/claude-code) (Node.js arriva con lui)
 - Consigliato: plugin **oh-my-claudecode** (fornisce i subagent `code-reviewer` ed
   `executor` citati nelle fasi; senza, Claude usa subagent generici)
-- Opzionali, auto-rilevati: CLI di modelli esterni (`codex`, `gemini`, `agy`)
+- Opzionali, auto-rilevati: CLI di modelli esterni (`codex`, `gemini`, e `agy` solo su
+  macOS/Linux — su Windows la sua print mode è inutilizzabile, bug noto gemini-cli#27466)
   per il secondo parere indipendente
 - Notifiche desktop (opzionali, fallback silenzioso): BurntToast su Windows
   (`Install-Module BurntToast`, senza: beep), `osascript` su macOS (già presente),
@@ -175,7 +176,7 @@ delle fasi (hint per i subagent):
 ## Confronto con modelli esterni
 
 All'arm vengono auto-rilevate le CLI di modelli esterni presenti sulla macchina
-(`codex`, `gemini`, `agy`). Se ce n'è almeno una, il ciclo aggiunge un secondo
+(`codex`, `gemini`, e `agy` solo su macOS/Linux). Se ce n'è almeno una, il ciclo aggiunge un secondo
 parere indipendente nei tre punti a maggior leva, senza costare iterazioni:
 
 - **piano**: critica del piano prima di iniziare a implementare;

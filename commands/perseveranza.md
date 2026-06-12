@@ -21,7 +21,7 @@ Passi da eseguire ORA, in ordine:
 
    (`--commit` = commit atomico dopo ogni step validato; `--external off` = niente
    confronto con modelli esterni, che altrimenti vengono auto-rilevati: codex, gemini,
-   agy; `--test` = comando della suite, il claim-done richiedera' la prova di un
+   agy (quest'ultimo solo su macOS/Linux); `--test` = comando della suite, il claim-done richiedera' la prova di un
    run verde fresco)
 
 2. Verifica che sia armato:
