@@ -124,7 +124,10 @@ switch (action) {
     if (!cmd) { console.log("Uso: test -- <comando> (oppure configura --test all'arm)"); process.exit(1); }
     console.log(`Eseguo: ${cmd}`);
     // esegue il comando in prima persona e registra l'exit code REALE: la prova non e' autodichiarata
-    const r = spawnSync(cmd, { shell: true, stdio: 'inherit', timeout: 600000 });
+    // timeout configurabile (default 30 min): le suite pesanti (es. backtest su molte strategie con
+    // dati di rete) superano facilmente i 10 min e verrebbero registrate ROSSE per timeout (exit 124).
+    const testTimeoutMs = Number(process.env.OMC_TEST_TIMEOUT_MS) || 1800000;
+    const r = spawnSync(cmd, { shell: true, stdio: 'inherit', timeout: testTimeoutMs });
     const exitCode = r.status === null ? 124 : r.status; // null = timeout o kill
     s.lastTest = { cmd, exitCode, iteration: Number(s.iterations) || 0, at: new Date().toISOString() };
     if (!s.testCmd) s.testCmd = cmd;

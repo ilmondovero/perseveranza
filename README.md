@@ -213,6 +213,8 @@ Senza CLI esterne il ciclo è identico, solo senza questi confronti. Disattivabi
 - limite globale di iterazioni (default 25, `--max N` per cambiarlo)
 - il `claim-done` è accettato solo con la prova di un test verde fresco (verbo `test`:
   l'exit code lo misura lo script, non è autodichiarato) quando una suite è nota
+- il verbo `test` ha un timeout (default 30 min; un timeout viene registrato come exit
+  124 = rosso). Suite più lente: alza il limite con `OMC_TEST_TIMEOUT_MS` (millisecondi)
 - i verdetti di review e verifica finale sono artefatti scritti dai subagent
   (`review.json` / `verify.json`), consumati dall'hook alla lettura: un verdetto vecchio
   non viene mai riusato
