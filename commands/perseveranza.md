@@ -32,7 +32,7 @@ Passi da eseguire ORA, in ordine:
    test attuali), POI scrivi il piano in `.omc-loop/plan.md` come checklist markdown
    (`- [ ] step`), con step piccoli e verificabili. Se l'arm ha rilevato modelli esterni
    (riga "Modelli esterni per il confronto"), sottoponi il piano a uno di essi per una
-   critica indipendente (es. `codex exec "<task + piano>"` oppure `gemini -p "..."`) e
+   critica indipendente (es. `codex exec --skip-git-repo-check "<task + piano>"` oppure `gemini -p "..."`) e
    integra le osservazioni fondate. Poi valuta la complessita' del task e registrala:
 
    node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" complexity low|medium|high

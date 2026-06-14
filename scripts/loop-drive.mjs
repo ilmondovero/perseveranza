@@ -173,7 +173,7 @@ const implHint = s.complexity === 'high'
 
 // confronto con modelli esterni (solo se rilevati all'arm) + lente security + commit per step
 const externals = Array.isArray(s.externals) ? s.externals : [];
-const extCmd = (name) => (name === 'codex' ? 'codex exec "<domanda>"' : `${name} -p "<domanda>"`);
+const extCmd = (name) => (name === 'codex' ? 'codex exec --skip-git-repo-check "<domanda>"' : `${name} -p "<domanda>"`);
 const extCmds = externals.map(extCmd).join(' oppure ');
 const extPlanHint = externals.length
   ? ` Poi sottoponi il piano a un modello esterno per una critica indipendente (es. ${extCmds}, passandogli task e piano) e integra le osservazioni fondate.`
