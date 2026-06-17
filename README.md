@@ -331,6 +331,12 @@ aggiornare basta il pannello `/plugin`.
 - **`URL rejected: Malformed input to a URL function`**: sono stati incollati più
   comandi nello stesso invio; eseguirli uno alla volta.
 
+## Sviluppo
+
+- Storico delle modifiche con le motivazioni: [`CHANGELOG.md`](CHANGELOG.md)
+- Invarianti e trappole da conoscere prima di rivedere/modificare gli script:
+  [`docs/REVIEW-NOTES.md`](docs/REVIEW-NOTES.md)
+
 ## Disinstallazione
 
 - Plugin: disinstallare dal pannello `/plugin` (o disattivarlo con il toggle).
