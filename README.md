@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.10.0-blue)
+![versione](https://img.shields.io/badge/versione-1.11.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -266,10 +266,21 @@ node <perseveranza>/scripts/omc-loop.mjs hud off     # ripristina la statusline 
 node <perseveranza>/scripts/omc-loop.mjs hud status  # mostra stato e base salvata
 ```
 
-`hud on` salva la statusline esistente come *base* in `~/.perseveranza/config.json`, ripunta
-`statusLine` in `settings.json` (con backup) allo script di perseveranza, e questo richiama
-la base con lo stesso input: quando un loop è armato vede il segmento `⟳ PRS …`, altrimenti
-solo la base. Fuori da un progetto armato la HUD è invisibile. Reversibile con `hud off`.
+`hud on` salva la statusline esistente come *base* in `~/.perseveranza/config.json`, installa
+un wrapper stabile in `~/.perseveranza/statusline-hud.mjs` (così il path in `settings.json`
+non cambia quando il plugin si aggiorna: il wrapper risolve sempre la versione più recente),
+ripunta `statusLine` (con backup) e richiama la base con lo stesso input: quando un loop è
+armato vede il segmento `⟳ PRS …`, altrimenti solo la base. Fuori da un progetto armato la
+HUD è invisibile. Reversibile con `hud off`.
+
+## Notifica aggiornamenti
+
+Come fa OMC, perseveranza segnala quando esiste una versione più recente. Un controllo
+giornaliero (in cache in `~/.perseveranza/update-check.json`, eseguito in un processo
+distaccato così non rallenta nulla) confronta la versione installata con l'ultima su GitHub.
+Se c'è un aggiornamento, lo vedi: all'`arm` (`⬆ Nuova versione vX … aggiorna da /plugin`),
+nell'header di ogni istruzione (`· ⬆ vX (/plugin)`) e nella statusline (`⬆vX`). Per
+aggiornare basta il pannello `/plugin`.
 
 ## Reti di sicurezza
 

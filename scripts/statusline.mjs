@@ -4,10 +4,14 @@
 // la base viene catturata da `omc-loop.mjs hud on` e richiamata qui con lo stesso stdin.
 // Dormiente fuori da un progetto armato: stampa solo l'output della base.
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { loadConfig } from './providers.mjs';
 import { renderProgress } from './hud.mjs';
+import { maybeSpawnRefresh, updateAvailable } from './update.mjs';
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 // Claude Code passa su stdin il JSON di sessione (contiene la cwd)
 let raw = '';
@@ -33,6 +37,10 @@ if (existsSync(statePath)) {
     const planPath = join(cwd, '.omc-loop', 'plan.md');
     const planText = existsSync(planPath) ? readFileSync(planPath, 'utf8') : '';
     seg = renderProgress(s, planText, { color: true, marker: true });
+    // notifica aggiornamenti: marker compatto se c'e' una versione piu' nuova
+    maybeSpawnRefresh(SCRIPT_DIR);
+    const upd = updateAvailable(join(SCRIPT_DIR, '..'));
+    if (upd) seg += ` \x1b[1;33m⬆v${upd}\x1b[0m`;
   } catch { /* stato illeggibile: niente segmento */ }
 }
 

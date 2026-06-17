@@ -30,6 +30,8 @@ const drivePath = join(hooksDir, 'loop-drive.mjs');
 const providersPath = join(hooksDir, 'providers.mjs');
 const hudPath = join(hooksDir, 'hud.mjs');
 const statuslinePath = join(hooksDir, 'statusline.mjs');
+const resolverPath = join(hooksDir, 'statusline-resolver.mjs');
+const updatePath = join(hooksDir, 'update.mjs');
 const AGENTS = ['pf-reviewer.md', 'pf-verifier.md', 'pf-executor.md'];
 
 function loadSettings() {
@@ -57,7 +59,7 @@ function saveSettings(settings) {
 }
 
 if (uninstall) {
-  const toRemove = [loopPath, drivePath, providersPath, hudPath, statuslinePath, join(hooksDir, 'omc-loop.ps1'), join(hooksDir, 'loop-drive.ps1'), join(commandsDir, 'perseveranza.md')];
+  const toRemove = [loopPath, drivePath, providersPath, hudPath, statuslinePath, resolverPath, updatePath, join(hooksDir, 'omc-loop.ps1'), join(hooksDir, 'loop-drive.ps1'), join(commandsDir, 'perseveranza.md')];
   toRemove.push(...AGENTS.map((a) => join(agentsDir, a)));
   for (const p of toRemove) {
     if (existsSync(p)) { rmSync(p); console.log(`Rimosso: ${p}`); }
@@ -81,6 +83,8 @@ copyFileSync(join(src, 'scripts', 'loop-drive.mjs'), drivePath);
 copyFileSync(join(src, 'scripts', 'providers.mjs'), providersPath); // registro dei modelli esterni
 copyFileSync(join(src, 'scripts', 'hud.mjs'), hudPath);             // rendering del progresso
 copyFileSync(join(src, 'scripts', 'statusline.mjs'), statuslinePath); // statusline componibile
+copyFileSync(join(src, 'scripts', 'statusline-resolver.mjs'), resolverPath); // wrapper stabile HUD
+copyFileSync(join(src, 'scripts', 'update.mjs'), updatePath);       // notifica aggiornamenti
 // il comando del plugin usa ${CLAUDE_PLUGIN_ROOT}: nell'installazione manuale
 // va riscritto col path assoluto degli script copiati
 const cmd = readFileSync(join(src, 'commands', 'perseveranza.md'), 'utf8')

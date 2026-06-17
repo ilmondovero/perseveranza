@@ -18,12 +18,15 @@
 //   node ... hud on|off|status             statusline live del progresso (si compone con quella esistente)
 //   node ... status | disarm
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, copyFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { detectAvailable, askProvider, providerModels, effectiveEnv, loadConfig, CONFIG_PATH, PROVIDERS } from './providers.mjs';
+import { maybeSpawnRefresh, updateAvailable } from './update.mjs';
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 const gateDir = join(process.cwd(), '.omc-loop');
 const statePath = join(gateDir, 'state.json');
@@ -161,6 +164,9 @@ switch (action) {
     }
     if (testCmd) console.log(`Suite di test configurata: ${testCmd} (il claim-done richiedera' un run verde fresco via verbo test)`);
     console.log("Fase iniziale: plan. Scrivi il piano in .omc-loop/plan.md come checklist '- [ ] step', poi fermati: da li' guida lo Stop hook.");
+    maybeSpawnRefresh(SCRIPT_DIR);
+    const upd = updateAvailable(join(SCRIPT_DIR, '..'));
+    if (upd) console.log(`⬆ Nuova versione v${upd} di perseveranza disponibile — aggiorna da /plugin`);
     break;
   }
   case 'report': {
@@ -253,9 +259,12 @@ switch (action) {
     const sub = (value || 'status').toLowerCase();
     const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
     const settingsPath = join(claudeDir, 'settings.json');
-    const statuslinePath = join(dirname(fileURLToPath(import.meta.url)), 'statusline.mjs');
-    const ourCmd = `node "${statuslinePath.replace(/\\/g, '/')}"`;
-    const isOurs = (cmd) => typeof cmd === 'string' && cmd.includes('statusline.mjs');
+    // wrapper STABILE in ~/.perseveranza/: il path in settings.json non cambia agli update
+    // del plugin (la cache e' versionata). Il resolver trova la statusline.mjs piu' recente.
+    const wrapper = join(homedir(), '.perseveranza', 'statusline-hud.mjs');
+    const resolverSrc = join(SCRIPT_DIR, 'statusline-resolver.mjs');
+    const ourCmd = `node "${wrapper.replace(/\\/g, '/')}"`;
+    const isOurs = (cmd) => typeof cmd === 'string' && /statusline(-hud|-resolver)?\.mjs/.test(cmd);
     const readSettings = () => { try { return JSON.parse(readFileSync(settingsPath, 'utf8')) || {}; } catch { return {}; } };
     const readCfg = () => { try { return JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) || {}; } catch { return {}; } };
     const writeCfg = (c) => { mkdirSync(dirname(CONFIG_PATH), { recursive: true }); writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2)); };
@@ -266,6 +275,8 @@ switch (action) {
       if (!isOurs(cur)) { // non sovrascrivere la base con noi stessi (evita ricorsione)
         const cfg = readCfg(); cfg.statusline = { ...(cfg.statusline || {}), base: cur || '' }; writeCfg(cfg);
       }
+      mkdirSync(dirname(wrapper), { recursive: true });
+      copyFileSync(resolverSrc, wrapper); // resolver stabile, indipendente dalla versione
       st.statusLine = { type: 'command', command: ourCmd };
       mkdirSync(claudeDir, { recursive: true });
       if (existsSync(settingsPath)) writeFileSync(`${settingsPath}.bak-perseveranza-hud`, readFileSync(settingsPath));
@@ -278,6 +289,7 @@ switch (action) {
       if (base) st.statusLine = { type: 'command', command: base }; else delete st.statusLine;
       mkdirSync(claudeDir, { recursive: true });
       writeFileSync(settingsPath, JSON.stringify(st, null, 2));
+      try { rmSync(wrapper); } catch { /* gia' assente */ }
       const cfg = readCfg();
       if (cfg.statusline) { delete cfg.statusline.base; if (!Object.keys(cfg.statusline).length) delete cfg.statusline; writeCfg(cfg); }
       console.log(`HUD perseveranza DISATTIVATO. Statusline ripristinata: ${base || '(nessuna)'}`);
@@ -286,7 +298,7 @@ switch (action) {
       console.log(`Statusline attuale: ${cur}`);
       console.log(`HUD perseveranza:   ${isOurs(cur) ? 'ATTIVO' : 'non attivo'}`);
       console.log(`Base salvata:       ${readCfg().statusline?.base || '(nessuna)'}`);
-      console.log(`Script:             ${statuslinePath}`);
+      console.log(`Wrapper:            ${wrapper}`);
       console.log('Uso: hud on | off | status');
     }
     break;

@@ -23,8 +23,10 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { renderProgress } from './hud.mjs';
+import { maybeSpawnRefresh, updateAvailable } from './update.mjs';
 
-const LOOP = `node "${join(dirname(fileURLToPath(import.meta.url)), 'omc-loop.mjs')}"`;
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const LOOP = `node "${join(SCRIPT_DIR, 'omc-loop.mjs')}"`;
 
 // notifica desktop cross-platform; in ultima istanza silenziosa (e' solo comodita')
 function notify(title, msg) {
@@ -164,9 +166,12 @@ if (phase === 'review') {
 // progresso compatto come header dell'istruzione iniettata (mini-HUD, testo semplice).
 // iterations+1 = l'iterazione che sta per partire (il contatore si incrementa a fine hook).
 const planText = existsSync(planPath) ? readFileSync(planPath, 'utf8') : '';
+// controllo aggiornamenti (cache giornaliera, refresh distaccato: non rallenta l'hook)
+maybeSpawnRefresh(SCRIPT_DIR);
+const upd = updateAvailable(join(SCRIPT_DIR, '..'));
 // funzione (non costante): valutata al momento di ogni istruzione, cosi' riflette la fase
 // che il routing ha appena impostato (evita l'off-by-one della fase "da cui si esce").
-const header = () => `[perseveranza · ${renderProgress({ ...s, iterations: s.iterations + 1 }, planText)}] Task: ${s.task}.`;
+const header = () => `[perseveranza · ${renderProgress({ ...s, iterations: s.iterations + 1 }, planText)}${upd ? ` · ⬆ v${upd} (/plugin)` : ''}] Task: ${s.task}.`;
 let reason = null;
 
 // routing dei modelli per fase in base alla complessita' registrata da Claude
