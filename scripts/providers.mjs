@@ -71,7 +71,10 @@ export const PROVIDERS = {
     // `ask ollama-cloud` interroga TUTTI i modelli elencati (un artefatto a testa).
     // Default recente e forte (override con OLLAMA_MODEL). I modelli cloud vengono ritirati
     // nel tempo: la lista reale e' su https://ollama.com/search?c=cloud (o GET /v1/models).
-    models: (env) => (env.OLLAMA_MODEL || 'glm-5.2').split(',').map((m) => m.trim()).filter(Boolean),
+    models: (env) => {
+      const list = (env.OLLAMA_MODEL || 'glm-5.2').split(',').map((m) => m.trim()).filter(Boolean);
+      return list.length ? list : ['glm-5.2']; // OLLAMA_MODEL="," o " " -> niente lista vuota
+    },
     host: (env) => (env.OLLAMA_HOST || 'https://ollama.com').replace(/\/+$/, ''),
   },
 };
@@ -90,10 +93,19 @@ async function askHttpOllama(p, prompt, env, timeoutMs, model) {
   const key = env.OLLAMA_API_KEY;
   if (!key) return { ok: false, model: m, output: "OLLAMA_API_KEY non impostata nell'ambiente locale." };
   const host = p.host(env);
+  // valida l'host PRIMA di spedire la chiave: niente schema strano (la chiave esce solo verso http(s))
+  let endpoint;
+  try {
+    const u = new URL(`${host}/api/chat`);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('schema non http(s)');
+    endpoint = u.toString();
+  } catch {
+    return { ok: false, model: m, output: `OLLAMA_HOST non valido (atteso http/https): ${host}` };
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${host}/api/chat`, {
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: m, stream: false, messages: [{ role: 'user', content: prompt }] }),

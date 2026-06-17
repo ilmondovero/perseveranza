@@ -50,6 +50,7 @@ function gitFinish(cwd, task) {
   if (inside.status !== 0 || String(inside.stdout).trim() !== 'true') return { ran: false };
   git(['add', '-A']);
   git(['reset', '-q', '--', '.omc-loop']); // non committare mai lo stato del loop
+  // (ridondante con .gitignore, ma resta come rete di sicurezza se .omc-loop fosse gia' tracciato)
   const msg = `perseveranza: ${task || 'progetto completato'}`;
   const commit = git(['commit', '-m', msg]); // su un retry puo' dire "nothing to commit": va bene
   const push = git(['push']);

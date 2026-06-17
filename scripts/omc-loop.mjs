@@ -62,6 +62,14 @@ function saveState(s) {
   writeFileSync(statePath, JSON.stringify(s, null, 2));
 }
 
+// prompt/comando dopo `--` sulla command line (condiviso da `ask` e `test`)
+function argsAfterDoubleDash() {
+  const sep = process.argv.indexOf('--');
+  return sep !== -1 && process.argv.length > sep + 1 ? process.argv.slice(sep + 1).join(' ') : '';
+}
+// rende una stringa sicura come componente di nome file (no path traversal, no separatori)
+const fileSafe = (x) => String(x).replace(/[^a-z0-9._-]/gi, '-');
+
 // verbo `ask`: interroga un modello esterno (via providers.mjs) e PERSISTE il parere come
 // artefatto in .omc-loop/external-<slot>.md (prompt + risposta), echeggiandolo anche a schermo.
 // E' async (ollama-cloud usa fetch): gestito fuori dallo switch sincrono.
@@ -73,10 +81,10 @@ if (action === 'ask') {
     console.log('Uso: ask <provider> <slot> -- <prompt>   (oppure: <prompt> | ask <provider> <slot>)');
     process.exit(1);
   }
-  const slot = (slotRaw.replace(/[^a-z0-9_-]/gi, '').toLowerCase()) || 'misc';
-  const sep = process.argv.indexOf('--');
-  let prompt = sep !== -1 && process.argv.length > sep + 1 ? process.argv.slice(sep + 1).join(' ') : '';
-  if (!prompt) { try { prompt = readFileSync(0, 'utf8'); } catch { /* niente stdin */ } }
+  const slot = fileSafe(slotRaw).toLowerCase() || 'misc';
+  let prompt = argsAfterDoubleDash();
+  // stdin solo se NON e' un TTY interattivo: altrimenti readFileSync(0) bloccherebbe in attesa di EOF
+  if (!prompt && !process.stdin.isTTY) { try { prompt = readFileSync(0, 'utf8'); } catch { /* niente stdin */ } }
   prompt = (prompt || '').trim();
   if (!prompt) { console.log('Prompt vuoto: passalo dopo -- oppure via stdin.'); process.exit(1); }
   const s = loadState();
@@ -88,7 +96,6 @@ if (action === 'ask') {
   // ogni modello produce un artefatto separato, cosi' i pareri non si sovrascrivono
   const provEnv = effectiveEnv(process.env); // env reale + file di config
   const models = providerModels(provider, provEnv);
-  const safe = (x) => String(x).replace(/[^a-z0-9._-]/gi, '-');
   const ts = new Date().toISOString();
   let anyOk = false;
   for (const m of models) {
@@ -96,7 +103,7 @@ if (action === 'ask') {
     const r = await askProvider(provider, prompt, { env: provEnv, model: m });
     anyOk = anyOk || r.ok;
     const label = r.model && r.model !== provider ? `${provider} (${r.model})` : provider;
-    const file = join(gateDir, `external-${slot}-${safe(provider)}${m ? `-${safe(m)}` : ''}.md`);
+    const file = join(gateDir, `external-${slot}-${fileSafe(provider)}${m ? `-${fileSafe(m)}` : ''}.md`);
     const doc = `# Parere esterno - ${label}\n\n`
       + `- slot: ${slot}\n- quando: ${ts}\n- esito: ${r.ok ? 'ok' : 'ERRORE'}\n\n`
       + `## Prompt\n\n${prompt}\n\n## Risposta\n\n${r.output}\n`;
@@ -171,10 +178,7 @@ switch (action) {
   }
   case 'test': {
     const s = loadState();
-    const sep = process.argv.indexOf('--');
-    const cmd = sep !== -1 && process.argv.length > sep + 1
-      ? process.argv.slice(sep + 1).join(' ')
-      : (s.testCmd || '');
+    const cmd = argsAfterDoubleDash() || (s.testCmd || '');
     if (!cmd) { console.log("Uso: test -- <comando> (oppure configura --test all'arm)"); process.exit(1); }
     console.log(`Eseguo: ${cmd}`);
     // esegue il comando in prima persona e registra l'exit code REALE: la prova non e' autodichiarata
