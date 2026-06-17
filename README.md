@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.6.0-blue)
+![versione](https://img.shields.io/badge/versione-1.7.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -88,9 +88,10 @@ una nuova versione.
 - **Nessuna dipendenza da altri plugin**: gli agenti del ciclo (`pf-reviewer`,
   `pf-verifier`, `pf-executor`) sono inclusi. Se hai oh-my-claudecode i suoi agenti
   restano usabili, ma non servono
-- Opzionali, auto-rilevati: CLI di modelli esterni (`codex`, `gemini`, e `agy` solo su
-  macOS/Linux — su Windows la sua print mode è inutilizzabile, bug noto gemini-cli#27466)
-  per il secondo parere indipendente
+- Opzionali, auto-rilevati per il secondo parere indipendente: CLI di modelli esterni
+  (`codex`, `gemini`, e `agy` solo su macOS/Linux — su Windows la sua print mode è
+  inutilizzabile, bug noto gemini-cli#27466) e/o `ollama-cloud` via API (basta esportare
+  `OLLAMA_API_KEY`; modello con `OLLAMA_MODEL`, default `qwen3-coder:480b`)
 - Notifiche desktop (opzionali, fallback silenzioso): BurntToast su Windows
   (`Install-Module BurntToast`, senza: beep), `osascript` su macOS (già presente),
   `notify-send` su Linux (pacchetto `libnotify`)
@@ -195,9 +196,15 @@ qualche motivo non sono disponibili, il loop ripiega su subagent generici.
 
 ## Confronto con modelli esterni
 
-All'arm vengono auto-rilevate le CLI di modelli esterni presenti sulla macchina
-(`codex`, `gemini`, e `agy` solo su macOS/Linux). Se ce n'è almeno una, il ciclo aggiunge un secondo
-parere indipendente nei tre punti a maggior leva, senza costare iterazioni:
+All'arm vengono auto-rilevati i modelli esterni disponibili sulla macchina. Il registro
+dei provider è centralizzato in `scripts/providers.mjs` (unica fonte di verità: come si
+rilevano, come si interrogano, quale modello/chiave usano), con due trasporti:
+
+- **CLI locali**: `codex`, `gemini`, e `agy` (solo su macOS/Linux); rilevate via `where`/`which`;
+- **API remota**: `ollama-cloud`, rilevata se è presente la chiave in `OLLAMA_API_KEY`.
+
+Se c'è almeno un provider, il ciclo aggiunge un secondo parere indipendente nei tre punti
+a maggior leva, senza costare iterazioni:
 
 - **piano**: critica del piano prima di iniziare a implementare;
 - **fix ripetuti**: dal secondo fallimento consecutivo sullo stesso step, diagnosi
@@ -205,7 +212,17 @@ parere indipendente nei tre punti a maggior leva, senza costare iterazioni:
 - **gate finale**: falsificazione del lavoro chiesta anche al modello esterno, oltre che
   al subagent avversariale.
 
-Senza CLI esterne il ciclo è identico, solo senza questi confronti. Disattivabile con
+Ogni parere è eseguito dal verbo `omc-loop.mjs ask <provider> <slot>` (il prompt va su
+stdin, così non finisce mai sulla command line: niente problemi di quoting/escape) che
+**salva l'output** in `.omc-loop/external-<slot>.md` (`plan`/`fix`/`verify`): artefatti
+persistenti e auditabili, rimossi al disarm e mai committati.
+
+**ollama-cloud** (modelli grossi via API): la chiave sta **solo** in `OLLAMA_API_KEY`
+(variabile d'ambiente locale, mai nel repo). Il modello è scelto con `OLLAMA_MODEL`
+(default `qwen3-coder:480b`; altri validi: `deepseek-v3.1:671b`, `gpt-oss:120b`) e l'host
+con `OLLAMA_HOST` (default `https://ollama.com`).
+
+Senza provider esterni il ciclo è identico, solo senza questi confronti. Disattivabile con
 `--external off`.
 
 ## Reti di sicurezza

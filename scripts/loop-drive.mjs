@@ -177,16 +177,18 @@ const implHint = s.complexity === 'high'
 
 // confronto con modelli esterni (solo se rilevati all'arm) + lente security + commit per step
 const externals = Array.isArray(s.externals) ? s.externals : [];
-const extCmd = (name) => (name === 'codex' ? 'codex exec --skip-git-repo-check "<domanda>"' : `${name} -p "<domanda>"`);
-const extCmds = externals.map(extCmd).join(' oppure ');
+const extList = externals.join(', ');
+// il verbo `ask` centralizza i flag per-CLI (e l'HTTP di ollama-cloud), esegue il modello e
+// SALVA il parere in .omc-loop/external-<slot>.md: artefatto persistente e auditabile.
+const askHint = (slot) => `${LOOP} ask <provider> ${slot} -- "<prompt>" (provider tra: ${extList}; per prompt lunghi passa via stdin: ... | ${LOOP} ask <provider> ${slot})`;
 const extPlanHint = externals.length
-  ? ` Poi sottoponi il piano a un modello esterno per una critica indipendente (es. ${extCmds}, passandogli task e piano) e integra le osservazioni fondate.`
+  ? ` Poi chiedi a un modello esterno una critica indipendente del piano con ${askHint('plan')}, passandogli task e piano; integra le osservazioni fondate (parere salvato in .omc-loop/external-plan.md).`
   : '';
 const extFixHint = externals.length
-  ? ` Prima di riprovare, chiedi una diagnosi indipendente a un modello esterno (es. ${extCmds}) descrivendo il problema che continua a fallire.`
+  ? ` Prima di riprovare, chiedi una diagnosi indipendente a un modello esterno con ${askHint('fix')}, descrivendo il problema che continua a fallire (salvata in .omc-loop/external-fix.md).`
   : '';
 const extVerifyHint = externals.length
-  ? ` In aggiunta al subagent, chiedi a un modello esterno di provare a falsificare il lavoro (es. ${extCmds}, passandogli piano e diff) e pesa i suoi findings nella decisione.`
+  ? ` In aggiunta al subagent, chiedi a un modello esterno di falsificare il lavoro con ${askHint('verify')}, passandogli piano e diff; pesa i suoi findings (salvati in .omc-loop/external-verify.md).`
   : '';
 const secHint = s.complexity === 'high'
   ? ' Includi una lente security: secrets nel codice, input non fidati, injection, path traversal.'

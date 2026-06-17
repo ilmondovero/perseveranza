@@ -11,12 +11,15 @@
 //   node ... report pass|fail              esito della fase corrente (review / verifica finale)
 //   node ... complexity low|medium|high    registra la complessita' del task (instrada i modelli)
 //   node ... claim-done                    dichiara il progetto completo -> innesca la verifica finale
+//   node ... ask <provider> <slot> -- <prompt>   interroga un modello esterno e SALVA il parere
+//                                          in .omc-loop/external-<slot>.md (prompt anche via stdin)
 //   node ... pause | resume                sospende / riprende il loop (es. serve input dell'utente)
 //   node ... status | disarm
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { detectAvailable, askProvider, PROVIDERS } from './providers.mjs';
 
 const gateDir = join(process.cwd(), '.omc-loop');
 const statePath = join(gateDir, 'state.json');
@@ -58,6 +61,44 @@ function saveState(s) {
   writeFileSync(statePath, JSON.stringify(s, null, 2));
 }
 
+// verbo `ask`: interroga un modello esterno (via providers.mjs) e PERSISTE il parere come
+// artefatto in .omc-loop/external-<slot>.md (prompt + risposta), echeggiandolo anche a schermo.
+// E' async (ollama-cloud usa fetch): gestito fuori dallo switch sincrono.
+if (action === 'ask') {
+  if (!existsSync(statePath)) { console.log('OMC-loop NON armato in questo progetto.'); process.exit(1); }
+  const provider = argv[1];
+  const slotRaw = argv[2];
+  if (!provider || !slotRaw) {
+    console.log('Uso: ask <provider> <slot> -- <prompt>   (oppure: <prompt> | ask <provider> <slot>)');
+    process.exit(1);
+  }
+  const slot = (slotRaw.replace(/[^a-z0-9_-]/gi, '').toLowerCase()) || 'misc';
+  const sep = process.argv.indexOf('--');
+  let prompt = sep !== -1 && process.argv.length > sep + 1 ? process.argv.slice(sep + 1).join(' ') : '';
+  if (!prompt) { try { prompt = readFileSync(0, 'utf8'); } catch { /* niente stdin */ } }
+  prompt = (prompt || '').trim();
+  if (!prompt) { console.log('Prompt vuoto: passalo dopo -- oppure via stdin.'); process.exit(1); }
+  const s = loadState();
+  const externals = Array.isArray(s.externals) ? s.externals : [];
+  if (externals.length && !externals.includes(provider)) {
+    console.log(`Nota: '${provider}' non e' tra i provider rilevati all'arm (${externals.join(', ') || 'nessuno'}). Provo comunque.`);
+  }
+  console.log(`Interrogo ${provider} (slot: ${slot})...`);
+  const r = await askProvider(provider, prompt, { env: process.env });
+  const ts = new Date().toISOString();
+  const doc = `# Parere esterno - ${provider}${r.model && r.model !== provider ? ` (${r.model})` : ''}\n\n`
+    + `- slot: ${slot}\n- quando: ${ts}\n- esito: ${r.ok ? 'ok' : 'ERRORE'}\n\n`
+    + `## Prompt\n\n${prompt}\n\n## Risposta\n\n${r.output}\n`;
+  try {
+    writeFileSync(join(gateDir, `external-${slot}.md`), doc);
+    console.log(`[salvato in .omc-loop/external-${slot}.md]\n`);
+  } catch (e) {
+    console.log(`[impossibile salvare l'artefatto: ${e.message}]\n`);
+  }
+  console.log(r.output);
+  process.exit(r.ok ? 0 : 1);
+}
+
 switch (action) {
   case 'arm': {
     if (!value) { console.log('Manca la descrizione del task: arm "<task>"'); process.exit(1); }
@@ -65,14 +106,14 @@ switch (action) {
       console.log('Valore non valido per --complexity: usare low|medium|high'); process.exit(1);
     }
     if (!existsSync(gateDir)) mkdirSync(gateDir, { recursive: true });
-    // CLI di modelli esterni disponibili su questa macchina (per il confronto indipendente)
-    const probe = (name) =>
+    // modelli esterni disponibili su questa macchina (per il confronto indipendente):
+    // CLI presenti (codex/gemini/agy) o API con chiave locale (ollama-cloud). La logica di
+    // rilevamento e i flag stanno tutti in providers.mjs (unica fonte di verita').
+    const has = (name) =>
       spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore', timeout: 4000 }).status === 0;
-    // agy (Antigravity CLI): la print mode `-p` non scrive su stdout in headless su Windows
-    // (bug noto google-gemini/gemini-cli#27466, text_drip.go non fa flush non-TTY) -> escluso su win32
-    const candidates = ['codex', 'gemini'];
-    if (process.platform !== 'win32') candidates.push('agy');
-    const externals = external === 'off' ? [] : candidates.filter(probe);
+    const externals = external === 'off'
+      ? []
+      : detectAvailable({ has, env: process.env, platform: process.platform });
     saveState({
       task: value,
       phase: 'plan',                       // plan -> implement -> review -> ... -> cleanup -> final-verify
@@ -95,6 +136,9 @@ switch (action) {
     });
     console.log(`OMC-loop ARMATO (max ${max} iterazioni, ${maxRetries} retry per step${commitSteps ? ', commit per step' : ''}). Task: ${value}`);
     console.log(`Modelli esterni per il confronto: ${externals.length ? externals.join(', ') : 'nessuno'}`);
+    if (externals.includes('ollama-cloud')) {
+      console.log(`  ollama-cloud: modello ${PROVIDERS['ollama-cloud'].model(process.env)} (override con OLLAMA_MODEL; host ${PROVIDERS['ollama-cloud'].host(process.env)})`);
+    }
     if (testCmd) console.log(`Suite di test configurata: ${testCmd} (il claim-done richiedera' un run verde fresco via verbo test)`);
     console.log("Fase iniziale: plan. Scrivi il piano in .omc-loop/plan.md come checklist '- [ ] step', poi fermati: da li' guida lo Stop hook.");
     break;

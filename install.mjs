@@ -27,6 +27,7 @@ const agentsDir = join(claudeDir, 'agents');
 const settingsPath = join(claudeDir, 'settings.json');
 const loopPath = join(hooksDir, 'omc-loop.mjs');
 const drivePath = join(hooksDir, 'loop-drive.mjs');
+const providersPath = join(hooksDir, 'providers.mjs');
 const AGENTS = ['pf-reviewer.md', 'pf-verifier.md', 'pf-executor.md'];
 
 function loadSettings() {
@@ -54,7 +55,7 @@ function saveSettings(settings) {
 }
 
 if (uninstall) {
-  const toRemove = [loopPath, drivePath, join(hooksDir, 'omc-loop.ps1'), join(hooksDir, 'loop-drive.ps1'), join(commandsDir, 'perseveranza.md')];
+  const toRemove = [loopPath, drivePath, providersPath, join(hooksDir, 'omc-loop.ps1'), join(hooksDir, 'loop-drive.ps1'), join(commandsDir, 'perseveranza.md')];
   toRemove.push(...AGENTS.map((a) => join(agentsDir, a)));
   for (const p of toRemove) {
     if (existsSync(p)) { rmSync(p); console.log(`Rimosso: ${p}`); }
@@ -75,6 +76,7 @@ mkdirSync(hooksDir, { recursive: true });
 mkdirSync(commandsDir, { recursive: true });
 copyFileSync(join(src, 'scripts', 'omc-loop.mjs'), loopPath);
 copyFileSync(join(src, 'scripts', 'loop-drive.mjs'), drivePath);
+copyFileSync(join(src, 'scripts', 'providers.mjs'), providersPath); // registro dei modelli esterni
 // il comando del plugin usa ${CLAUDE_PLUGIN_ROOT}: nell'installazione manuale
 // va riscritto col path assoluto degli script copiati
 const cmd = readFileSync(join(src, 'commands', 'perseveranza.md'), 'utf8')
