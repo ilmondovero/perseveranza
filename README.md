@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.8.0-blue)
+![versione](https://img.shields.io/badge/versione-1.9.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -91,8 +91,9 @@ una nuova versione.
 - Opzionali, auto-rilevati per il secondo parere indipendente: CLI di modelli esterni
   (`codex`, `gemini`, e `agy` solo su macOS/Linux — su Windows la sua print mode è
   inutilizzabile, bug noto gemini-cli#27466) e/o `ollama-cloud` via API (basta esportare
-  `OLLAMA_API_KEY`; modelli con `OLLAMA_MODEL`, anche una lista separata da virgole per
-  interrogarne più d'uno in un colpo; default `glm-5.2`)
+  chiave nel file `~/.perseveranza/config.json` o in `OLLAMA_API_KEY`; modelli con `model`/
+  `OLLAMA_MODEL`, anche una lista separata da virgole per interrogarne più d'uno in un
+  colpo; default `glm-5.2`)
 - Notifiche desktop (opzionali, fallback silenzioso): BurntToast su Windows
   (`Install-Module BurntToast`, senza: beep), `osascript` su macOS (già presente),
   `notify-send` su Linux (pacchetto `libnotify`)
@@ -219,12 +220,20 @@ stdin, così non finisce mai sulla command line: niente problemi di quoting/esca
 (`plan`/`fix`/`verify`): artefatti persistenti e auditabili, rimossi al disarm e mai
 committati. Più pareri (provider o modelli diversi) coesistono senza sovrascriversi.
 
-**ollama-cloud** (modelli grossi via API): la chiave sta **solo** in `OLLAMA_API_KEY`
-(variabile d'ambiente locale, mai nel repo). I modelli si scelgono con `OLLAMA_MODEL`, che
-può essere una **lista separata da virgole**: in tal caso una sola `ask ollama-cloud`
-interroga *tutti* i modelli elencati, uno per artefatto (es.
-`OLLAMA_MODEL="glm-5.2,kimi-k2.7-code"`). Default `glm-5.2`; l'host si cambia con
-`OLLAMA_HOST` (default `https://ollama.com`). I modelli cloud vengono ritirati nel tempo:
+**ollama-cloud** (modelli grossi via API): la chiave **non sta mai nel repo**. La metti in
+un **file di config fuori dal repo**, `~/.perseveranza/config.json` (consigliato: niente
+`setx`, nessun riavvio di shell), oppure nella variabile d'ambiente `OLLAMA_API_KEY`:
+
+```json
+{ "ollama": { "apiKey": "<la-tua-chiave>", "model": "glm-5.2,kimi-k2.7-code" } }
+```
+
+I modelli si scelgono con `model` nel file (o `OLLAMA_MODEL`), che può essere una **lista
+separata da virgole**: in tal caso una sola `ask ollama-cloud` interroga *tutti* i modelli
+elencati, uno per artefatto. Default `glm-5.2`; l'host si cambia con `host`/`OLLAMA_HOST`
+(default `https://ollama.com`). Precedenza: **variabile d'ambiente > file > default**.
+Ispeziona la config effettiva (senza esporre la chiave) con `omc-loop.mjs config`. I
+modelli cloud vengono ritirati nel tempo:
 la lista reale è su <https://ollama.com/search?c=cloud> (o `GET /v1/models`).
 
 Senza provider esterni il ciclo è identico, solo senza questi confronti. Disattivabile con

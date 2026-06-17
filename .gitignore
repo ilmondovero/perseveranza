@@ -1,0 +1,8 @@
+# stato locale del loop e della sessione OMC (mai da committare)
+.omc/
+.omc-loop/
+
+# config locali con segreti: la config vera vive FUORI dal repo (~/.perseveranza/config.json)
+.perseveranza/
+*.local.json
+config.local.json

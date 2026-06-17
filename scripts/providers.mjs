@@ -10,6 +10,33 @@
 // locale), non viene mai scritta su disco ne' negli artefatti ne' nel repo.
 
 import { spawnSync } from 'node:child_process';
+import { readFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+// File di configurazione locale (FUORI dal repo, nel profilo utente): tiene la chiave e i
+// modelli senza doverli mettere tra le variabili d'ambiente (niente `setx`/riavvio shell).
+// Formato:  { "ollama": { "apiKey": "...", "model": "glm-5.2,kimi-k2.7-code", "host": "..." } }
+// La chiave NON va mai nel repo: questo file vive in ~/.perseveranza/config.json.
+export const CONFIG_PATH = join(homedir(), '.perseveranza', 'config.json');
+
+export function loadConfig(path = CONFIG_PATH) {
+  try {
+    if (!existsSync(path)) return {};
+    return JSON.parse(readFileSync(path, 'utf8')) || {};
+  } catch { return {}; }
+}
+
+// env "effettivo" per i provider: parte dall'ambiente reale e RIEMPIE i buchi dal file.
+// Precedenza: variabile d'ambiente reale > file di config > default del registro.
+export function effectiveEnv(realEnv = {}, path = CONFIG_PATH) {
+  const o = (loadConfig(path).ollama) || {};
+  const m = { ...realEnv };
+  if (m.OLLAMA_API_KEY == null && o.apiKey) m.OLLAMA_API_KEY = String(o.apiKey);
+  if (m.OLLAMA_MODEL == null && o.model) m.OLLAMA_MODEL = String(o.model);
+  if (m.OLLAMA_HOST == null && o.host) m.OLLAMA_HOST = String(o.host);
+  return m;
+}
 
 export const PROVIDERS = {
   // NOTA invocazione CLI: il prompt viaggia SEMPRE su stdin, mai sulla command line.

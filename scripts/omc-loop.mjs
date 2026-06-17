@@ -14,12 +14,13 @@
 //   node ... ask <provider> <slot> -- <prompt>   interroga un modello esterno e SALVA il parere
 //                                          in .omc-loop/external-<slot>.md (prompt anche via stdin)
 //   node ... pause | resume                sospende / riprende il loop (es. serve input dell'utente)
+//   node ... config                        mostra la config dei modelli esterni (chiave/modelli da file o env)
 //   node ... status | disarm
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { detectAvailable, askProvider, providerModels, PROVIDERS } from './providers.mjs';
+import { detectAvailable, askProvider, providerModels, effectiveEnv, loadConfig, CONFIG_PATH, PROVIDERS } from './providers.mjs';
 
 const gateDir = join(process.cwd(), '.omc-loop');
 const statePath = join(gateDir, 'state.json');
@@ -85,13 +86,14 @@ if (action === 'ask') {
   }
   // un provider puo' espandere in piu' modelli (ollama-cloud con OLLAMA_MODEL = lista):
   // ogni modello produce un artefatto separato, cosi' i pareri non si sovrascrivono
-  const models = providerModels(provider, process.env);
+  const provEnv = effectiveEnv(process.env); // env reale + file di config
+  const models = providerModels(provider, provEnv);
   const safe = (x) => String(x).replace(/[^a-z0-9._-]/gi, '-');
   const ts = new Date().toISOString();
   let anyOk = false;
   for (const m of models) {
     console.log(`Interrogo ${provider}${m ? ` / ${m}` : ''} (slot: ${slot})...`);
-    const r = await askProvider(provider, prompt, { env: process.env, model: m });
+    const r = await askProvider(provider, prompt, { env: provEnv, model: m });
     anyOk = anyOk || r.ok;
     const label = r.model && r.model !== provider ? `${provider} (${r.model})` : provider;
     const file = join(gateDir, `external-${slot}-${safe(provider)}${m ? `-${safe(m)}` : ''}.md`);
@@ -117,9 +119,10 @@ switch (action) {
     // rilevamento e i flag stanno tutti in providers.mjs (unica fonte di verita').
     const has = (name) =>
       spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore', timeout: 4000 }).status === 0;
+    const provEnv = effectiveEnv(process.env); // env reale + file di config (~/.perseveranza/config.json)
     const externals = external === 'off'
       ? []
-      : detectAvailable({ has, env: process.env, platform: process.platform });
+      : detectAvailable({ has, env: provEnv, platform: process.platform });
     saveState({
       task: value,
       phase: 'plan',                       // plan -> implement -> review -> ... -> cleanup -> final-verify
@@ -143,8 +146,8 @@ switch (action) {
     console.log(`OMC-loop ARMATO (max ${max} iterazioni, ${maxRetries} retry per step${commitSteps ? ', commit per step' : ''}). Task: ${value}`);
     console.log(`Modelli esterni per il confronto: ${externals.length ? externals.join(', ') : 'nessuno'}`);
     if (externals.includes('ollama-cloud')) {
-      const ms = PROVIDERS['ollama-cloud'].models(process.env);
-      console.log(`  ollama-cloud: modell${ms.length > 1 ? 'i' : 'o'} ${ms.join(', ')} (lista in OLLAMA_MODEL separata da virgole; host ${PROVIDERS['ollama-cloud'].host(process.env)})`);
+      const ms = PROVIDERS['ollama-cloud'].models(provEnv);
+      console.log(`  ollama-cloud: modell${ms.length > 1 ? 'i' : 'o'} ${ms.join(', ')} (lista in OLLAMA_MODEL/config separata da virgole; host ${PROVIDERS['ollama-cloud'].host(provEnv)})`);
     }
     if (testCmd) console.log(`Suite di test configurata: ${testCmd} (il claim-done richiedera' un run verde fresco via verbo test)`);
     console.log("Fase iniziale: plan. Scrivi il piano in .omc-loop/plan.md come checklist '- [ ] step', poi fermati: da li' guida lo Stop hook.");
@@ -222,8 +225,23 @@ switch (action) {
     } else console.log('OMC-loop NON armato in questo progetto.');
     break;
   }
+  case 'config': {
+    // mostra la config effettiva dei modelli esterni SENZA mai stampare la chiave
+    const cfg = loadConfig();
+    const env = effectiveEnv(process.env);
+    const keySrc = process.env.OLLAMA_API_KEY ? "variabile d'ambiente"
+      : (cfg.ollama && cfg.ollama.apiKey) ? 'file di config' : null;
+    console.log(`File di config: ${CONFIG_PATH} ${existsSync(CONFIG_PATH) ? '(presente)' : '(assente)'}`);
+    console.log(`OLLAMA_API_KEY: ${env.OLLAMA_API_KEY ? `impostata (da ${keySrc})` : 'NON impostata'}`);
+    console.log(`Modelli ollama-cloud: ${PROVIDERS['ollama-cloud'].models(env).join(', ')}`);
+    console.log(`Host ollama-cloud:    ${PROVIDERS['ollama-cloud'].host(env)}`);
+    console.log('');
+    console.log('Per impostare chiave e modelli senza variabili d\'ambiente, crea il file sopra con:');
+    console.log('  { "ollama": { "apiKey": "<la-tua-chiave>", "model": "glm-5.2,kimi-k2.7-code" } }');
+    break;
+  }
   default: {
-    console.log(`Verbo sconosciuto: ${action}. Verbi: arm, report, complexity, claim-done, pause, resume, status, disarm.`);
+    console.log(`Verbo sconosciuto: ${action}. Verbi: arm, report, complexity, test, ask, claim-done, pause, resume, status, config, disarm.`);
     process.exit(1);
   }
 }
