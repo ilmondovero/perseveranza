@@ -15,10 +15,13 @@
 //                                          in .omc-loop/external-<slot>.md (prompt anche via stdin)
 //   node ... pause | resume                sospende / riprende il loop (es. serve input dell'utente)
 //   node ... config                        mostra la config dei modelli esterni (chiave/modelli da file o env)
+//   node ... hud on|off|status             statusline live del progresso (si compone con quella esistente)
 //   node ... status | disarm
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { detectAvailable, askProvider, providerModels, effectiveEnv, loadConfig, CONFIG_PATH, PROVIDERS } from './providers.mjs';
 
@@ -244,8 +247,52 @@ switch (action) {
     console.log('  { "ollama": { "apiKey": "<la-tua-chiave>", "model": "glm-5.2,kimi-k2.7-code" } }');
     break;
   }
+  case 'hud': {
+    // attiva/disattiva la statusline di perseveranza COMPONENDOLA con quella esistente
+    // (es. OMC HUD): la base viene salvata e ripristinata, niente sostituzione distruttiva.
+    const sub = (value || 'status').toLowerCase();
+    const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+    const settingsPath = join(claudeDir, 'settings.json');
+    const statuslinePath = join(dirname(fileURLToPath(import.meta.url)), 'statusline.mjs');
+    const ourCmd = `node "${statuslinePath.replace(/\\/g, '/')}"`;
+    const isOurs = (cmd) => typeof cmd === 'string' && cmd.includes('statusline.mjs');
+    const readSettings = () => { try { return JSON.parse(readFileSync(settingsPath, 'utf8')) || {}; } catch { return {}; } };
+    const readCfg = () => { try { return JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) || {}; } catch { return {}; } };
+    const writeCfg = (c) => { mkdirSync(dirname(CONFIG_PATH), { recursive: true }); writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2)); };
+
+    if (sub === 'on') {
+      const st = readSettings();
+      const cur = st.statusLine && st.statusLine.command;
+      if (!isOurs(cur)) { // non sovrascrivere la base con noi stessi (evita ricorsione)
+        const cfg = readCfg(); cfg.statusline = { ...(cfg.statusline || {}), base: cur || '' }; writeCfg(cfg);
+      }
+      st.statusLine = { type: 'command', command: ourCmd };
+      mkdirSync(claudeDir, { recursive: true });
+      if (existsSync(settingsPath)) writeFileSync(`${settingsPath}.bak-perseveranza-hud`, readFileSync(settingsPath));
+      writeFileSync(settingsPath, JSON.stringify(st, null, 2));
+      console.log(`HUD perseveranza ATTIVO. Statusline base preservata: ${readCfg().statusline?.base || '(nessuna)'}`);
+      console.log('Ricarica/riavvia Claude Code per vederlo. Disattiva con: hud off');
+    } else if (sub === 'off') {
+      const st = readSettings();
+      const base = readCfg().statusline?.base || '';
+      if (base) st.statusLine = { type: 'command', command: base }; else delete st.statusLine;
+      mkdirSync(claudeDir, { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify(st, null, 2));
+      const cfg = readCfg();
+      if (cfg.statusline) { delete cfg.statusline.base; if (!Object.keys(cfg.statusline).length) delete cfg.statusline; writeCfg(cfg); }
+      console.log(`HUD perseveranza DISATTIVATO. Statusline ripristinata: ${base || '(nessuna)'}`);
+    } else {
+      const cur = readSettings().statusLine?.command || '(nessuna)';
+      console.log(`Statusline attuale: ${cur}`);
+      console.log(`HUD perseveranza:   ${isOurs(cur) ? 'ATTIVO' : 'non attivo'}`);
+      console.log(`Base salvata:       ${readCfg().statusline?.base || '(nessuna)'}`);
+      console.log(`Script:             ${statuslinePath}`);
+      console.log('Uso: hud on | off | status');
+    }
+    break;
+  }
   default: {
-    console.log(`Verbo sconosciuto: ${action}. Verbi: arm, report, complexity, test, ask, claim-done, pause, resume, status, config, disarm.`);
+    console.log(`Verbo sconosciuto: ${action}. Verbi: arm, report, complexity, test, ask, claim-done, pause, resume, status, config, hud, disarm.`);
     process.exit(1);
   }
 }

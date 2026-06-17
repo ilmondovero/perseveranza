@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.9.1-blue)
+![versione](https://img.shields.io/badge/versione-1.10.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -238,6 +238,38 @@ la lista reale è su <https://ollama.com/search?c=cloud> (o `GET /v1/models`).
 
 Senza provider esterni il ciclo è identico, solo senza questi confronti. Disattivabile con
 `--external off`.
+
+## Stato di avanzamento (HUD)
+
+Il progresso del loop è visibile in due modi.
+
+**Header dell'istruzione** (sempre attivo, zero configurazione): ogni istruzione iniettata
+inizia con un mini-HUD compatto — fase corrente, barra degli step di `plan.md`,
+iterazione e contatori di retry/bocciature:
+
+```
+[perseveranza · ▸review · ▰▰▰▱▱ 3/5 · it7/25 · ↻1/3] Task: implementa X.
+```
+
+**Statusline live** (opt-in): una barra persistente che si aggiorna a ogni render,
+**componendosi** con la statusline che hai già (es. OMC HUD) invece di sostituirla:
+
+```
+⟳ PRS ▸review ▰▰▰▱▱ 3/5 · it7/25 │ ‹la tua statusline…›
+```
+
+Si attiva/disattiva con (dal prompt, col prefisso `!`, o eseguito da Claude):
+
+```
+node <perseveranza>/scripts/omc-loop.mjs hud on      # cattura la statusline attuale come base e attiva la HUD
+node <perseveranza>/scripts/omc-loop.mjs hud off     # ripristina la statusline precedente
+node <perseveranza>/scripts/omc-loop.mjs hud status  # mostra stato e base salvata
+```
+
+`hud on` salva la statusline esistente come *base* in `~/.perseveranza/config.json`, ripunta
+`statusLine` in `settings.json` (con backup) allo script di perseveranza, e questo richiama
+la base con lo stesso input: quando un loop è armato vede il segmento `⟳ PRS …`, altrimenti
+solo la base. Fuori da un progetto armato la HUD è invisibile. Reversibile con `hud off`.
 
 ## Reti di sicurezza
 
