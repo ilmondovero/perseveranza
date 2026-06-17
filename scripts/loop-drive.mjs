@@ -180,15 +180,15 @@ const externals = Array.isArray(s.externals) ? s.externals : [];
 const extList = externals.join(', ');
 // il verbo `ask` centralizza i flag per-CLI (e l'HTTP di ollama-cloud), esegue il modello e
 // SALVA il parere in .omc-loop/external-<slot>.md: artefatto persistente e auditabile.
-const askHint = (slot) => `${LOOP} ask <provider> ${slot} -- "<prompt>" (provider tra: ${extList}; per prompt lunghi passa via stdin: ... | ${LOOP} ask <provider> ${slot})`;
+const askHint = (slot) => `${LOOP} ask <provider> ${slot} -- "<prompt>" (provider tra: ${extList}; per prompt lunghi passa via stdin: ... | ${LOOP} ask <provider> ${slot}; ollama-cloud interroga tutti i modelli in OLLAMA_MODEL)`;
 const extPlanHint = externals.length
-  ? ` Poi chiedi a un modello esterno una critica indipendente del piano con ${askHint('plan')}, passandogli task e piano; integra le osservazioni fondate (parere salvato in .omc-loop/external-plan.md).`
+  ? ` Poi chiedi a un modello esterno una critica indipendente del piano con ${askHint('plan')}, passandogli task e piano; integra le osservazioni fondate (pareri salvati in .omc-loop/external-plan-*.md).`
   : '';
 const extFixHint = externals.length
-  ? ` Prima di riprovare, chiedi una diagnosi indipendente a un modello esterno con ${askHint('fix')}, descrivendo il problema che continua a fallire (salvata in .omc-loop/external-fix.md).`
+  ? ` Prima di riprovare, chiedi una diagnosi indipendente a un modello esterno con ${askHint('fix')}, descrivendo il problema che continua a fallire (salvata in .omc-loop/external-fix-*.md).`
   : '';
 const extVerifyHint = externals.length
-  ? ` In aggiunta al subagent, chiedi a un modello esterno di falsificare il lavoro con ${askHint('verify')}, passandogli piano e diff; pesa i suoi findings (salvati in .omc-loop/external-verify.md).`
+  ? ` In aggiunta al subagent, chiedi a uno o piu' modelli esterni di falsificare il lavoro con ${askHint('verify')}, passandogli piano e diff; pesa i loro findings (salvati in .omc-loop/external-verify-*.md).`
   : '';
 const secHint = s.complexity === 'high'
   ? ' Includi una lente security: secrets nel codice, input non fidati, injection, path traversal.'

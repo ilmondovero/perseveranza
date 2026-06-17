@@ -40,9 +40,11 @@ export const PROVIDERS = {
     transport: 'http',
     // disponibile se c'e' la chiave locale; nessuna CLI da installare
     detect: ({ env }) => !!env.OLLAMA_API_KEY,
-    // default forte e adatto al ruolo (review/critica/falsificazione di codice); override con
-    // OLLAMA_MODEL. Altri modelli validi al 2026-06: deepseek-v3.1:671b, gpt-oss:120b.
-    model: (env) => env.OLLAMA_MODEL || 'qwen3-coder:480b',
+    // OLLAMA_MODEL puo' essere UNA LISTA separata da virgole: in tal caso una sola chiamata
+    // `ask ollama-cloud` interroga TUTTI i modelli elencati (un artefatto a testa).
+    // Default recente e forte (override con OLLAMA_MODEL). I modelli cloud vengono ritirati
+    // nel tempo: la lista reale e' su https://ollama.com/search?c=cloud (o GET /v1/models).
+    models: (env) => (env.OLLAMA_MODEL || 'glm-5.2').split(',').map((m) => m.trim()).filter(Boolean),
     host: (env) => (env.OLLAMA_HOST || 'https://ollama.com').replace(/\/+$/, ''),
   },
 };
@@ -56,10 +58,10 @@ export function detectAvailable({ has, env, platform }) {
     .map(([id]) => id);
 }
 
-async function askHttpOllama(p, prompt, env, timeoutMs) {
-  const model = p.model(env);
+async function askHttpOllama(p, prompt, env, timeoutMs, model) {
+  const m = model || p.models(env)[0] || 'glm-5.2';
   const key = env.OLLAMA_API_KEY;
-  if (!key) return { ok: false, model, output: "OLLAMA_API_KEY non impostata nell'ambiente locale." };
+  if (!key) return { ok: false, model: m, output: "OLLAMA_API_KEY non impostata nell'ambiente locale." };
   const host = p.host(env);
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -67,29 +69,37 @@ async function askHttpOllama(p, prompt, env, timeoutMs) {
     const res = await fetch(`${host}/api/chat`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, stream: false, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: m, stream: false, messages: [{ role: 'user', content: prompt }] }),
       signal: ctrl.signal,
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      return { ok: false, model, output: `HTTP ${res.status} ${res.statusText}: ${body.slice(0, 600)}` };
+      return { ok: false, model: m, output: `HTTP ${res.status} ${res.statusText}: ${body.slice(0, 600)}` };
     }
     const data = await res.json();
     const output = data?.message?.content?.trim() || JSON.stringify(data).slice(0, 2000);
-    return { ok: true, model, output };
+    return { ok: true, model: m, output };
   } catch (e) {
     const why = e?.name === 'AbortError' ? `timeout dopo ${Math.round(timeoutMs / 1000)}s` : (e?.message || String(e));
-    return { ok: false, model, output: `errore di rete: ${why}` };
+    return { ok: false, model: m, output: `errore di rete: ${why}` };
   } finally {
     clearTimeout(t);
   }
 }
 
-// interroga un provider; restituisce sempre {ok, model, output, exitCode?} (non lancia)
-export async function askProvider(id, prompt, { env = {}, timeoutMs = 180000 } = {}) {
+// modelli da interrogare per un provider: per ollama-cloud e' la lista di OLLAMA_MODEL,
+// per le CLI e' un singolo [null] (il modello e' quello della CLI stessa)
+export function providerModels(id, env = {}) {
+  const p = PROVIDERS[id];
+  if (p && p.transport === 'http' && typeof p.models === 'function') return p.models(env);
+  return [null];
+}
+
+// interroga un provider (un singolo modello); restituisce sempre {ok, model, output, exitCode?}
+export async function askProvider(id, prompt, { env = {}, timeoutMs = 180000, model = null } = {}) {
   const p = PROVIDERS[id];
   if (!p) return { ok: false, model: id, output: `provider sconosciuto: ${id}. Disponibili: ${Object.keys(PROVIDERS).join(', ')}` };
-  if (p.transport === 'http') return askHttpOllama(p, prompt, env, timeoutMs);
+  if (p.transport === 'http') return askHttpOllama(p, prompt, env, timeoutMs, model);
   // prompt su stdin (input), flag fissi sulla command line; shell:true per i .cmd di npm
   const r = spawnSync(p.cmdline(), { shell: true, input: prompt, encoding: 'utf8', timeout: timeoutMs });
   if (r.error) return { ok: false, model: id, output: `impossibile eseguire ${id}: ${r.error.message}`, exitCode: null };

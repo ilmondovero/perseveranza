@@ -19,7 +19,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { detectAvailable, askProvider, PROVIDERS } from './providers.mjs';
+import { detectAvailable, askProvider, providerModels, PROVIDERS } from './providers.mjs';
 
 const gateDir = join(process.cwd(), '.omc-loop');
 const statePath = join(gateDir, 'state.json');
@@ -83,20 +83,26 @@ if (action === 'ask') {
   if (externals.length && !externals.includes(provider)) {
     console.log(`Nota: '${provider}' non e' tra i provider rilevati all'arm (${externals.join(', ') || 'nessuno'}). Provo comunque.`);
   }
-  console.log(`Interrogo ${provider} (slot: ${slot})...`);
-  const r = await askProvider(provider, prompt, { env: process.env });
+  // un provider puo' espandere in piu' modelli (ollama-cloud con OLLAMA_MODEL = lista):
+  // ogni modello produce un artefatto separato, cosi' i pareri non si sovrascrivono
+  const models = providerModels(provider, process.env);
+  const safe = (x) => String(x).replace(/[^a-z0-9._-]/gi, '-');
   const ts = new Date().toISOString();
-  const doc = `# Parere esterno - ${provider}${r.model && r.model !== provider ? ` (${r.model})` : ''}\n\n`
-    + `- slot: ${slot}\n- quando: ${ts}\n- esito: ${r.ok ? 'ok' : 'ERRORE'}\n\n`
-    + `## Prompt\n\n${prompt}\n\n## Risposta\n\n${r.output}\n`;
-  try {
-    writeFileSync(join(gateDir, `external-${slot}.md`), doc);
-    console.log(`[salvato in .omc-loop/external-${slot}.md]\n`);
-  } catch (e) {
-    console.log(`[impossibile salvare l'artefatto: ${e.message}]\n`);
+  let anyOk = false;
+  for (const m of models) {
+    console.log(`Interrogo ${provider}${m ? ` / ${m}` : ''} (slot: ${slot})...`);
+    const r = await askProvider(provider, prompt, { env: process.env, model: m });
+    anyOk = anyOk || r.ok;
+    const label = r.model && r.model !== provider ? `${provider} (${r.model})` : provider;
+    const file = join(gateDir, `external-${slot}-${safe(provider)}${m ? `-${safe(m)}` : ''}.md`);
+    const doc = `# Parere esterno - ${label}\n\n`
+      + `- slot: ${slot}\n- quando: ${ts}\n- esito: ${r.ok ? 'ok' : 'ERRORE'}\n\n`
+      + `## Prompt\n\n${prompt}\n\n## Risposta\n\n${r.output}\n`;
+    try { writeFileSync(file, doc); console.log(`[salvato in .omc-loop/${file.split(/[\\/]/).pop()}]`); }
+    catch (e) { console.log(`[impossibile salvare l'artefatto: ${e.message}]`); }
+    console.log(`\n----- ${label} -----\n${r.output}\n`);
   }
-  console.log(r.output);
-  process.exit(r.ok ? 0 : 1);
+  process.exit(anyOk ? 0 : 1);
 }
 
 switch (action) {
@@ -137,7 +143,8 @@ switch (action) {
     console.log(`OMC-loop ARMATO (max ${max} iterazioni, ${maxRetries} retry per step${commitSteps ? ', commit per step' : ''}). Task: ${value}`);
     console.log(`Modelli esterni per il confronto: ${externals.length ? externals.join(', ') : 'nessuno'}`);
     if (externals.includes('ollama-cloud')) {
-      console.log(`  ollama-cloud: modello ${PROVIDERS['ollama-cloud'].model(process.env)} (override con OLLAMA_MODEL; host ${PROVIDERS['ollama-cloud'].host(process.env)})`);
+      const ms = PROVIDERS['ollama-cloud'].models(process.env);
+      console.log(`  ollama-cloud: modell${ms.length > 1 ? 'i' : 'o'} ${ms.join(', ')} (lista in OLLAMA_MODEL separata da virgole; host ${PROVIDERS['ollama-cloud'].host(process.env)})`);
     }
     if (testCmd) console.log(`Suite di test configurata: ${testCmd} (il claim-done richiedera' un run verde fresco via verbo test)`);
     console.log("Fase iniziale: plan. Scrivi il piano in .omc-loop/plan.md come checklist '- [ ] step', poi fermati: da li' guida lo Stop hook.");

@@ -1,7 +1,7 @@
 {
   "name": "perseveranza",
   "displayName": "Perseveranza",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Ciclo autonomo a feedback per Claude Code: plan -> implement -> review -> verifica finale avversariale, con routing dei modelli per complessita'",
   "author": {
     "name": "ilmondovero",
