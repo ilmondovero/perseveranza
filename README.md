@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.1.0-blue)
+![versione](https://img.shields.io/badge/versione-1.6.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -34,7 +34,7 @@ flowchart TD
     VERIFY -- "fail" --> POSTFIX["fix post-verifica"] --> IMPL
     FIX -. "3 fallimenti consecutivi" .-> PAUSE
     VERIFY -. "3 bocciature" .-> PAUSE
-    DONE(["✅ commit + push se in git<br/>disarm + notifica «Progetto finito»"])
+    DONE(["✅ commit + push verificati se in git<br/>disarm + notifica «Progetto finito»"])
     PAUSE(["⏸️ pausa + notifica<br/>«serve intervento umano»"])
 
     style DONE fill:#1a7f37,color:#fff
@@ -138,7 +138,7 @@ eseguire il disarm.
 | **fix** | correzione dei problemi segnalati dalla review, stesso step; il fix viene poi ri-revisionato | sessione; dal 2º tentativo con diagnosi esterna |
 | **cleanup** | una tantum dopo il `claim-done`: codice morto, duplicazioni, semplificazioni, docs — *prima* del gate, così la verifica valida il codice già ripulito | sessione |
 | **verifica finale** | un verificatore indipendente parte dal piano e dal diff e **prova a falsificare** il lavoro: casi limite, input ostili, test e build eseguiti davvero; scrive `verify.json` | agente `pf-verifier`, read-only + modello esterno |
-| **chiusura** | se la dir è un repo git: `git add -A` (escluso `.omc-loop/`), commit `perseveranza: <task>`, `git push` best-effort; poi disarm + notifica. Fuori da git, salta il git | l'hook stesso |
+| **chiusura** | se la dir è un repo git: `git add -A` (escluso `.omc-loop/`), commit `perseveranza: <task>`, `git push`, poi **verifica che commit e push siano davvero avvenuti** (working tree pulito + HEAD non avanti all'upstream); se confermato disarm + notifica, altrimenti pausa per intervento e ritentativo dopo `resume`. Fuori da git, salta il git | l'hook stesso |
 
 ## Il contratto: chi possiede cosa
 
@@ -151,7 +151,7 @@ comunica solo attraverso questi verbi (mai editando lo stato a mano):
 | `complexity low\|medium\|high` | in fase plan | instrada i modelli delle fasi |
 | `test -- <comando>` | dopo implement/fix e prima del claim | esegue la suite LUI STESSO e registra l'exit code reale |
 | `report pass\|fail` | fallback se il subagent non ha scritto il verdetto su file | esito che instrada il loop |
-| `claim-done` | a checklist completa | accettato solo con test verde fresco; innesca cleanup + verifica finale |
+| `claim-done` | a checklist completa | accettato solo con piano interamente spuntato **e** test verde fresco; innesca cleanup + verifica finale |
 | `pause` / `resume` | quando serve input dell'utente | sospende / riprende il loop |
 | `status` / `disarm` | quando vuoi | ispeziona / smonta tutto |
 
@@ -211,8 +211,10 @@ Senza CLI esterne il ciclo è identico, solo senza questi confronti. Disattivabi
 ## Reti di sicurezza
 
 - limite globale di iterazioni (default 25, `--max N` per cambiarlo)
-- il `claim-done` è accettato solo con la prova di un test verde fresco (verbo `test`:
-  l'exit code lo misura lo script, non è autodichiarato) quando una suite è nota
+- il `claim-done` è accettato solo se il piano è interamente spuntato (l'hook conta i box
+  `- [ ]` residui in `plan.md`: se ne restano, il claim è rifiutato e si torna a chiuderli)
+  e con la prova di un test verde fresco (verbo `test`: l'exit code lo misura lo script,
+  non è autodichiarato) quando una suite è nota
 - il verbo `test` ha un timeout (default 30 min; un timeout viene registrato come exit
   124 = rosso). Suite più lente: alza il limite con `OMC_TEST_TIMEOUT_MS` (millisecondi)
 - i verdetti di review e verifica finale sono artefatti scritti dai subagent
@@ -224,8 +226,11 @@ Senza CLI esterne il ciclo è identico, solo senza questi confronti. Disattivabi
   a una lente security
 - stato corrotto → disarmo pulito con notifica
 - a fine progetto, se in un repo git, commit+push automatico del lavoro (escludendo
-  `.omc-loop/`); il push è best-effort e non blocca la chiusura — disattivabile con
-  `--no-git-finish`
+  `.omc-loop/`); l'hook **verifica davvero** che commit e push siano avvenuti (working
+  tree pulito e HEAD non avanti all'upstream): se la chiusura git non è confermata (push
+  fallito, nessun upstream, modifiche residue) il progetto **non** viene dichiarato finito —
+  il loop va in pausa con notifica e, risolto il problema, dopo `resume` ritenta la
+  chiusura. Disattivabile del tutto con `--no-git-finish`
 - a fine progetto la cartella `.omc-loop/` viene rimossa (aggiungerla comunque al
   `.gitignore` dei progetti su cui la si usa)
 

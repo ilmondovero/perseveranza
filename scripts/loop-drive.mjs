@@ -51,16 +51,20 @@ function gitFinish(cwd, task) {
   git(['add', '-A']);
   git(['reset', '-q', '--', '.omc-loop']); // non committare mai lo stato del loop
   const msg = `perseveranza: ${task || 'progetto completato'}`;
-  const commit = git(['commit', '-m', msg]);
-  const committed = commit.status === 0;
-  const nothing = !committed && /nothing to commit|niente da committare/i.test(`${commit.stdout}${commit.stderr}`);
-  let pushed = false, pushErr = '';
-  if (committed) {
-    const push = git(['push']);
-    pushed = push.status === 0;
-    if (!pushed) pushErr = (String(push.stderr).trim().split('\n').pop() || 'push fallito').slice(0, 80);
-  }
-  return { ran: true, committed, nothing, pushed, pushErr };
+  const commit = git(['commit', '-m', msg]); // su un retry puo' dire "nothing to commit": va bene
+  const push = git(['push']);
+  const pushErr = push.status === 0 ? '' : (String(push.stderr).trim().split('\n').pop() || 'push fallito').slice(0, 100);
+  // VERIFICA REALE che commit e push siano avvenuti (non ci si fida degli exit code):
+  //  - commit eseguito = nessuna modifica tracciata resta fuori (working tree pulito, escluso .omc-loop)
+  //  - push eseguito    = esiste un upstream e HEAD non e' avanti ad esso (tutto e' finito sul remoto)
+  const dirty = String(git(['status', '--porcelain']).stdout)
+    .split('\n').some((l) => l.trim() && !l.includes('.omc-loop'));
+  const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  const hasUpstream = upstream.status === 0;
+  const ahead = hasUpstream ? Number(String(git(['rev-list', '--count', '@{u}..HEAD']).stdout).trim()) : null;
+  const committed = !dirty;
+  const pushed = hasUpstream && ahead === 0;
+  return { ran: true, confirmed: committed && pushed, committed, pushed, hasUpstream, pushErr };
 }
 
 // --- input evento ---
@@ -203,14 +207,47 @@ function pauseForHuman(why) {
   process.exit(0);
 }
 
+// chiusura del progetto: commit+push e VERIFICA che siano avvenuti davvero.
+// se la chiusura git non e' confermata (push fallito, nessun upstream, modifiche residue)
+// NON dichiara finito: passa alla fase git-finish in pausa e avvisa, cosi' il lavoro non
+// risulta "fatto" mentre e' ancora non pushato; dopo `resume` la chiusura viene ritentata.
+function closeWithGit(isRetry) {
+  let gitNote = '';
+  if (s.gitFinish !== false) {
+    const g = gitFinish(cwd, s.task);
+    if (g.ran && !g.confirmed) {
+      const why = !g.committed ? 'commit non riuscito (restano modifiche non committate)'
+        : !g.hasUpstream ? 'push impossibile: nessun upstream configurato per il branch'
+        : `push non confermato${g.pushErr ? ` (${g.pushErr})` : ''}`;
+      s.phase = 'git-finish';
+      s.paused = true;
+      saveState();
+      logStep(`git-finish${isRetry ? ' (retry)' : ''} NON confermato: committed=${g.committed} pushed=${g.pushed} | ${why}`);
+      notify('Claude Code - OMC-loop', `Verifica OK ma chiusura git NON confermata: ${why}. Risolvi e poi esegui: resume - ${proj}`);
+      process.exit(0);
+    }
+    if (g.ran) { gitNote = ' · commit+push confermati'; logStep(`git-finish${isRetry ? ' (retry)' : ''}: commit+push confermati`); }
+    else logStep('git-finish: fuori da un repo git, salto');
+  }
+  disarm();
+  notify('Claude Code - OMC-loop', `Progetto finito e verificato - ${proj}${gitNote}`);
+  process.exit(0);
+}
+
 if (claimed) {
-  // gate d'ingresso alla rampa di uscita: serve la PROVA di un test verde fresco, non la parola
+  // gate d'ingresso alla rampa di uscita: niente parole, solo prove.
+  // (1) il piano dev'essere interamente spuntato; (2) serve un test verde fresco.
+  const planText = existsSync(planPath) ? readFileSync(planPath, 'utf8') : '';
+  const openSteps = (planText.match(/^[ \t]*-[ \t]*\[[ \t]*\]/gm) || []).length;
   const testRequired = !!(s.testCmd || s.lastTest);
   const freshGreen = s.lastTest
     && Number(s.lastTest.exitCode) === 0
     && Number(s.lastTest.iteration) === s.iterations;
   const testRun = s.testCmd ? `${LOOP} test -- ${s.testCmd}` : `${LOOP} test -- <comando dei test>`;
-  if (testRequired && !freshGreen) {
+  if (openSteps > 0) {
+    // non tutti i fix sono chiusi: niente rampa d'uscita finche' il piano non e' completo
+    reason = `${header} claim-done RIFIUTATO: in .omc-loop/plan.md restano ${openSteps} step non spuntati. Completali (ognuno passa per la sua review come gli altri) e, solo quando il piano e' interamente '- [x]', ridichiara: ${LOOP} claim-done.`;
+  } else if (testRequired && !freshGreen) {
     // niente transizione: il claim va ripetuto con la prova
     reason = `${header} claim-done RIFIUTATO: manca la prova di un test verde fresco. Esegui ORA: ${testRun} e, se l'esito e' verde, rilancia ${LOOP} claim-done NELLA STESSA RISPOSTA. Se e' rosso, correggi prima i fallimenti.`;
   } else if (!s.cleanedOnce) {
@@ -271,19 +308,7 @@ if (claimed) {
     case 'final-verify': {
       if (report === 'pass') {
         logStep('final-verify -> DONE');
-        let extra = '';
-        if (s.gitFinish !== false) {
-          const g = gitFinish(cwd, s.task);
-          if (g.ran) {
-            if (g.committed) extra = g.pushed ? ' · commit+push' : ` · commit (push: ${g.pushErr || 'saltato'})`;
-            else if (g.nothing) extra = ' · git: niente da committare';
-            else extra = ' · git: commit fallito';
-            logStep(`git-finish: committed=${g.committed} pushed=${g.pushed}${g.pushErr ? ` (${g.pushErr})` : ''}`);
-          }
-        }
-        disarm();
-        notify('Claude Code - OMC-loop', `Progetto finito e verificato - ${proj}${extra}`);
-        process.exit(0);
+        closeWithGit(false); // commit+push verificati; se non confermati -> pausa, non "finito"
       } else if (report === 'fail') {
         s.finalFails += 1;
         if (s.finalFails >= s.maxRetries) pauseForHuman(`${s.finalFails} verifiche finali fallite`);
@@ -300,6 +325,11 @@ if (claimed) {
         reason = `${header} FASE: implement (verifica finale senza esito registrato: considerata FALLITA). Rivedi il lavoro, poi riesegui: ${LOOP} claim-done e stavolta registra l'esito con report pass|fail.`;
       }
       break;
+    }
+    case 'git-finish': {
+      // ritentativo della chiusura git dopo un resume (commit/push non confermati al primo giro)
+      closeWithGit(true);
+      break; // closeWithGit termina il processo: irraggiungibile
     }
     default: {
       // fase sconosciuta (stato manomesso): riparti dal piano
