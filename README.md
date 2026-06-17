@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.11.2-blue)
+![versione](https://img.shields.io/badge/versione-1.11.3-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -299,11 +299,10 @@ aggiornare basta il pannello `/plugin`.
   auto-certificazione), preceduta da un giro di cleanup e, per complessità high, estesa
   a una lente security
 - stato corrotto → disarmo pulito con notifica
-- l'hook non blocca mai nei casi in cui Claude Code deve potersi fermare (re-entrant
-  `stop_hook_active`, stop da limite di contesto, interruzione utente): così non scatta il
-  safety override di Claude Code che termina il turno dopo blocchi consecutivi e il loop
-  **sopravvive alle interjezioni** — scrivi pure un messaggio mentre gira, riprende da solo
-  al turno dopo
+- l'hook non blocca quando Claude Code deve potersi fermare per davvero (stop da limite di
+  contesto — altrimenti non potrebbe compattare; interruzione dell'utente), evitando
+  deadlock. Ogni invocazione registra in `history.log` una riga `FIRE sha=…` (valore di
+  `stop_hook_active`) utile per diagnosticare
 - a fine progetto, se in un repo git, commit+push automatico del lavoro (escludendo
   `.omc-loop/`); l'hook **verifica davvero** che commit e push siano avvenuti (working
   tree pulito e HEAD non avanti all'upstream): se la chiusura git non è confermata (push
