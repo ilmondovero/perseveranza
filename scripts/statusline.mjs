@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { loadConfig } from './providers.mjs';
 import { renderProgress } from './hud.mjs';
-import { maybeSpawnRefresh, updateAvailable } from './update.mjs';
+import { maybeSpawnRefresh, updateAvailable, currentVersion } from './update.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -36,10 +36,11 @@ if (existsSync(statePath)) {
     const s = JSON.parse(readFileSync(statePath, 'utf8'));
     const planPath = join(cwd, '.omc-loop', 'plan.md');
     const planText = existsSync(planPath) ? readFileSync(planPath, 'utf8') : '';
-    seg = renderProgress(s, planText, { color: true, marker: true });
+    const root = join(SCRIPT_DIR, '..');
+    seg = renderProgress(s, planText, { color: true, marker: true, version: currentVersion(root) });
     // notifica aggiornamenti: marker compatto se c'e' una versione piu' nuova
     maybeSpawnRefresh(SCRIPT_DIR);
-    const upd = updateAvailable(join(SCRIPT_DIR, '..'));
+    const upd = updateAvailable(root);
     if (upd) seg += ` \x1b[1;33m⬆v${upd}\x1b[0m`;
   } catch { /* stato illeggibile: niente segmento */ }
 }

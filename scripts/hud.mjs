@@ -44,5 +44,6 @@ export function renderProgress(state = {}, planText = '', opts = {}) {
   if (Number(state.finalFails) > 0) parts.push(paint(31, `✗${state.finalFails}/${state.maxRetries || 3}`));
 
   const body = parts.join(' · ');
-  return opts.marker ? `${paint('1;35', '⟳ PRS')} ${body}` : body;
+  const marker = opts.version ? `⟳ PRS v${opts.version}` : '⟳ PRS';
+  return opts.marker ? `${paint('1;35', marker)} ${body}` : body;
 }

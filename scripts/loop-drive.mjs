@@ -23,7 +23,7 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { renderProgress } from './hud.mjs';
-import { maybeSpawnRefresh, updateAvailable } from './update.mjs';
+import { maybeSpawnRefresh, updateAvailable, currentVersion } from './update.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const LOOP = `node "${join(SCRIPT_DIR, 'omc-loop.mjs')}"`;
@@ -168,10 +168,11 @@ if (phase === 'review') {
 const planText = existsSync(planPath) ? readFileSync(planPath, 'utf8') : '';
 // controllo aggiornamenti (cache giornaliera, refresh distaccato: non rallenta l'hook)
 maybeSpawnRefresh(SCRIPT_DIR);
+const ver = currentVersion(join(SCRIPT_DIR, '..'));
 const upd = updateAvailable(join(SCRIPT_DIR, '..'));
 // funzione (non costante): valutata al momento di ogni istruzione, cosi' riflette la fase
 // che il routing ha appena impostato (evita l'off-by-one della fase "da cui si esce").
-const header = () => `[perseveranza · ${renderProgress({ ...s, iterations: s.iterations + 1 }, planText)}${upd ? ` · ⬆ v${upd} (/plugin)` : ''}] Task: ${s.task}.`;
+const header = () => `[perseveranza${ver ? ` v${ver}` : ''} · ${renderProgress({ ...s, iterations: s.iterations + 1 }, planText)}${upd ? ` · ⬆ v${upd} (/plugin)` : ''}] Task: ${s.task}.`;
 let reason = null;
 
 // routing dei modelli per fase in base alla complessita' registrata da Claude
