@@ -86,6 +86,26 @@ const histPath = join(gateDir, 'history.log');
 // DORMIENTE: nessun gate -> non bloccare, lascia fermare Claude
 if (!existsSync(statePath)) process.exit(0);
 
+// GUARDIE "lascia fermare Claude": in questi casi NON si blocca (niente decision:block),
+// altrimenti si rischia il deadlock o il safety override di Claude Code che termina il turno
+// dopo 8 blocchi consecutivi. Vanno PRIMA del consumo dei segnali e dell'avanzamento fase.
+// (pattern allineati a oh-my-claudecode/persistent-mode.)
+{
+  const norm = (v) => (typeof v === 'string' ? v.toLowerCase().replace(/[\s-]+/g, '_') : '');
+  const reasons = [evt?.stop_reason, evt?.stopReason, evt?.end_turn_reason, evt?.endTurnReason, evt?.reason].map(norm).filter(Boolean);
+  const any = (pats) => reasons.some((r) => pats.some((p) => r.includes(p)));
+  const exact = (pats) => reasons.some((r) => pats.includes(r));
+  const allowStop =
+    // 1) re-entrant: lo Stop hook sta gia' girando -> MAI ri-bloccare (causa dell'override)
+    evt?.stop_hook_active === true ||
+    // 2) stop da limite di contesto: bloccare impedirebbe la compattazione (deadlock)
+    any(['context_limit', 'context_window', 'context_exceeded', 'context_full', 'max_context', 'token_limit', 'max_tokens', 'conversation_too_long', 'input_too_long']) ||
+    // 3) interruzione dell'utente (Esc/cancel): exact-match per le parole corte, includes per le composte
+    evt?.user_requested === true || evt?.userRequested === true ||
+    exact(['aborted', 'abort', 'cancel', 'interrupt']) || any(['user_cancel', 'user_interrupt', 'ctrl_c', 'manual_stop']);
+  if (allowStop) process.exit(0); // lascia fermare Claude senza toccare lo stato del loop
+}
+
 const proj = basename(cwd);
 const disarm = () => rmSync(gateDir, { recursive: true, force: true });
 
