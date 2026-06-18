@@ -155,6 +155,8 @@ switch (action) {
       claimedDone: false,                  // scritto da `claim-done`, consumato dall'hook
       paused: false,                       // scritto da `pause`/`resume` (o dall'hook al limite retry)
       repeated: false,                     // la fase corrente e' gia' stata ripetuta una volta
+      sessionId: null,                     // proprieta' del loop: rivendicata al primo fire dell'hook
+      lastFireAt: 0,                        // ultimo fire del proprietario (per il takeover su inattivita')
     });
     console.log(`OMC-loop ARMATO (max ${max} iterazioni, ${maxRetries} retry per step${commitSteps ? ', commit per step' : ''}). Task: ${value}`);
     console.log(`Modelli esterni per il confronto: ${externals.length ? externals.join(', ') : 'nessuno'}`);

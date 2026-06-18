@@ -23,6 +23,20 @@ Lo storico delle decisioni è in `../CHANGELOG.md`.
   provano cosa Claude Code invii nelle continuazioni reali: non vanno presi come prova.
 - Per diagnosticare: le righe `FIRE sha=…` in `history.log`.
 
+## Scoping per-sessione (claim-on-first-fire)
+- `.omc-loop/state.json` è **globale al progetto**: senza scoping, due sessioni Claude aperte
+  sullo stesso repo armato verrebbero pilotate **entrambe** dallo stesso loop.
+- Il loop appartiene a **una** sessione: la **prima** che fa fire lo rivendica (`s.sessionId`);
+  le altre **lasciano fermare Claude** (`process.exit(0)`) senza toccare lo stato.
+- `arm` **non** conosce il `session_id` (gira come processo a sé): la proprietà si stabilisce al
+  primo fire dell'hook, che legge `evt.session_id` dal payload Stop. Se manca (versioni vecchie)
+  → niente scoping, comportamento identico a prima.
+- **Takeover** dopo lunga inattività del proprietario (`OMC_SESSION_TAKEOVER_MS`, default 6h):
+  evita che una sessione chiusa congeli il loop per sempre. Il nuovo proprietario riparte dalla
+  fase corrente — niente lavoro perso, niente reset dei contatori.
+- Il blocco di scoping sta **prima** dei check di pausa/limite: una sessione non-proprietaria non
+  deve mai far scattare disarm/pausa.
+
 ## "Prove, non parole"
 - `claim-done` accettato solo con piano **interamente spuntato** (l'hook conta i box
   `- [ ]`) **e** un **test verde fresco** misurato dal verbo `test` (exit code reale,

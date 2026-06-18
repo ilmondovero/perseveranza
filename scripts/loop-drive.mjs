@@ -129,6 +129,7 @@ const s = {
   claimedDone: false, paused: false, repeated: false,
   commitSteps: false, externals: [], cleanedOnce: false,
   testCmd: null, lastTest: null, gitFinish: true,
+  sessionId: null, lastFireAt: 0,   // proprieta' del loop: claim-on-first-fire (vedi sotto)
   ...rawState,
 };
 for (const k of ['iterations', 'max', 'retries', 'maxRetries', 'finalFails']) {
@@ -144,6 +145,29 @@ const logStep = (msg) => {
     appendFileSync(histPath, `${ts} | iter ${String(s.iterations).padStart(2)} | ${msg}\n`);
   } catch { /* il log non deve mai bloccare */ }
 };
+
+// --- scoping per-sessione: il loop e' di UNA sessione sola ---
+// .omc-loop/state.json e' globale al progetto: senza questo, due sessioni Claude aperte sullo
+// stesso repo verrebbero pilotate ENTRAMBE dallo stesso loop (due Stop hook che lo avanzano).
+// La prima sessione che fa fire RIVENDICA il loop; le altre lasciano fermare Claude senza
+// toccare lo stato. Takeover dopo lunga inattivita' del proprietario (default 6h): evita che
+// una sessione chiusa congeli per sempre il loop -> il nuovo proprietario riparte dalla fase
+// corrente, niente lavoro perso. Se Claude Code non fornisce session_id (versioni vecchie o
+// payload anomalo), niente scoping: comportamento identico a prima (retro-compatibile).
+{
+  const evtSid = evt && typeof evt.session_id === 'string' ? evt.session_id : '';
+  if (evtSid) {
+    const owner = typeof s.sessionId === 'string' ? s.sessionId : '';
+    const lastFire = Number.isFinite(Number(s.lastFireAt)) ? Number(s.lastFireAt) : 0;
+    const takeoverMs = Number(process.env.OMC_SESSION_TAKEOVER_MS) || 6 * 60 * 60 * 1000;
+    const stale = owner && lastFire > 0 && (Date.now() - lastFire) > takeoverMs;
+    if (owner && owner !== evtSid && !stale) process.exit(0); // un'altra sessione possiede il loop
+    if (owner !== evtSid) logStep(`sessione ${owner ? `takeover ${owner.slice(0, 8)} (inattiva) -> ` : 'rivendicata da '}${evtSid.slice(0, 8)}`);
+    s.sessionId = evtSid;
+    s.lastFireAt = Date.now();
+    saveState(); // proprieta' durevole subito: sopravvive a un'uscita anticipata sotto
+  }
+}
 
 // PAUSA: serve input dell'utente (o limite retry raggiunto) -> non bloccare
 if (s.paused) process.exit(0);

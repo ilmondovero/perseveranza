@@ -3,6 +3,22 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json` e nel badge del README; non si usano tag git.
 
+## 1.12.0
+- **Scoping del loop per sessione** (claim-on-first-fire). `.omc-loop/state.json` è globale al
+  progetto: senza scoping, **due sessioni** Claude aperte sullo stesso repo armato venivano
+  pilotate **entrambe** dallo stesso loop. Ora il loop appartiene a **una** sessione: la prima
+  che fa fire lo rivendica (`s.sessionId`, letto da `evt.session_id` del payload Stop); le altre
+  **lasciano fermare Claude** senza toccare lo stato.
+- **Takeover su inattività** del proprietario (`OMC_SESSION_TAKEOVER_MS`, default 6h): se la
+  sessione che possiede il loop sparisce (chiusa/crashata), una nuova sessione subentra dalla
+  **fase corrente** — niente loop congelato per sempre, niente lavoro perso, niente reset dei
+  contatori. *Perché 6h:* finestra abbastanza lunga da non innescarsi mai tra sessioni davvero
+  concorrenti (che fanno fire molto più spesso), abbastanza corta da non lasciare il loop morto.
+- **Retro-compatibile**: se Claude Code non fornisce `session_id` (versioni vecchie o payload
+  anomalo), niente scoping → comportamento identico a prima. Il blocco sta **prima** dei check
+  di pausa/limite, così una sessione non-proprietaria non fa mai scattare disarm. Vedi
+  `docs/REVIEW-NOTES.md` (nuova sezione "Scoping per-sessione").
+
 ## 1.11.3
 - **Revert** della guardia `stop_hook_active` introdotta in 1.11.2: **congelava il loop**.
   Le continuazioni autonome del ciclo arrivano con `stop_hook_active=true`; fare *allow-stop*
