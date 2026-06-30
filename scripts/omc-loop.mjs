@@ -225,6 +225,9 @@ switch (action) {
     s.retries = 0;
     s.finalFails = 0;
     saveState(s);
+    // l'handoff di escalation appartiene alla pausa appena chiusa: rimuovilo per non lasciarne
+    // uno stantio dopo la ripartenza (ne verra' scritto uno nuovo se il loop si arrende di nuovo)
+    try { rmSync(join(gateDir, 'ESCALATION.md')); } catch { /* gia' assente */ }
     console.log('OMC-loop RIPRESO (contatori retry azzerati).');
     break;
   }

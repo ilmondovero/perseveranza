@@ -84,6 +84,8 @@ Come funziona il ciclo (a feedback):
 - Limite globale di iterazioni (default 25): raggiunto quello, il loop si ferma da solo.
 - Interruzione manuale in qualsiasi momento:
   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" disarm
+  (kill switch d'emergenza, ancora piu' rapido e da qualunque sessione: crea il file
+  `.omc-loop/STOP` oppure imposta `OMC_LOOP_KILL=1` -> al primo Stop il loop si disarma da solo)
 
 Regole:
 - NON modificare mai a mano `.omc-loop/state.json`: usa solo i verbi `report`, `complexity`,

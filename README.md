@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.12.0-blue)
+![versione](https://img.shields.io/badge/versione-1.13.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -294,7 +294,9 @@ aggiornare basta il pannello `/plugin`.
 - i verdetti di review e verifica finale sono artefatti scritti dai subagent
   (`review.json` / `verify.json`), consumati dall'hook alla lettura: un verdetto vecchio
   non viene mai riusato
-- 3 review fallite sullo stesso step → pausa + notifica «serve intervento umano»
+- 3 review fallite sullo stesso step (o 3 verifiche finali bocciate) → pausa + notifica «serve
+  intervento umano» + handoff scritto in `.omc-loop/ESCALATION.md` (fase, tentativi, ultimo
+  test, come ripartire); `resume` riparte e lo rimuove. Vedi [`docs/loop-budget.md`](docs/loop-budget.md)
 - la chiusura richiede il pass della verifica finale avversariale (niente
   auto-certificazione), preceduta da un giro di cleanup e, per complessità high, estesa
   a una lente security
@@ -311,6 +313,49 @@ aggiornare basta il pannello `/plugin`.
   chiusura. Disattivabile del tutto con `--no-git-finish`
 - a fine progetto la cartella `.omc-loop/` viene rimossa (aggiungerla comunque al
   `.gitignore` dei progetti su cui la si usa)
+
+## Budget e kill switch
+
+Un loop autonomo deve avere tetti di spesa e un modo rapido per fermarlo. Perseveranza non misura
+i token (gira nella sessione principale, fuori dalla portata dell'hook): il suo **proxy di budget**
+è il numero di iterazioni e di retry. Tararlo è il modo diretto di mettere un tetto di costo.
+
+- **Tetto di spesa** → `--max N` (iterazioni, default 25) e `--max-retries N` (default 3).
+  Task piccolo → `--max 8`; refactor ampio → `--max 40`.
+- **Stop d'emergenza** (più rapido di `disarm`, da qualunque sessione, anche con stato corrotto):
+  crea il file `.omc-loop/STOP` **oppure** imposta `OMC_LOOP_KILL=1` nell'ambiente. Al primo Stop
+  il loop si disarma e avvisa.
+- **Si è bloccato** → leggi `.omc-loop/ESCALATION.md`, correggi a mano, poi `resume`.
+
+Tetti, timeout e interruttori sono raccolti in [`docs/loop-budget.md`](docs/loop-budget.md).
+
+## Maturità del loop (L0→L3) e failure mode
+
+Perseveranza è un'implementazione di [loop engineering](https://cobusgreyling.github.io/loop-engineering/):
+un loop a feedback con separazione **maker/checker** e gate di uscita avversariale. Vale la pena
+posizionarlo con onestà sulla scala di maturità di quel modello — che premia verifier reale,
+memoria di stato e osservabilità dei costi:
+
+| Livello | Criterio | Perseveranza |
+|---------|----------|--------------|
+| L0 | nessun loop / solo prompt manuali | — |
+| L1 | loop a cadenza, report-only | — (non è un manutentore schedulato) |
+| L2 | maker/checker, stato esterno, gate umani | ✅ `pf-executor` vs `pf-reviewer`, stato in `.omc-loop/`, pausa+escalation |
+| L3 | + verifier che **esegue** + budget + attività provata | ✅ `pf-verifier` esegue test/build reali; budget via `--max`; uso reale |
+
+Nota: il modello di cobusgreyling descrive **manutentori del repo a cadenza** (daily triage, PR
+babysitter…). Perseveranza copre un asse diverso — **far convergere un singolo task** entro la
+sessione — quindi i livelli L1 "report-only schedulato" non si applicano: i due strumenti sono
+complementari, non alternativi.
+
+**Failure mode noti della loop engineering, e come perseveranza li mitiga:**
+
+- **Verifier theater** (il checker dice "ok" senza controllare davvero) → `pf-verifier` ha mandato
+  avversariale ed **esegue** test e build leggendo l'exit code reale; il `claim-done` è respinto
+  senza un test verde fresco misurato dallo script. Niente auto-certificazione.
+- **Infinite loop** → limite globale di iterazioni (`--max`) e pausa dopo N fallimenti, con
+  handoff `ESCALATION.md`.
+- **Token burn** → `--max`/`--max-retries` come tetto, kill switch d'emergenza (`STOP`/`OMC_LOOP_KILL`).
 
 ## Risoluzione problemi
 
@@ -333,6 +378,11 @@ aggiornare basta il pannello `/plugin`.
 
 ## Sviluppo
 
+- **Suite di regressione** (zero dipendenze): `node scripts/test.mjs`. Pilota lo Stop hook con
+  eventi finti e verifica le transizioni della macchina a stati (plan→implement→review→fix, gate
+  `claim-done`, verifica finale) più kill switch, escalation e scoping per-sessione. Esce 0 se
+  tutto è verde, 1 al primo fallimento — quindi è anche il comando da passare a `--test` quando si
+  arma perseveranza sul proprio repo.
 - Storico delle modifiche con le motivazioni: [`CHANGELOG.md`](CHANGELOG.md)
 - Invarianti e trappole da conoscere prima di rivedere/modificare gli script:
   [`docs/REVIEW-NOTES.md`](docs/REVIEW-NOTES.md)

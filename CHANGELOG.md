@@ -3,6 +3,30 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json` e nel badge del README; non si usano tag git.
 
+## 1.13.0
+- **Budget, kill switch ed escalation espliciti** — tre idee importate dalla
+  [loop-engineering](https://cobusgreyling.github.io/loop-engineering/), mappate sui meccanismi
+  già presenti senza duplicarli.
+- **Kill switch d'emergenza**: il file sentinella `.omc-loop/STOP` o l'env `OMC_LOOP_KILL=1`
+  disarmano il loop al primo Stop. *Perché:* `disarm` richiede un comando node; serviva uno stop
+  immediato, attivabile da editor e da **qualunque** sessione. Il check sta **prima** dello
+  scoping per-sessione e dello sblocco stato-corrotto, così non esiste stato in cui il kill venga
+  ignorato.
+- **Handoff di escalation**: quando il loop esaurisce i retry (3 review fallite sullo stesso step
+  o 3 verifiche finali bocciate) oltre alla pausa+notifica scrive `.omc-loop/ESCALATION.md` (fase,
+  tentativi, ultimo test, cosa guardare, come ripartire). *Perché:* la pausa c'era già ma era
+  muta; l'umano aveva poco con cui ripartire. `resume` rimuove l'handoff stantio.
+- **Documentazione del budget**: nuovo [`docs/loop-budget.md`](docs/loop-budget.md) che raccoglie
+  i tetti (proxy di budget = iterazioni `--max` + retry `--max-retries`, timeout, takeover) e gli
+  interruttori in un punto solo. README: nuove sezioni "Budget e kill switch" e "Maturità del loop
+  (L0→L3) e failure mode" (verifier theater / infinite loop / token burn e come sono mitigati).
+- Nessuna modifica al routing delle fasi: l'anello di stato resta identico, si aggiungono solo una
+  guardia di kill in testa all'hook e un artefatto alla pausa.
+- **Suite di regressione** `scripts/test.mjs` (zero dipendenze, 26 casi): pilota l'hook con eventi
+  finti e verifica le transizioni della macchina a stati + le novità. *Perché:* il repo non aveva
+  test; ora ogni modifica al loop è verificabile con `node scripts/test.mjs`. Aggiunto l'interruttore
+  `OMC_LOOP_NO_NOTIFY` per silenziare le notifiche desktop (test/headless/CI).
+
 ## 1.12.0
 - **Scoping del loop per sessione** (claim-on-first-fire). `.omc-loop/state.json` è globale al
   progetto: senza scoping, **due sessioni** Claude aperte sullo stesso repo armato venivano

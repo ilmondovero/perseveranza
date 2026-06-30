@@ -30,6 +30,8 @@ const LOOP = `node "${join(SCRIPT_DIR, 'omc-loop.mjs')}"`;
 
 // notifica desktop cross-platform; in ultima istanza silenziosa (e' solo comodita')
 function notify(title, msg) {
+  // silenziabile (test/headless/CI): la notifica e' solo comodita', non parte del contratto
+  if (/^(1|true|yes|on)$/i.test(String(process.env.OMC_LOOP_NO_NOTIFY || ''))) return;
   try {
     if (process.platform === 'win32') {
       const q = (t) => t.replace(/'/g, "''");
@@ -85,6 +87,21 @@ const histPath = join(gateDir, 'history.log');
 
 // DORMIENTE: nessun gate -> non bloccare, lascia fermare Claude
 if (!existsSync(statePath)) process.exit(0);
+
+// KILL SWITCH d'emergenza: piu' immediato di `disarm` (che richiede un comando node) e
+// indipendente dalla sessione. Crea il file sentinella .omc-loop/STOP (da editor, o `touch`)
+// oppure imposta OMC_LOOP_KILL=1 nell'ambiente: al primo Stop il loop si disarma e avvisa.
+// Sta PRIMA dello scoping per-sessione e dello sblocco stato-corrotto, cosi' QUALSIASI sessione
+// puo' fermare un ciclo autonomo che sta andando dove non deve, anche con stato illeggibile.
+{
+  const killEnv = /^(1|true|yes|on)$/i.test(String(process.env.OMC_LOOP_KILL || ''));
+  const killFile = existsSync(join(gateDir, 'STOP'));
+  if (killEnv || killFile) {
+    rmSync(gateDir, { recursive: true, force: true });
+    notify('Claude Code - OMC-loop', `Kill switch (${killFile ? 'file STOP' : 'OMC_LOOP_KILL'}): loop disarmato - ${basename(cwd)}`);
+    process.exit(0);
+  }
+}
 
 // diagnostica: registra a OGNI invocazione il valore di stop_hook_active e il motivo dello
 // stop, cosi' possiamo capire empiricamente cosa invia Claude Code (serve per il bug delle
@@ -263,12 +280,53 @@ const commitHint = s.commitSteps
 const finalVerifyReason = () =>
   `${header()} FASE: verifica finale avversariale. Hai dichiarato il progetto completo: ora va falsificato. Delega a ${agentRef('pf-verifier', 'un subagent indipendente avversariale')} con model=${verifyModel} (contesto pulito) la verifica, passandogli nel prompt il piano completo e il diff totale (se enorme: elenco dei file + estratti rilevanti): assuma che il lavoro sia SBAGLIATO, costruisca casi limite e input ostili, esegua DAVVERO test e build, verifichi ogni claim contro l'esecuzione reale.${secHint}${extVerifyHint} NON correggere nulla in questa fase. L'agente DEVE scrivere il verdetto in .omc-loop/verify.json nel formato {"pass": true|false, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. Solo se non ha potuto scriverlo, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail`;
 
+// handoff scritto per l'umano quando il loop si arrende: cosa stava facendo, quanti tentativi,
+// ultimo test, cosa guardare e come ripartire. Scritto in .omc-loop/ESCALATION.md, che resta
+// finche' il loop e' in pausa (non disarmato): lo si legge prima di `resume` o `disarm`.
+// Sull'idea "escalate to humans dopo N tentativi" della loop-engineering: la pausa c'era gia',
+// mancava il passaggio di consegne leggibile. E' un di piu': non deve mai bloccare la pausa.
+function writeEscalation(why) {
+  try {
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    let tail = '(history.log non leggibile)';
+    try { tail = readFileSync(histPath, 'utf8').trim().split('\n').slice(-12).join('\n'); } catch { /* assente */ }
+    const test = s.lastTest
+      ? `\`${s.lastTest.cmd}\` -> exit ${s.lastTest.exitCode} (iter ${s.lastTest.iteration}, ${s.lastTest.at})`
+      : 'nessun run registrato';
+    const openSteps = (planText.match(/^[ \t]*-[ \t]*\[[ \t]*\]/gm) || []).length;
+    const doc = `# Escalation - serve intervento umano\n\n`
+      + `Il loop si e' messo in PAUSA: ${why}.\n\n`
+      + `- quando: ${ts}\n`
+      + `- task: ${s.task}\n`
+      + `- fase allo stop: ${phase}\n`
+      + `- complessita': ${s.complexity}\n`
+      + `- review fallite consecutive: ${s.retries}/${s.maxRetries}\n`
+      + `- verifiche finali fallite: ${s.finalFails}/${s.maxRetries}\n`
+      + `- iterazioni usate: ${s.iterations}/${s.max}\n`
+      + `- step ancora aperti in plan.md: ${openSteps}\n`
+      + `- ultimo test: ${test}\n`
+      + `- modelli esterni rilevati: ${(s.externals || []).join(', ') || 'nessuno'}\n\n`
+      + `## Cosa guardare\n\n`
+      + `- \`.omc-loop/plan.md\` - gli step e cosa resta aperto\n`
+      + `- \`.omc-loop/notes.md\` - decisioni e trappole per step\n`
+      + `- \`.omc-loop/external-*.md\` - eventuali diagnosi dei modelli esterni\n`
+      + `- \`.omc-loop/history.log\` - transizioni (ultime righe sotto)\n\n`
+      + `## Come ripartire\n\n`
+      + `1. Correggi a mano il punto bloccato (parti da plan.md + notes.md).\n`
+      + `2. Risolto, riprendi il loop con il verbo \`resume\` (azzera i contatori di retry).\n`
+      + `3. Se preferisci abbandonare, usa il verbo \`disarm\`.\n\n`
+      + `## Ultime transizioni\n\n\`\`\`\n${tail}\n\`\`\`\n`;
+    writeFileSync(join(gateDir, 'ESCALATION.md'), doc);
+  } catch { /* l'handoff e' un di piu': non deve mai bloccare la pausa */ }
+}
+
 // sospende il loop quando i fallimenti consecutivi superano il limite: serve un umano
 function pauseForHuman(why) {
   s.paused = true;
   saveState();
   logStep(`${phase} -> PAUSA (${why})`);
-  notify('Claude Code - OMC-loop', `Loop in pausa, serve intervento umano: ${why} - ${proj}`);
+  writeEscalation(why);
+  notify('Claude Code - OMC-loop', `Loop in pausa, serve intervento umano: ${why} - ${proj}. Handoff in .omc-loop/ESCALATION.md`);
   process.exit(0);
 }
 
