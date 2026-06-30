@@ -42,6 +42,7 @@ let commitSteps = false;
 let external = 'auto';
 let testCmd = '';
 let gitFinish = true;
+let gitPush = true;
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--') break; // tutto cio' che segue appartiene al verbo `test`
@@ -52,6 +53,7 @@ for (let i = 1; i < argv.length; i++) {
   else if (a === '--external') external = String(argv[++i] ?? 'auto');
   else if (a === '--test') testCmd = String(argv[++i] ?? '');
   else if (a === '--no-git-finish') gitFinish = false;
+  else if (a === '--no-push') gitPush = false;
   else if (!value) value = a;
 }
 if (!Number.isFinite(max) || max < 1) max = 25;
@@ -136,6 +138,19 @@ switch (action) {
     const externals = external === 'off'
       ? []
       : detectAvailable({ has, env: provEnv, platform: process.platform });
+    // snapshot del working tree all'arm: i path GIA' modificati PRIMA del task. A fine progetto
+    // gitFinish fa `git add -A`, quindi questi file pre-esistenti finirebbero nel commit del task.
+    // Non li escludiamo (potrebbero essere correlati al task), ma li REGISTRIAMO per avvisare
+    // onestamente alla chiusura: trasparenza, non prevenzione (niente stash/stage selettivo: troppo
+    // rischio per un loop autonomo, e non sappiamo davvero quali file il task ha toccato).
+    const baselineDirty = (() => {
+      const r = spawnSync('git', ['status', '--porcelain'], { cwd: process.cwd(), encoding: 'utf8', timeout: 10000 });
+      if (r.status !== 0) return []; // fuori da un repo git, o git assente
+      return String(r.stdout).split('\n').map((l) => l.slice(3).trim())
+        .map((p) => (p.includes(' -> ') ? p.split(' -> ').pop().trim() : p)) // rename: path di destinazione
+        .map((p) => p.replace(/^"|"$/g, '')) // de-quota (git quota i path con spazi/caratteri speciali)
+        .filter((p) => p && !p.startsWith('.omc-loop')); // lo stato del loop non conta
+    })();
     saveState({
       task: value,
       phase: 'plan',                       // plan -> implement -> review -> ... -> cleanup -> final-verify
@@ -146,6 +161,8 @@ switch (action) {
       testCmd: testCmd || null,            // comando della suite (se noto): il claim richiede un test verde fresco
       lastTest: null,                      // ultimo run registrato dal verbo `test`: {cmd, exitCode, iteration, at}
       gitFinish,                           // a fine progetto: commit+push automatico se si e' dentro un repo git
+      gitPush,                             // --no-push: a fine progetto committa ma NON pusha (commit locale)
+      baselineDirty,                       // path gia' modificati all'arm: a fine progetto avvisa (git add -A li include)
       iterations: 0,
       max,
       retries: 0,                          // review fallite consecutive sullo stesso step

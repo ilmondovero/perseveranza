@@ -3,6 +3,54 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json` e nel badge del README; non si usano tag git.
 
+## 1.14.0
+- **Release di consolidamento da code review** — undici punti di una revisione, raccolti per
+  tema. Nessun cambio al routing delle fasi: l'anello di stato resta identico, migliorano
+  robustezza, chiusura git e copertura dei test.
+- **Conteggio dei checkbox robusto e DRY** (`hud.mjs`: `countOpenSteps`/`countDoneSteps` ora
+  esportati e usati anche da `loop-drive.mjs`). Il conteggio dei box di `plan.md` — che governa
+  sia il gate del `claim-done` sia l'escalation — viveva come regex inline **duplicate**
+  nell'hook. Ora è **un'unica fonte** in `hud.mjs`, robusta ai marker `-`/`*`/`+`, agli spazi
+  dentro la casella (`- [x ]`) e che **ignora i checkbox nei fenced code block** (` ``` ` e
+  `~~~`, anche non chiusi). *Perché:* un esempio markdown nel piano non deve poter falsare
+  "quanti step restano", e la stessa logica non deve esistere in due copie che possono divergere.
+- **Chiusura git più solida** — tre interventi su `gitFinish`/`arm`:
+  - *Filtro `.omc-loop` rename-safe*: l'esclusione dello stato del loop dal commit fa match per
+    **prefisso di path** (non più `includes` substring), con gestione dei rename `R old -> new`.
+    *Perché:* un file come `src/omc-loop-helper.js` veniva scambiato per stato del loop e poteva
+    far credere il working tree "pulito" quando non lo era.
+  - *Flag `--no-push`* (stato `gitPush`, default `true`, retro-compatibile): a fine progetto
+    committa in locale ma **non** pusha; la chiusura è confermata dal solo commit, senza pausa
+    per upstream mancante. Con un upstream presente HEAD resta volutamente avanti — comunicato in
+    notifica/log, non un errore. *Perché:* dove il push è manuale o protetto, il vecchio
+    comportamento mandava sempre in pausa la chiusura.
+  - *Avviso baseline-dirty durevole*: all'`arm` si registrano i file già modificati **prima** del
+    task; poiché la chiusura fa `git add -A` e li include, un avviso onesto ("il commit può
+    includere…") finisce nel **corpo del commit** (visibile per sempre in `git log`), oltre che in
+    notifica/log. *Perché:* trasparenza, non prevenzione — niente stash o stage-selettivo (troppo
+    rischio per un loop autonomo che non sa quali file il task ha davvero toccato), ma l'utente
+    deve poterlo ricostruire a posteriori.
+- **Robustezza dei sottosistemi di contorno:**
+  - *Notifica con `pwsh`*: su Windows la notifica preferisce PowerShell 7+ (`pwsh`) se presente,
+    altrimenti `powershell` (helper `resolvePowerShell()`).
+  - *Timeout statusline configurabile e validato*: il timeout della statusline **base** è ora
+    regolabile via `OMC_STATUSLINE_BASE_TIMEOUT_MS` (default 5s, ridotto da 8s, floor 1s) e
+    **validato** — un valore non valido ricade sul default invece di far crashare il render;
+    aggiunto `killSignal: 'SIGKILL'` per non lasciare appeso il processo base.
+  - *Lock anti-race sul refresh aggiornamenti*: hook e statusline possono chiamare
+    `maybeSpawnRefresh` quasi insieme; un **lock atomico** (`update-check.lock`, flag `wx`, stale
+    60s) evita due refresh in parallelo e il figlio lo rilascia a fine fetch. Il refresh parte
+    **solo** se `update.mjs` è l'entrypoint (guard `isMain`), non quando è importato. *Perché:* un
+    `--refresh` di passaggio nell'argv di un altro script non deve innescare una fetch al load.
+- **Suite di regressione 26 → 52** (`scripts/test.mjs`, sempre zero dipendenze): nuovi casi per il
+  conteggio dei checkbox (marker, spazi, fence aperti/inline), per le funzioni pure di
+  `providers.mjs`/`update.mjs` (`cmpSemver` ora esportata e testata sul confronto **numerico**, non
+  lessicale) e una batteria **end-to-end della chiusura git** in repo temporaneo (commit+push,
+  no-upstream→pausa, `--no-push`, filtro `.omc-loop` rename-safe, avviso baseline nel commit).
+  *Perché:* le aree toccate da questa release erano esattamente quelle prima scoperte dai test.
+- **Fix doc**: il commento d'intestazione di `install.mjs` cita ora l'**URL HTTPS completo**,
+  coerente col README (la forma breve clona via SSH e fallisce dove non ci sono chiavi).
+
 ## 1.13.0
 - **Budget, kill switch ed escalation espliciti** — tre idee importate dalla
   [loop-engineering](https://cobusgreyling.github.io/loop-engineering/), mappate sui meccanismi

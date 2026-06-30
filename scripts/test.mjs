@@ -14,6 +14,10 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { countOpenSteps, countDoneSteps } from './hud.mjs';
+import { effectiveEnv, providerModels, detectAvailable, PROVIDERS } from './providers.mjs';
+import { cmpSemver } from './update.mjs';
+import { underLoop, dirtyBeyondLoop, parseTimeoutMs } from './util.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(SCRIPT_DIR, 'loop-drive.mjs');
@@ -80,6 +84,83 @@ function test(name, fn) {
 }
 
 console.log('perseveranza — suite di regressione\n');
+
+// === conteggio checkbox (hud.mjs) ========================================
+// Coprono gli helper esportati che, in uno step successivo, sostituiranno la
+// regex del gate claim-done: marker/indentazione, spazi interni, fence, input
+// robusto. Sono pure: la `dir` temporanea di test() qui non serve.
+test('hud: marker -, *, + e indentazione (spazi/tab) sono contati', () => {
+  const txt = '- [ ] a\n* [ ] b\n+ [ ] c\n  - [ ] indentato\n\t* [ ] tab\n';
+  eq(countOpenSteps(txt), 5, 'cinque aperti con marker e indentazioni diverse');
+  eq(countDoneSteps(txt), 0, 'nessuno spuntato');
+});
+
+test('hud: spazi interni nella casella ("- [x ]", "- [ x ]", "- [  ]")', () => {
+  eq(countDoneSteps('- [x ]\n- [ x ]\n'), 2, 'spazi attorno alla x: spuntati');
+  eq(countOpenSteps('- [  ]\n'), 1, 'soli spazi dentro: aperto');
+  eq(countDoneSteps('- [  ]\n'), 0, 'soli spazi: non spuntato');
+});
+
+test('hud: checkbox dentro fence ``` chiuso non sono contati', () => {
+  const txt = '- [ ] vero\n```\n- [ ] finto\n- [x] finto2\n```\n';
+  eq(countOpenSteps(txt), 1, 'solo il checkbox fuori dal fence');
+  eq(countDoneSteps(txt), 0, 'lo spuntato e\' dentro il fence');
+});
+
+test('hud: checkbox dentro fence ``` APERTO (fino a EOF) non sono contati', () => {
+  eq(countOpenSteps('```\n- [ ] leaked'), 0, 'fence non chiuso: tutto rimosso');
+  eq(countOpenSteps('- [ ] vero\n```\n- [ ] leaked'), 1, 'solo quello prima del fence aperto');
+});
+
+test('hud: checkbox dentro fence ~~~ non sono contati', () => {
+  eq(countOpenSteps('~~~\n- [ ] x\n~~~'), 0, 'fence tilde chiuso (open)');
+  eq(countDoneSteps('~~~\n- [x] x\n~~~'), 0, 'fence tilde chiuso (done)');
+});
+
+test('hud: backtick singolo (codice inline) non e\' un fence', () => {
+  const txt = '- [ ] usa `[ ]` qui\n- [x] fatto\n';
+  eq(countOpenSteps(txt), 1, 'la riga con inline resta un open');
+  eq(countDoneSteps(txt), 1, 'la riga dopo resta done (niente viene divorato)');
+});
+
+test('hud: triple-backtick/~~~ INLINE non divora i checkbox successivi', () => {
+  eq(countOpenSteps('- [ ] usa ``` nel parser\n- [x] done\n'), 1, 'la riga inline resta open');
+  eq(countDoneSteps('- [ ] usa ``` nel parser\n- [x] done\n'), 1, 'il done dopo non sparisce');
+  eq(countOpenSteps('- [ ] tilde ~~~ inline\n- [ ] altro\n'), 2, 'tilde inline non e\' un fence');
+});
+
+test('hud: riga link "* [a](b)" non e\' un checkbox', () => {
+  eq(countOpenSteps('* [a](b)\n'), 0, 'non e\' una casella vuota');
+  eq(countDoneSteps('* [a](b)\n'), 0, 'non e\' una casella spuntata');
+});
+
+test('hud: open/done si escludono sulla stessa riga', () => {
+  eq(countDoneSteps('- [x]\n'), 1, '"- [x]" conta 1 done');
+  eq(countOpenSteps('- [x]\n'), 0, '"- [x]" conta 0 open');
+  eq(countOpenSteps('- [ ]\n'), 1, '"- [ ]" conta 1 open');
+  eq(countDoneSteps('- [ ]\n'), 0, '"- [ ]" conta 0 done');
+});
+
+test('hud: input non-stringa (null/undefined/numero) -> 0 senza eccezioni', () => {
+  eq(countOpenSteps(null), 0, 'null (open)');
+  eq(countOpenSteps(undefined), 0, 'undefined (open)');
+  eq(countOpenSteps(42), 0, 'numero (open)');
+  eq(countDoneSteps(null), 0, 'null (done)');
+  eq(countDoneSteps(undefined), 0, 'undefined (done)');
+  eq(countDoneSteps(42), 0, 'numero (done)');
+});
+
+test('hud: retrocompatibilita\' "- [x]" done=1, "- [ ]" open=1', () => {
+  eq(countDoneSteps('- [x]'), 1, 'classico done (senza newline finale)');
+  eq(countOpenSteps('- [ ]'), 1, 'classico open (senza newline finale)');
+  eq(countDoneSteps('- [X]'), 1, 'X maiuscola: done');
+});
+
+test('hud: BOM (U+FEFF) iniziale non nasconde il primo checkbox', () => {
+  const BOM = String.fromCharCode(0xFEFF);
+  eq(countOpenSteps(BOM + '- [ ] a\n- [ ] b\n'), 2, 'BOM + checkbox sulla 1a riga: entrambi contati');
+  eq(countDoneSteps(BOM + '- [x] fatto\n'), 1, 'BOM + done sulla 1a riga');
+});
 
 // === dormienza e guardie =================================================
 test('dormiente senza state.json: non blocca e non crea nulla', (dir) => {
@@ -231,6 +312,18 @@ test('claim-done rifiutato se restano step aperti', (dir) => {
   has(r.reason, 'non spuntati', 'spiega il perche\'');
 });
 
+test('claim-done: il gate conta anche i marker non-trattino (* / +)', (dir) => {
+  // collega lo step 2 al fix dello step 1: il gate ora usa countOpenSteps, che
+  // riconosce i marker [-*+]. Prima vedeva solo "- [ ]", quindi uno step "* [ ]"
+  // sarebbe sfuggito e il claim sarebbe stato accettato (cleanup) per errore.
+  arm(dir);
+  writePlan(dir, '* [ ] aperto con asterisco\n');
+  patchState(dir, { phase: 'implement', claimedDone: true });
+  const r = fire(dir);
+  has(r.reason, 'claim-done RIFIUTATO', 'il marker * deve contare come step aperto');
+  has(r.reason, 'non spuntati', 'spiega il perche\'');
+});
+
 test('claim-done rifiutato senza test verde fresco', (dir) => {
   arm(dir, 'task', ['--test', 'node --version']);
   writePlan(dir, '- [x] tutto fatto\n');
@@ -321,6 +414,184 @@ test('verbo test registra l\'exit code reale (rosso)', (dir) => {
   const r = loop(dir, 'test', '--', 'node', 'file-inesistente-xyz.js');
   check(r.status !== 0, 'comando rosso -> exit != 0');
   check(readState(dir).lastTest.exitCode !== 0, 'registra il rosso');
+});
+
+// === funzioni pure: providers.mjs e update.mjs ============================
+// Importate direttamente (zero side-effect al load): coprono il parsing dei modelli
+// esterni e il confronto di versione, prima privi di test diretti.
+test('providers: providerModels splitta la lista CSV di ollama-cloud', () => {
+  eq(JSON.stringify(providerModels('ollama-cloud', { OLLAMA_MODEL: 'a, b ,c' })), JSON.stringify(['a', 'b', 'c']), 'CSV con spazi -> trim');
+  eq(JSON.stringify(providerModels('ollama-cloud', { OLLAMA_MODEL: ',, ' })), JSON.stringify(['glm-5.2']), 'solo virgole -> default (non lista vuota)');
+  eq(JSON.stringify(providerModels('ollama-cloud', {})), JSON.stringify(['glm-5.2']), 'assente -> default');
+  eq(JSON.stringify(providerModels('codex', {})), JSON.stringify([null]), 'CLI -> [null]');
+});
+
+test('providers: PROVIDERS ollama-cloud models/host', () => {
+  eq(JSON.stringify(PROVIDERS['ollama-cloud'].models({ OLLAMA_MODEL: 'x,y' })), JSON.stringify(['x', 'y']), 'models da env');
+  eq(PROVIDERS['ollama-cloud'].host({ OLLAMA_HOST: 'https://h.example/' }), 'https://h.example', 'host senza slash finale');
+  eq(PROVIDERS['ollama-cloud'].host({}), 'https://ollama.com', 'host default');
+});
+
+test('providers: detectAvailable rispetta has/env/platform', () => {
+  eq(JSON.stringify(detectAvailable({ has: () => false, env: {}, platform: 'win32' })), JSON.stringify([]), 'niente CLI/chiave -> []');
+  check(detectAvailable({ has: (n) => n === 'codex', env: {}, platform: 'win32' }).includes('codex'), 'codex rilevato');
+  check(!detectAvailable({ has: (n) => n === 'agy', env: {}, platform: 'win32' }).includes('agy'), 'agy NON su win32 (bug print mode)');
+  check(detectAvailable({ has: (n) => n === 'agy', env: {}, platform: 'linux' }).includes('agy'), 'agy su linux');
+  check(detectAvailable({ has: () => false, env: { OLLAMA_API_KEY: 'k' }, platform: 'linux' }).includes('ollama-cloud'), 'ollama-cloud se c\'e\' la chiave');
+});
+
+test('providers: effectiveEnv precedenza env > file > default', (dir) => {
+  const cfg = join(dir, 'config.json');
+  writeFileSync(cfg, JSON.stringify({ ollama: { apiKey: 'FILEKEY', model: 'filemodel', host: 'https://file.host' } }));
+  const e1 = effectiveEnv({ OLLAMA_MODEL: 'envmodel' }, cfg);
+  eq(e1.OLLAMA_MODEL, 'envmodel', 'env batte file');
+  eq(e1.OLLAMA_API_KEY, 'FILEKEY', 'la chiave assente in env arriva dal file');
+  const e2 = effectiveEnv({}, cfg);
+  eq(e2.OLLAMA_MODEL, 'filemodel', 'file riempie OLLAMA_MODEL');
+  eq(e2.OLLAMA_HOST, 'https://file.host', 'file riempie OLLAMA_HOST');
+  const e3 = effectiveEnv({}, join(dir, 'nonexistent.json'));
+  eq(e3.OLLAMA_MODEL, undefined, 'nessun file -> nessun model (default a valle)');
+});
+
+test('update: cmpSemver confronta numericamente (non lessicalmente)', () => {
+  check(cmpSemver('1.2.0', '1.1.0') > 0, '1.2.0 > 1.1.0');
+  check(cmpSemver('1.1.0', '1.2.0') < 0, '1.1.0 < 1.2.0');
+  eq(cmpSemver('1.0.0', '1.0.0'), 0, 'uguali -> 0');
+  check(cmpSemver('1.10.0', '1.9.0') > 0, '1.10.0 > 1.9.0 (numerico)');
+  check(cmpSemver('2.0.0', '1.9.9') > 0, 'major piu\' alto vince');
+  eq(cmpSemver('1.2', '1.2.0'), 0, 'lunghezze diverse -> componenti mancanti = 0');
+});
+
+// === util.mjs (predicati git + timeout) ==================================
+// Unit test DISCRIMINANTI sui predicati estratti da loop-drive/statusline: pure,
+// importate direttamente. Coprono casi che il test e2e su gitFinish non distingue
+// (il bug del substring, i rename a due lati), senza dover armare un repo git.
+test('util: underLoop match per PREFISSO, non substring', () => {
+  eq(underLoop('.omc-loop'), true, 'la cartella stessa');
+  eq(underLoop('.omc-loop/state.json'), true, 'un file sotto .omc-loop/');
+  eq(underLoop('src/omc-loop-helper.js'), false, 'substring "omc-loop" nel nome NON e\' stato del loop (il bug)');
+  eq(underLoop('.omc-loopx/foo'), false, 'prefisso simile ma cartella diversa');
+  eq(underLoop('".omc-loop/x"'), true, 'path quotato da git: de-quotato e riconosciuto');
+});
+
+test('util: dirtyBeyondLoop distingue lavoro vero da stato del loop', () => {
+  eq(dirtyBeyondLoop(' M src/omc-loop-helper.js'), true, 'file di lavoro modificato -> sporco');
+  eq(dirtyBeyondLoop(' M .omc-loop/state.json'), false, 'solo stato del loop -> pulito');
+  eq(dirtyBeyondLoop('R  .omc-loop/a -> .omc-loop/b'), false, 'rename interamente dentro .omc-loop/ -> pulito');
+  eq(dirtyBeyondLoop('R  src/old.js -> src/new.js'), true, 'rename di file di lavoro (un lato fuori) -> sporco');
+  eq(dirtyBeyondLoop(' M .omc-loop/x\n M src/foo.js'), true, 'almeno una riga fuori da .omc-loop/ -> sporco');
+  eq(dirtyBeyondLoop(''), false, 'output vuoto -> pulito');
+});
+
+test('util: parseTimeoutMs robusto (intero positivo, floor, default)', () => {
+  eq(parseTimeoutMs('1500.5', 5000), 1500, 'tronca a intero');
+  eq(parseTimeoutMs('-1000', 5000), 5000, 'negativo -> default');
+  eq(parseTimeoutMs('abc', 5000), 5000, 'NaN -> default');
+  eq(parseTimeoutMs('0', 5000), 5000, 'zero -> default');
+  eq(parseTimeoutMs('9000', 5000), 9000, 'intero valido sopra il floor');
+  eq(parseTimeoutMs('500', 5000), 1000, 'sotto il floor 1000 -> floor');
+  eq(parseTimeoutMs(undefined, 5000), 5000, 'assente -> default');
+});
+
+// === chiusura git (repo temporaneo) ======================================
+// Esercitano gitFinish/closeWithGit PER DAVVERO: un repo git vero in tmp, con un
+// bare remote LOCALE come origin/main (push offline e deterministico, niente rete,
+// nessun repo reale toccato). Se git non c'e', ogni test si auto-salta con una nota.
+// NB: questi arm NON passano --no-git-finish (serve la chiusura git reale), a
+// differenza dell'helper arm() generico che la disattiva.
+
+// arma un loop CON chiusura git attiva (l'helper arm() forza --no-git-finish)
+function armGitFinish(dir, task = 'lavoro completato', extra = []) {
+  const r = spawnSync(NODE, [LOOP, 'arm', task, '--external', 'off', ...extra],
+    { cwd: dir, encoding: 'utf8', env: ENV });
+  if (r.status !== 0) throw new Error(`arm (git) fallito: ${r.stdout}${r.stderr}`);
+}
+// crea un repo git vero in tmp; con withRemote anche un bare remote locale come origin/main.
+// Ritorna { dir, g, remote } oppure null se git e' assente (-> il chiamante salta il test).
+function gitRepo({ withRemote } = {}) {
+  const dir = freshDir();
+  const g = (...a) => spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
+  if (g('init', '-q').status !== 0) return null; // git assente -> il chiamante salta il test
+  g('config', 'user.email', 't@t'); g('config', 'user.name', 'Test');
+  g('config', 'commit.gpgsign', 'false'); // niente firma: deterministico anche con gpg locale attivo
+  writeFileSync(join(dir, 'README.md'), 'init\n'); g('add', '-A'); g('commit', '-q', '-m', 'init');
+  g('branch', '-M', 'main');
+  let remote = null;
+  if (withRemote) {
+    remote = freshDir();
+    spawnSync('git', ['init', '--bare', '-q', remote], { encoding: 'utf8' });
+    g('remote', 'add', 'origin', remote);
+    g('push', '-q', '-u', 'origin', 'main'); // imposta l'upstream main
+  }
+  return { dir, g, remote };
+}
+// log compatto di un branch del bare remote (ref esplicito: evita ambiguita' sull'HEAD del bare)
+function remoteLog(remote, ref = 'main') {
+  return spawnSync('git', ['-C', remote, 'log', '--oneline', ref], { encoding: 'utf8' }).stdout || '';
+}
+// porta un loop armato fino allo Stop che innesca la chiusura git (final-verify -> pass)
+function driveToClose(repo) {
+  writePlan(repo.dir, '- [x] tutto fatto\n');
+  patchState(repo.dir, { phase: 'final-verify' });
+  writeArtifact(repo.dir, 'verify.json', { pass: true, findings: [] });
+  return fire(repo.dir);
+}
+
+test('git: commit+push confermati -> disarma e il commit arriva sul remoto', () => {
+  const repo = gitRepo({ withRemote: true });
+  if (!repo) { console.log('    (git assente: test chiusura git saltato)'); return; }
+  writeFileSync(join(repo.dir, 'work.txt'), 'lavoro del task\n'); // file di lavoro non committato
+  armGitFinish(repo.dir);
+  driveToClose(repo);
+  eq(readState(repo.dir), null, 'chiusura confermata: loop disarmato');
+  has(remoteLog(repo.remote), 'perseveranza', 'il commit perseveranza e\' arrivato sul bare remote');
+});
+
+test('git: nessun upstream -> pausa in fase git-finish (non disarma)', () => {
+  const repo = gitRepo(); // niente remote -> niente upstream
+  if (!repo) { console.log('    (git assente: test chiusura git saltato)'); return; }
+  armGitFinish(repo.dir);
+  driveToClose(repo);
+  const s = readState(repo.dir);
+  check(s !== null && s !== 'CORRUPT', 'senza upstream NON deve disarmare');
+  eq(s.phase, 'git-finish', 'resta in git-finish per il retry dopo resume');
+  eq(s.paused, true, 'in pausa: serve l\'umano (configurare l\'upstream)');
+});
+
+test('git: --no-push con upstream -> commit locale, disarma, niente push sul remoto', () => {
+  const repo = gitRepo({ withRemote: true });
+  if (!repo) { console.log('    (git assente: test chiusura git saltato)'); return; }
+  writeFileSync(join(repo.dir, 'work.txt'), 'lavoro del task\n');
+  armGitFinish(repo.dir, 'lavoro completato', ['--no-push']);
+  driveToClose(repo);
+  eq(readState(repo.dir), null, '--no-push: il solo commit locale conferma -> disarma');
+  has(repo.g('log', '--format=%s').stdout, 'perseveranza', 'il commit perseveranza e\' nel repo LOCALE');
+  check(!remoteLog(repo.remote).includes('perseveranza'), 'NON pushato: il bare remote non ha il commit');
+});
+
+test('git: filtro .omc-loop rename-safe (src/omc-loop-helper.js e\' lavoro vero)', () => {
+  const repo = gitRepo({ withRemote: true });
+  if (!repo) { console.log('    (git assente: test chiusura git saltato)'); return; }
+  mkdirSync(join(repo.dir, 'src'), { recursive: true });
+  writeFileSync(join(repo.dir, 'src', 'omc-loop-helper.js'), '// lavoro vero, non stato del loop\n');
+  armGitFinish(repo.dir);
+  driveToClose(repo);
+  eq(readState(repo.dir), null, 'chiusura confermata: disarmato');
+  const files = repo.g('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD').stdout;
+  has(files, 'omc-loop-helper.js', 'il file con "omc-loop" nel nome e\' committato (non scambiato per stato)');
+});
+
+test('git: baselineDirty finisce nel corpo del commit (avviso durevole)', () => {
+  const repo = gitRepo({ withRemote: true });
+  if (!repo) { console.log('    (git assente: test chiusura git saltato)'); return; }
+  writeFileSync(join(repo.dir, 'README.md'), 'init\nmodifica PRIMA dell\'arm\n'); // tracciato, gia' sporco
+  armGitFinish(repo.dir); // l'arm cattura README.md in baselineDirty
+  eq((readState(repo.dir).baselineDirty || []).join(','), 'README.md', 'arm registra il file pre-sporco');
+  driveToClose(repo);
+  eq(readState(repo.dir), null, 'chiusura confermata: disarmato');
+  const body = repo.g('log', '-1', '--format=%B').stdout;
+  has(body, 'Nota perseveranza:', 'il corpo del commit porta la nota durevole');
+  has(body, 'README.md', 'la nota cita il file pre-modificato');
 });
 
 // --- esito ----------------------------------------------------------------

@@ -41,10 +41,30 @@ Lo storico delle decisioni è in `../CHANGELOG.md`.
 - `claim-done` accettato solo con piano **interamente spuntato** (l'hook conta i box
   `- [ ]`) **e** un **test verde fresco** misurato dal verbo `test` (exit code reale,
   `iteration` corrente). Mai fidarsi di una dichiarazione.
+- Il **conteggio dei box** è centralizzato in `hud.mjs` (`countOpenSteps`/`countDoneSteps`,
+  esportati): **unica fonte**, usata sia dal gate del `claim-done` sia dall'escalation in
+  `loop-drive.mjs` (niente più regex inline duplicate che possono divergere). Robusto ai marker
+  `-`/`*`/`+`, agli spazi dentro la casella (`- [x ]`) e **ignora i checkbox nei fenced code
+  block** (` ``` `/`~~~`, anche non chiusi fino a EOF): un esempio markdown nel piano non falsa
+  "quanti step restano".
 - I verdetti sono **artefatti** (`review.json`/`verify.json`) consumati **alla lettura**
   (un verdetto vecchio non si riusa mai).
 - La chiusura git è verificata sui **fatti** (working tree pulito + HEAD non avanti
   all'upstream), non sugli exit code di commit/push.
+
+## Chiusura git (`gitFinish` in `loop-drive.mjs`)
+- Il filtro che esclude `.omc-loop/` dal commit fa match per **prefisso di path**, non
+  `includes` substring: `src/omc-loop-helper.js` **non** è stato del loop (era un bug di
+  `l.includes('.omc-loop')`). Gestisce anche i rename `R old -> new`, controllando entrambi i
+  path della riga `--porcelain`.
+- `--no-push` (`gitPush:false`): la chiusura è confermata dal **solo commit locale**; con un
+  upstream presente **HEAD resta avanti di proposito** (`pushSkipped`/`ahead`) — è una scelta
+  dell'utente, **non** un errore, e **non** manda in pausa la chiusura. Default `gitPush:true`
+  (retro-compatibile: stato vecchio senza il campo → push).
+- L'avviso **baseline-dirty** (file già sporchi all'`arm`, che il `git add -A` di chiusura
+  include) va nel **corpo del commit** — durevole in `git log` — oltre che in notifica/log
+  (effimeri e silenziabili in headless). Trasparenza, non prevenzione: niente stash o
+  stage-selettivo (un loop autonomo non sa quali file il task ha davvero toccato).
 
 ## Sicurezza della chiave (ollama-cloud)
 - `OLLAMA_API_KEY` solo in env o `~/.perseveranza/config.json`, **MAI** nel repo, negli
@@ -64,6 +84,16 @@ Lo storico delle decisioni è in `../CHANGELOG.md`.
   non alla cache versionata del plugin (si romperebbe a ogni update).
 - La statusline deve restare **veloce**: niente lavoro pesante sincrono; il controllo
   aggiornamenti è in un processo distaccato.
+- Il timeout della statusline **base** è configurabile (`OMC_STATUSLINE_BASE_TIMEOUT_MS`,
+  default 5s, floor 1s) e **validato**: un valore non-intero/negativo passato a
+  `spawnSync({timeout})` lancerebbe `ERR_OUT_OF_RANGE` → si ricade sul default invece di
+  azzerare l'intera statusline. `killSignal:'SIGKILL'` per non lasciare appeso il processo base;
+  il `try/catch` garantisce che una base che esplode non rompa mai il render.
+- Il refresh aggiornamenti (`update.mjs`) parte **solo come modulo principale** (guard `isMain`):
+  importato da hook/statusline/test **non** fa fetch al load, anche se `--refresh` capita
+  nell'argv di un altro entrypoint. `maybeSpawnRefresh` usa un **lock atomico**
+  (`update-check.lock`, flag `wx`, stale 60s) così hook e statusline non lanciano due refresh
+  insieme; il figlio rilascia il lock a fine fetch.
 - **Dormiente** fuori da un progetto armato (nessun segmento perseveranza).
 
 ## Packaging

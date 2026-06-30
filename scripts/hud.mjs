@@ -12,9 +12,44 @@ const PHASE_COLOR = {
   plan: 36, implement: 36, review: 33, cleanup: 36, 'final-verify': 34, 'git-finish': 35,
 };
 
+// Rimuove i fenced code block, cosi' i checkbox dentro esempi di codice NON
+// vengono conteggiati. Scansione riga-per-riga con toggle: i marker ``` / ~~~
+// contano SOLO a inizio riga (CommonMark, <=3 spazi). Un fence aperto non chiuso
+// esclude fino a EOF; un backtick/tilde INLINE non e' un fence e non divora nulla.
+function stripCodeFences(text) {
+  let fence = null;            // marker di apertura corrente (es. '```' o '~~~'), o null
+  const out = [];
+  // togli un eventuale BOM (U+FEFF) iniziale: la regex ^[ \t]*[-*+] non lo considera uno spazio,
+  // quindi senza questo un checkbox sulla 1a riga preceduto dal BOM non verrebbe contato.
+  const s = String(text);
+  const body = s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
+  for (const line of body.split('\n')) {
+    const m = line.match(/^[ \t]{0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      // chiusura: stesso tipo di marker, lunghezza >= apertura
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length) fence = null;
+      continue;                // riga dentro il fence (apertura/chiusura/contenuto): esclusa
+    }
+    if (m) { fence = m[1]; continue; } // apertura del fence
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+// Conteggio dei checkbox del piano, robusto rispetto alle varianti Markdown:
+//  - marker di lista -, * o + ;  - indentazione iniziale ;
+//  - spazi/tab opzionali dentro la casella (es. "- [x ]", "* [ ]", "+ [x]").
+// I code block vengono tolti prima di contare.
+export function countOpenSteps(planText) {
+  return (stripCodeFences(planText).match(/^[ \t]*[-*+][ \t]*\[[ \t]*\]/gm) || []).length;
+}
+export function countDoneSteps(planText) {
+  return (stripCodeFences(planText).match(/^[ \t]*[-*+][ \t]*\[[ \t]*[xX][ \t]*\]/gm) || []).length;
+}
+
 function stepCounts(planText) {
-  const done = (planText.match(/^[ \t]*-[ \t]*\[[xX]\]/gm) || []).length;
-  const open = (planText.match(/^[ \t]*-[ \t]*\[[ \t]*\]/gm) || []).length;
+  const done = countDoneSteps(planText);
+  const open = countOpenSteps(planText);
   const total = done + open;
   return total ? { done, total } : null;
 }

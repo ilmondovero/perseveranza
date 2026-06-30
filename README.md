@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.13.0-blue)
+![versione](https://img.shields.io/badge/versione-1.14.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -95,8 +95,9 @@ una nuova versione.
   `OLLAMA_MODEL`, anche una lista separata da virgole per interrogarne più d'uno in un
   colpo; default `glm-5.2`)
 - Notifiche desktop (opzionali, fallback silenzioso): BurntToast su Windows
-  (`Install-Module BurntToast`, senza: beep), `osascript` su macOS (già presente),
-  `notify-send` su Linux (pacchetto `libnotify`)
+  (`Install-Module BurntToast`, senza: beep; eseguita con `pwsh`/PowerShell 7+ se presente,
+  altrimenti `powershell`), `osascript` su macOS (già presente), `notify-send` su Linux
+  (pacchetto `libnotify`)
 
 ### Installazione manuale (alternativa)
 
@@ -123,6 +124,7 @@ avanzare le fasi due volte per risposta. Prima di passare al plugin, eseguire
 /perseveranza feature Z --commit              # commit atomico dopo ogni step validato
 /perseveranza fix veloce --external off       # senza confronto con modelli esterni
 /perseveranza feature W --no-git-finish       # niente commit+push automatico a fine progetto
+/perseveranza feature V --no-push             # commit locale a fine progetto, niente push
 ```
 
 Claude scrive il piano in `.omc-loop/plan.md` (checklist), registra la complessità e da
@@ -273,6 +275,11 @@ ripunta `statusLine` (con backup) e richiama la base con lo stesso input: quando
 armato vede il segmento `⟳ PRS …`, altrimenti solo la base. Fuori da un progetto armato la
 HUD è invisibile. Reversibile con `hud off`.
 
+La statusline base (la tua, eseguita e ricomposta col segmento perseveranza) ha un timeout di
+**5s**, regolabile con `OMC_STATUSLINE_BASE_TIMEOUT_MS` (millisecondi, floor 1s): alzalo se la
+tua base è lenta su repo grandi (es. un `git status` da 2-3s), abbassalo per reagire prima. Il
+valore è validato (un input non valido ricade sul default, niente render rotto).
+
 ## Notifica aggiornamenti
 
 Come fa OMC, perseveranza segnala quando esiste una versione più recente. Un controllo
@@ -310,7 +317,14 @@ aggiornare basta il pannello `/plugin`.
   tree pulito e HEAD non avanti all'upstream): se la chiusura git non è confermata (push
   fallito, nessun upstream, modifiche residue) il progetto **non** viene dichiarato finito —
   il loop va in pausa con notifica e, risolto il problema, dopo `resume` ritenta la
-  chiusura. Disattivabile del tutto con `--no-git-finish`
+  chiusura. Disattivabile del tutto con `--no-git-finish`; con `--no-push` il lavoro viene
+  **committato in locale** ma non pushato (la chiusura è confermata dal solo commit, niente
+  pausa per upstream mancante — con un upstream presente HEAD resta volutamente avanti, cosa
+  comunicata in notifica/log, non un errore)
+- avviso **baseline-dirty**: i file già modificati *prima* del task (rilevati all'arm)
+  finiscono comunque nel `git add -A` di chiusura; perseveranza non li esclude (potrebbero
+  essere correlati al task) ma lo **scrive nel corpo del commit** — avviso durevole, visibile
+  in `git log`, oltre che in notifica e log. Trasparenza, non prevenzione
 - a fine progetto la cartella `.omc-loop/` viene rimossa (aggiungerla comunque al
   `.gitignore` dei progetti su cui la si usa)
 

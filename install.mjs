@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Installazione MANUALE di "perseveranza" (alternativa al plugin, stessa logica).
-// Preferire il plugin:  /plugin marketplace add ilmondovero/perseveranza
+// Preferire il plugin:  /plugin marketplace add https://github.com/ilmondovero/perseveranza
 //                       /plugin install perseveranza@perseveranza
 // NON usare entrambe le modalita' insieme: due Stop hook guiderebbero lo stesso loop.
 //
@@ -32,6 +32,7 @@ const hudPath = join(hooksDir, 'hud.mjs');
 const statuslinePath = join(hooksDir, 'statusline.mjs');
 const resolverPath = join(hooksDir, 'statusline-resolver.mjs');
 const updatePath = join(hooksDir, 'update.mjs');
+const utilPath = join(hooksDir, 'util.mjs');
 const AGENTS = ['pf-reviewer.md', 'pf-verifier.md', 'pf-executor.md'];
 
 function loadSettings() {
@@ -59,7 +60,7 @@ function saveSettings(settings) {
 }
 
 if (uninstall) {
-  const toRemove = [loopPath, drivePath, providersPath, hudPath, statuslinePath, resolverPath, updatePath, join(hooksDir, 'omc-loop.ps1'), join(hooksDir, 'loop-drive.ps1'), join(commandsDir, 'perseveranza.md')];
+  const toRemove = [loopPath, drivePath, providersPath, hudPath, statuslinePath, resolverPath, updatePath, utilPath, join(hooksDir, 'omc-loop.ps1'), join(hooksDir, 'loop-drive.ps1'), join(commandsDir, 'perseveranza.md')];
   toRemove.push(...AGENTS.map((a) => join(agentsDir, a)));
   for (const p of toRemove) {
     if (existsSync(p)) { rmSync(p); console.log(`Rimosso: ${p}`); }
@@ -85,6 +86,7 @@ copyFileSync(join(src, 'scripts', 'hud.mjs'), hudPath);             // rendering
 copyFileSync(join(src, 'scripts', 'statusline.mjs'), statuslinePath); // statusline componibile
 copyFileSync(join(src, 'scripts', 'statusline-resolver.mjs'), resolverPath); // wrapper stabile HUD
 copyFileSync(join(src, 'scripts', 'update.mjs'), updatePath);       // notifica aggiornamenti
+copyFileSync(join(src, 'scripts', 'util.mjs'), utilPath);           // utility pure condivise
 // il comando del plugin usa ${CLAUDE_PLUGIN_ROOT}: nell'installazione manuale
 // va riscritto col path assoluto degli script copiati
 const cmd = readFileSync(join(src, 'commands', 'perseveranza.md'), 'utf8')

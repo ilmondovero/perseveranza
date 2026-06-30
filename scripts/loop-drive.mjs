@@ -22,11 +22,20 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, rmSync } from 
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { renderProgress } from './hud.mjs';
+import { renderProgress, countOpenSteps } from './hud.mjs';
 import { maybeSpawnRefresh, updateAvailable, currentVersion } from './update.mjs';
+import { dirtyBeyondLoop } from './util.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const LOOP = `node "${join(SCRIPT_DIR, 'omc-loop.mjs')}"`;
+
+// preferisci PowerShell 7+ (pwsh) se installato, altrimenti Windows PowerShell (powershell).
+// Rilevamento per-chiamata: notify e' raro (fine fase / pausa / chiusura), il costo di un `where`
+// e' trascurabile e si evita di cachare un PATH che potrebbe cambiare tra invocazioni dell'hook.
+function resolvePowerShell() {
+  try { return spawnSync('where', ['pwsh'], { stdio: 'ignore', timeout: 4000 }).status === 0 ? 'pwsh' : 'powershell'; }
+  catch { return 'powershell'; }
+}
 
 // notifica desktop cross-platform; in ultima istanza silenziosa (e' solo comodita')
 function notify(title, msg) {
@@ -36,7 +45,7 @@ function notify(title, msg) {
     if (process.platform === 'win32') {
       const q = (t) => t.replace(/'/g, "''");
       const ps = `try { Import-Module BurntToast -ErrorAction Stop; New-BurntToastNotification -Text '${q(title)}','${q(msg)}' | Out-Null } catch { [console]::beep(880,200) }`;
-      spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 8000, stdio: 'ignore' });
+      spawnSync(resolvePowerShell(), ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 8000, stdio: 'ignore' });
     } else if (process.platform === 'darwin') {
       const q = (t) => t.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       spawnSync('osascript', ['-e', `display notification "${q(msg)}" with title "${q(title)}"`], { timeout: 5000, stdio: 'ignore' });
@@ -49,27 +58,43 @@ function notify(title, msg) {
 // commit+push automatico a fine progetto, SOLO se si e' dentro un repo git; altrimenti salta.
 // Best-effort e mai bloccante: un push fallito (nessun upstream/remote/auth) non annulla la chiusura.
 // .omc-loop/ viene escluso dallo stage (lo stato non finisce nel commit).
-function gitFinish(cwd, task) {
+function gitFinish(cwd, task, { push = true, baselineDirty = [] } = {}) {
   const git = (args) => spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000 });
   const inside = git(['rev-parse', '--is-inside-work-tree']);
   if (inside.status !== 0 || String(inside.stdout).trim() !== 'true') return { ran: false };
   git(['add', '-A']);
   git(['reset', '-q', '--', '.omc-loop']); // non committare mai lo stato del loop
   // (ridondante con .gitignore, ma resta come rete di sicurezza se .omc-loop fosse gia' tracciato)
-  const msg = `perseveranza: ${task || 'progetto completato'}`;
-  const commit = git(['commit', '-m', msg]); // su un retry puo' dire "nothing to commit": va bene
-  const push = git(['push']);
-  const pushErr = push.status === 0 ? '' : (String(push.stderr).trim().split('\n').pop() || 'push fallito').slice(0, 100);
+  // avviso baseline-dirty DUREVOLE: lo scriviamo nel corpo del commit (la notifica/log restano
+  // effimeri e silenziabili in headless). Onesto: `git add -A` ha incluso anche file gia' modificati
+  // prima del task, non necessariamente toccati da esso. Trasparenza, non errore.
+  const baseNote = (Array.isArray(baselineDirty) && baselineDirty.length)
+    ? `\n\nNota perseveranza: questo commit puo' includere ${baselineDirty.length} file gia' modificati prima del task (git add -A): `
+      + `${baselineDirty.slice(0, 10).join(', ')}${baselineDirty.length > 10 ? ` (+${baselineDirty.length - 10} altri)` : ''}.`
+    : '';
+  const msg = `perseveranza: ${task || 'progetto completato'}${baseNote}`;
+  git(['commit', '-m', msg]); // su un retry puo' dire "nothing to commit": va bene
   // VERIFICA REALE che commit e push siano avvenuti (non ci si fida degli exit code):
   //  - commit eseguito = nessuna modifica tracciata resta fuori (working tree pulito, escluso .omc-loop)
   //  - push eseguito    = esiste un upstream e HEAD non e' avanti ad esso (tutto e' finito sul remoto)
-  const dirty = String(git(['status', '--porcelain']).stdout)
-    .split('\n').some((l) => l.trim() && !l.includes('.omc-loop'));
+  // `git status --porcelain`: ogni riga e' "XY <path>" (XY = 2 char di stato + 1 spazio);
+  // per rename/copie e' "XY <old> -> <new>". Una riga conta come lavoro da committare
+  // (working tree "sporco") solo se ALMENO un path coinvolto NON sta sotto .omc-loop/.
+  // Match per PREFISSO di path, non substring: cosi' un file come "src/omc-loop-x.js"
+  // non viene scambiato per stato del loop (bug del vecchio l.includes('.omc-loop')).
+  // La logica (underLoop/dirtyBeyondLoop) e' in util.mjs, cosi' e' unit-testabile in isolamento.
+  const dirty = dirtyBeyondLoop(git(['status', '--porcelain']).stdout);
+  const committed = !dirty;
   const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
   const hasUpstream = upstream.status === 0;
-  const ahead = hasUpstream ? Number(String(git(['rev-list', '--count', '@{u}..HEAD']).stdout).trim()) : null;
-  const committed = !dirty;
-  const pushed = hasUpstream && ahead === 0;
+  const aheadCount = () => (hasUpstream ? Number(String(git(['rev-list', '--count', '@{u}..HEAD']).stdout).trim()) : null);
+  // --no-push: chiusura confermata col SOLO commit locale. Con un upstream presente HEAD resta
+  // AVANTI (scelta esplicita dell'utente): lo comunichiamo (pushSkipped/ahead), non e' un errore.
+  if (!push) return { ran: true, confirmed: committed, committed, pushed: false, pushSkipped: true, hasUpstream, ahead: aheadCount() || 0 };
+  // push eseguito = esiste un upstream e HEAD non e' avanti ad esso (tutto e' finito sul remoto)
+  const pushRes = git(['push']);
+  const pushErr = pushRes.status === 0 ? '' : (String(pushRes.stderr).trim().split('\n').pop() || 'push fallito').slice(0, 100);
+  const pushed = hasUpstream && aheadCount() === 0;
   return { ran: true, confirmed: committed && pushed, committed, pushed, hasUpstream, pushErr };
 }
 
@@ -145,7 +170,8 @@ const s = {
   retries: 0, maxRetries: 3, finalFails: 0, lastReport: 'none',
   claimedDone: false, paused: false, repeated: false,
   commitSteps: false, externals: [], cleanedOnce: false,
-  testCmd: null, lastTest: null, gitFinish: true,
+  testCmd: null, lastTest: null, gitFinish: true, gitPush: true,
+  baselineDirty: [],                // path gia' sporchi all'arm: avviso (non bloccante) a fine progetto
   sessionId: null, lastFireAt: 0,   // proprieta' del loop: claim-on-first-fire (vedi sotto)
   ...rawState,
 };
@@ -293,7 +319,7 @@ function writeEscalation(why) {
     const test = s.lastTest
       ? `\`${s.lastTest.cmd}\` -> exit ${s.lastTest.exitCode} (iter ${s.lastTest.iteration}, ${s.lastTest.at})`
       : 'nessun run registrato';
-    const openSteps = (planText.match(/^[ \t]*-[ \t]*\[[ \t]*\]/gm) || []).length;
+    const openSteps = countOpenSteps(planText);
     const doc = `# Escalation - serve intervento umano\n\n`
       + `Il loop si e' messo in PAUSA: ${why}.\n\n`
       + `- quando: ${ts}\n`
@@ -337,7 +363,8 @@ function pauseForHuman(why) {
 function closeWithGit(isRetry) {
   let gitNote = '';
   if (s.gitFinish !== false) {
-    const g = gitFinish(cwd, s.task);
+    const push = s.gitPush !== false; // --no-push -> commit locale, niente push (retro-compat: default push)
+    const g = gitFinish(cwd, s.task, { push, baselineDirty: Array.isArray(s.baselineDirty) ? s.baselineDirty : [] });
     if (g.ran && !g.confirmed) {
       const why = !g.committed ? 'commit non riuscito (restano modifiche non committate)'
         : !g.hasUpstream ? 'push impossibile: nessun upstream configurato per il branch'
@@ -349,8 +376,22 @@ function closeWithGit(isRetry) {
       notify('Claude Code - OMC-loop', `Verifica OK ma chiusura git NON confermata: ${why}. Risolvi e poi esegui: resume - ${proj}`);
       process.exit(0);
     }
-    if (g.ran) { gitNote = ' · commit+push confermati'; logStep(`git-finish${isRetry ? ' (retry)' : ''}: commit+push confermati`); }
-    else logStep('git-finish: fuori da un repo git, salto');
+    if (g.ran && g.pushSkipped) {
+      const aheadNote = g.hasUpstream && g.ahead > 0 ? ` (HEAD avanti di ${g.ahead} all'upstream, NON pushato)` : '';
+      gitNote = ` · commit locale --no-push${aheadNote}`;
+      logStep(`git-finish${isRetry ? ' (retry)' : ''}: commit locale, push saltato (--no-push)${g.ahead ? ` ahead=${g.ahead}` : ''}`);
+    } else if (g.ran) {
+      gitNote = ' · commit+push confermati';
+      logStep(`git-finish${isRetry ? ' (retry)' : ''}: commit+push confermati`);
+    } else logStep('git-finish: fuori da un repo git, salto');
+    // avviso baseline-dirty (non bloccante): a fine progetto `git add -A` ha incluso anche i file
+    // gia' modificati all'arm, non necessariamente toccati dal task. Trasparenza onesta, non errore.
+    const baseDirty = Array.isArray(s.baselineDirty) ? s.baselineDirty : [];
+    if (g.ran && baseDirty.length) {
+      const lst = baseDirty.slice(0, 5).join(', ') + (baseDirty.length > 5 ? `, +${baseDirty.length - 5} altri` : '');
+      gitNote += ` · ⚠ il commit puo' includere ${baseDirty.length} file gia' modificati all'arm (${lst})`;
+      logStep(`baseline-dirty: ${baseDirty.length} file pre-esistenti possibilmente nel commit (${lst})`);
+    }
   }
   disarm();
   notify('Claude Code - OMC-loop', `Progetto finito e verificato - ${proj}${gitNote}`);
@@ -360,7 +401,7 @@ function closeWithGit(isRetry) {
 if (claimed) {
   // gate d'ingresso alla rampa di uscita: niente parole, solo prove.
   // (1) il piano dev'essere interamente spuntato; (2) serve un test verde fresco.
-  const openSteps = (planText.match(/^[ \t]*-[ \t]*\[[ \t]*\]/gm) || []).length;
+  const openSteps = countOpenSteps(planText);
   const testRequired = !!(s.testCmd || s.lastTest);
   const freshGreen = s.lastTest
     && Number(s.lastTest.exitCode) === 0

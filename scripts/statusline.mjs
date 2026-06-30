@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { loadConfig } from './providers.mjs';
 import { renderProgress } from './hud.mjs';
 import { maybeSpawnRefresh, updateAvailable, currentVersion } from './update.mjs';
+import { parseTimeoutMs } from './util.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -24,7 +25,15 @@ const cwd = sess.cwd || sess.workspace?.current_dir || sess.workspace?.cwd || pr
 const base = loadConfig().statusline?.base || '';
 let baseOut = '';
 if (base) {
-  const r = spawnSync(base, { shell: true, input: raw, encoding: 'utf8', timeout: 8000 });
+  // timeout configurabile (default 5s; su repo grandi tienilo >= 5s perche' `git status` della
+  // base puo' durare 2-3s). VALIDATO: un valore non-intero/negativo passato a spawnSync({timeout})
+  // lancerebbe ERR_OUT_OF_RANGE -> qui si ricade sul default (floor 1s). killSignal SIGKILL per non
+  // lasciare un processo base appeso. Il try/catch e' coerente col resto del file: una base che
+  // esplode non deve MAI azzerare l'intera statusline (base + segmento perseveranza).
+  const baseTimeout = parseTimeoutMs(process.env.OMC_STATUSLINE_BASE_TIMEOUT_MS, 5000);
+  let r = {};
+  try { r = spawnSync(base, { shell: true, input: raw, encoding: 'utf8', timeout: baseTimeout, killSignal: 'SIGKILL' }); }
+  catch { /* base illeggibile/timeout-config rotto: si tiene baseOut vuoto, niente crash */ }
   baseOut = (r.stdout || '').replace(/\r?\n+$/, '');
 }
 
