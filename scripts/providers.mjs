@@ -3,16 +3,28 @@
 // Cosi' aggiungere un provider = una voce qui, niente flag sparsi nel resto del codice.
 //
 // Due trasporti:
-//   - cli : una CLI locale (codex / gemini / agy) invocata con i suoi flag
+//   - cli : una CLI locale (codex / agy / grok / cursor / claude) invocata con i suoi flag
 //   - http: una API remota (ollama-cloud) chiamata via fetch
+//
+// Tre stili di invocazione CLI, per rispettare i vincoli di ciascun binario SENZA mai
+// esporre il prompt a una shell:
+//   - cmdline(): flag fissi via shell (per i .cmd di npm su Windows), prompt su stdin;
+//   - argv():    array di argomenti SENZA shell (per le CLI che riservano stdin e vogliono
+//                il prompt come argomento: nessun quoting possibile, argv puri);
+//   - cwd():     directory di lavoro isolata per il processo figlio (vedi note per-provider).
+//
+// Il timeout di un parere e' configurabile con OMC_ASK_TIMEOUT_MS (ms, default 180s,
+// floor 1s, validato): i prompt di falsificazione al gate (piano + diff) su modelli
+// grossi possono legittimamente superare i 3 minuti.
 //
 // SICUREZZA: la chiave di ollama-cloud vive SOLO in OLLAMA_API_KEY (variabile d'ambiente
 // locale), non viene mai scritta su disco ne' negli artefatti ne' nel repo.
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseTimeoutMs } from './util.mjs';
 
 // File di configurazione locale (FUORI dal repo, nel profilo utente): tiene la chiave e i
 // modelli senza doverli mettere tra le variabili d'ambiente (niente `setx`/riavvio shell).
@@ -50,18 +62,50 @@ export const PROVIDERS = {
     // legge il prompt da stdin
     cmdline: () => 'codex exec --skip-git-repo-check',
   },
-  gemini: {
-    transport: 'cli',
-    detect: ({ has }) => has('gemini'),
-    // -p forza la modalita' headless; il valore del prompt e' "appended to stdin", quindi
-    // passiamo il prompt vero su stdin e teniamo -p vuoto (costante, niente da quotare)
-    cmdline: () => 'gemini -p ""',
-  },
   agy: {
     transport: 'cli',
-    // su Windows la print mode -p non scrive su stdout in headless (bug gemini-cli#27466)
-    detect: ({ has, platform }) => platform !== 'win32' && has('agy'),
-    cmdline: () => 'agy -p ""',
+    // headless via stdin non-TTY: agy esegue il prompt e stampa la risposta su stdout,
+    // senza flag (dalla 1.1.x `-p ""` viene rifiutato: "Error: empty prompt", e il prompt
+    // NON deve mai finire sulla command line). Verificato su Windows con la 1.1.3: il
+    // vecchio bug della print mode (gemini-cli#27466) non riguarda questa invocazione.
+    // Ha preso il posto di `gemini` nel registro (client free-tier dismesso a monte:
+    // IneligibleTierError — rilevabile ma sempre morto a runtime).
+    detect: ({ has }) => has('agy'),
+    cmdline: () => 'agy',
+  },
+  grok: {
+    transport: 'cli',
+    detect: ({ has }) => has('grok'),
+    // grok RISERVA stdin e vuole il prompt come argomento: argv puri senza shell (nessun
+    // quoting possibile). --always-approve evita i prompt interattivi in headless; la cwd
+    // isolata tiene l'auto-approvazione lontana dal repo (il contesto viaggia nel prompt).
+    // Invocazione modellata su quella testata da OMC (`omc ask grok`); non verificata su
+    // questa macchina (CLI assente): un eventuale errore resta un ERRORE onesto in artefatto.
+    argv: (prompt) => ['grok', '-p', prompt, '--always-approve'],
+    cwd: () => tmpdir(),
+  },
+  cursor: {
+    transport: 'cli',
+    detect: ({ has }) => has('cursor-agent'),
+    // cursor-agent in print mode vuole il prompt come argomento posizionale: argv puri senza
+    // shell. --force/--trust/--sandbox disabled sono richiesti dall'headless (invocazione
+    // modellata su quella testata da OMC); la cwd isolata fa si' che il "trust" valga per una
+    // directory temporanea vuota, MAI per il repo. Non verificata qui (CLI assente).
+    argv: (prompt) => ['cursor-agent', '--print', '--force', '--trust', '--sandbox', 'disabled', prompt],
+    cwd: () => tmpdir(),
+  },
+  claude: {
+    transport: 'cli',
+    detect: ({ has }) => has('claude'),
+    // -p = print mode non interattiva, prompt su stdin (verificato con la 2.1.212: risposta
+    // su stdout, exit 0). ATTENZIONE, e' lo stesso vendor della sessione principale: il parere
+    // vale come CONTROPROVA a contesto pulito, non come diversita' di modello (chi non lo
+    // vuole lo spegne con la denylist). cwd ISOLATA obbligatoria: un `claude -p` nella dir
+    // del progetto caricherebbe anche i NOSTRI hook, e il suo Stop potrebbe rivendicare un
+    // loop non ancora rivendicato (sessionId null) o interferire con lo scoping; fuori dal
+    // progetto lo Stop hook e' dormiente per costruzione.
+    cmdline: () => 'claude -p',
+    cwd: () => tmpdir(),
   },
   'ollama-cloud': {
     transport: 'http',
@@ -79,10 +123,21 @@ export const PROVIDERS = {
   },
 };
 
-// id dei provider disponibili su questa macchina (CLI presente, oppure chiave presente)
-export function detectAvailable({ has, env, platform }) {
+// provider disabilitati dall'utente nel file di config:
+//   { "providers": { "disabled": ["codex"] } }
+// Serve quando un provider e' rilevabile ma inutilizzabile a runtime (tier dismesso,
+// filtri di policy, rete aziendale): lo si spegne da config senza disinstallare nulla.
+export function disabledProviders(path = CONFIG_PATH) {
+  const d = (loadConfig(path).providers || {}).disabled;
+  return Array.isArray(d) ? d.map(String) : [];
+}
+
+// id dei provider disponibili su questa macchina (CLI presente, oppure chiave presente),
+// esclusi quelli disabilitati da config (il chiamante passa `disabled`: testabile in isolamento)
+export function detectAvailable({ has, env, platform, disabled = [] }) {
   return Object.entries(PROVIDERS)
-    .filter(([, p]) => {
+    .filter(([id, p]) => {
+      if (disabled.includes(id)) return false;
       try { return p.detect({ has, env, platform }); } catch { return false; }
     })
     .map(([id]) => id);
@@ -134,14 +189,36 @@ export function providerModels(id, env = {}) {
   return [null];
 }
 
+// timeout effettivo di un parere esterno: override esplicito > OMC_ASK_TIMEOUT_MS (validata,
+// floor 1s) > default 180s. Esportata per i test.
+export function askTimeoutMs(env = {}, override = null) {
+  return override ?? parseTimeoutMs(env.OMC_ASK_TIMEOUT_MS, 180000);
+}
+
 // interroga un provider (un singolo modello); restituisce sempre {ok, model, output, exitCode?}
-export async function askProvider(id, prompt, { env = {}, timeoutMs = 180000, model = null } = {}) {
+export async function askProvider(id, prompt, { env = {}, timeoutMs = null, model = null } = {}) {
   const p = PROVIDERS[id];
   if (!p) return { ok: false, model: id, output: `provider sconosciuto: ${id}. Disponibili: ${Object.keys(PROVIDERS).join(', ')}` };
-  if (p.transport === 'http') return askHttpOllama(p, prompt, env, timeoutMs, model);
-  // prompt su stdin (input), flag fissi sulla command line; shell:true per i .cmd di npm
-  const r = spawnSync(p.cmdline(), { shell: true, input: prompt, encoding: 'utf8', timeout: timeoutMs });
-  if (r.error) return { ok: false, model: id, output: `impossibile eseguire ${id}: ${r.error.message}`, exitCode: null };
+  const t = askTimeoutMs(env, timeoutMs);
+  if (p.transport === 'http') return askHttpOllama(p, prompt, env, t, model);
+  const opts = { encoding: 'utf8', timeout: t };
+  if (p.cwd) opts.cwd = p.cwd(); // isolamento del figlio: vedi le note per-provider nel registro
+  let r;
+  if (p.argv) {
+    // prompt come SINGOLO elemento argv, SENZA shell: niente quoting, niente metacaratteri.
+    // Su Windows funziona solo con binari nativi: uno shim .cmd senza shell viene rifiutato
+    // da Node (EINVAL, mitigazione CVE-2024-27980) -> errore onesto, nessun fallback insicuro.
+    const [cmd, ...args] = p.argv(prompt);
+    r = spawnSync(cmd, args, opts);
+  } else {
+    // prompt su stdin (input), flag fissi sulla command line; shell:true per i .cmd di npm
+    r = spawnSync(p.cmdline(), { ...opts, shell: true, input: prompt });
+  }
+  if (r.error) {
+    const hint = process.platform === 'win32' && p.argv && /EINVAL/i.test(String(r.error.code || r.error.message))
+      ? ' (probabile shim .cmd: su Windows questa CLI richiede il binario nativo)' : '';
+    return { ok: false, model: id, output: `impossibile eseguire ${id}: ${r.error.message}${hint}`, exitCode: null };
+  }
   const out = `${r.stdout || ''}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim();
   const ok = r.status === 0;
   return { ok, model: id, output: out || (ok ? '(nessun output)' : `comando fallito (exit ${r.status})`), exitCode: r.status };

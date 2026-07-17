@@ -65,6 +65,11 @@ Lo storico delle decisioni è in `../CHANGELOG.md`.
   include) va nel **corpo del commit** — durevole in `git log` — oltre che in notifica/log
   (effimeri e silenziabili in headless). Trasparenza, non prevenzione: niente stash o
   stage-selettivo (un loop autonomo non sa quali file il task ha davvero toccato).
+- Stesso principio per il **gate esterno**: se `s.externals` non è vuoto ma nessun artefatto
+  `external-verify-*.md` risulta `esito: ok` (parser `summarizeExternalOpinions` in `util.mjs`,
+  puro e testato), il corpo del commit dichiara che «il pass poggia sulla sola verifica
+  interna». Best-effort: non blocca mai la chiusura. Limite accettato: un parere `ok` stantio
+  di un giro di verifica precedente sopprime la nota (il parere è comunque esistito nel run).
 
 ## Sicurezza della chiave (ollama-cloud)
 - `OLLAMA_API_KEY` solo in env o `~/.perseveranza/config.json`, **MAI** nel repo, negli
@@ -76,6 +81,33 @@ Lo storico delle decisioni è in `../CHANGELOG.md`.
 - Le CLI si invocano con il **prompt su stdin** + flag fissi (`shell:true` per i `.cmd` di
   npm su Windows): nessun input utente sulla command line → niente problemi di quoting o di
   `%` di cmd.exe.
+- `agy` si invoca **senza flag** (stdin non-TTY → esegue headless e stampa su stdout): dalla
+  1.1.x `-p ""` viene rifiutato ("Error: empty prompt") e il prompt non va sulla command line.
+  Verificato su Windows con la 1.1.3 → è caduta l'esclusione `win32` (il vecchio bug
+  gemini-cli#27466 non riguarda questa invocazione). `gemini` è stato **rimosso** dal registro
+  in 1.15.0: client free-tier dismesso a monte (`IneligibleTierError`), rilevabile ma sempre
+  morto a runtime.
+- **Rilevare ≠ funzionare**: `detect` prova solo che CLI/chiave esistano. Un provider morto a
+  runtime si spegne con la **denylist** da config (`{"providers":{"disabled":[...]}}` in
+  `~/.perseveranza/config.json`), letta da `disabledProviders()`; `detectAvailable` riceve
+  `disabled` dal chiamante (così resta testabile in isolamento).
+- Timeout dei pareri: `askTimeoutMs` — precedenza override esplicito > `OMC_ASK_TIMEOUT_MS`
+  (validata con `parseTimeoutMs`, floor 1 s) > default 180 s. Un rifiuto di policy, un errore
+  o un timeout del provider **non è un finding**: il verdetto vincolante resta quello del
+  subagent (`verify.json`).
+- **Il prompt non passa MAI da una shell.** Due meccanismi: `cmdline()` (flag fissi via
+  shell, prompt su **stdin** — codex/agy/claude) oppure `argv()` (array di argomenti
+  **senza shell** — grok/cursor, le cui CLI riservano stdin e vogliono il prompt come
+  argomento; senza shell non esiste quoting che possa rompersi). Su Windows `argv()`
+  funziona solo con binari nativi: uno shim `.cmd` senza shell è rifiutato da Node
+  (EINVAL, mitigazione CVE-2024-27980) → errore onesto in artefatto, MAI fallback via shell.
+- ⚠ **`claude` come provider: cwd isolata OBBLIGATORIA** (`cwd: () => tmpdir()`). Un
+  `claude -p` lanciato nella dir del progetto carica anche i **nostri** hook: il suo Stop
+  potrebbe rivendicare un loop non ancora rivendicato (sessionId null) o interferire con lo
+  scoping. Fuori dal progetto lo Stop hook è dormiente per costruzione. Inoltre è lo
+  **stesso vendor** della sessione: controprova a contesto pulito, non diversità di modello
+  (documentato; escludibile con la denylist). Anche grok/cursor hanno cwd isolata: i loro
+  flag headless auto-approvano azioni, e devono farlo in una directory temporanea, mai nel repo.
 
 ## HUD / statusline (`scripts/statusline*.mjs`, `scripts/hud.mjs`)
 - **Comporre, non sostituire**: `hud on` salva la statusline esistente come *base* e la

@@ -5,8 +5,8 @@
 //                                               \---pass--> implement (step successivo, opz. commit)
 //   claim-done -> cleanup (solo la prima volta) -> final-verify --pass--> disarm + notifica
 //                                                              \--fail--> implement (fix, poi nuovo claim-done)
-//   Se all'arm sono state rilevate CLI esterne (codex/gemini/agy), il piano, i fix
-//   ripetuti e il gate finale includono un confronto con un modello esterno.
+//   Se all'arm sono stati rilevati provider esterni (codex/agy/ollama-cloud), il piano,
+//   i fix ripetuti e il gate finale includono un confronto con un modello esterno.
 //
 // DORMIENTE di default: non fa nulla finche' nel progetto non esiste .omc-loop/state.json
 // (lo armi con omc-loop.mjs arm "<task>"). Globale ma non invade le chat normali.
@@ -18,13 +18,13 @@
 // Reti di sicurezza: limite iterazioni globale, limite retry per step (-> pausa + notifica),
 // stato corrotto -> disarm + notifica. Ogni transizione e' loggata in .omc-loop/history.log.
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, rmSync, readdirSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { renderProgress, countOpenSteps } from './hud.mjs';
 import { maybeSpawnRefresh, updateAvailable, currentVersion } from './update.mjs';
-import { dirtyBeyondLoop } from './util.mjs';
+import { dirtyBeyondLoop, summarizeExternalOpinions } from './util.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const LOOP = `node "${join(SCRIPT_DIR, 'omc-loop.mjs')}"`;
@@ -58,7 +58,7 @@ function notify(title, msg) {
 // commit+push automatico a fine progetto, SOLO se si e' dentro un repo git; altrimenti salta.
 // Best-effort e mai bloccante: un push fallito (nessun upstream/remote/auth) non annulla la chiusura.
 // .omc-loop/ viene escluso dallo stage (lo stato non finisce nel commit).
-function gitFinish(cwd, task, { push = true, baselineDirty = [] } = {}) {
+function gitFinish(cwd, task, { push = true, baselineDirty = [], externalNote = '' } = {}) {
   const git = (args) => spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000 });
   const inside = git(['rev-parse', '--is-inside-work-tree']);
   if (inside.status !== 0 || String(inside.stdout).trim() !== 'true') return { ran: false };
@@ -72,7 +72,10 @@ function gitFinish(cwd, task, { push = true, baselineDirty = [] } = {}) {
     ? `\n\nNota perseveranza: questo commit puo' includere ${baselineDirty.length} file gia' modificati prima del task (git add -A): `
       + `${baselineDirty.slice(0, 10).join(', ')}${baselineDirty.length > 10 ? ` (+${baselineDirty.length - 10} altri)` : ''}.`
     : '';
-  const msg = `perseveranza: ${task || 'progetto completato'}${baseNote}`;
+  // come baseline-dirty: se al gate finale nessun parere esterno e' riuscito, l'avviso va nel
+  // corpo del commit (durevole in git log) — notifica e history.log muoiono col disarm.
+  const extNote = externalNote ? `\n\nNota perseveranza: ${externalNote}.` : '';
+  const msg = `perseveranza: ${task || 'progetto completato'}${baseNote}${extNote}`;
   git(['commit', '-m', msg]); // su un retry puo' dire "nothing to commit": va bene
   // VERIFICA REALE che commit e push siano avvenuti (non ci si fida degli exit code):
   //  - commit eseguito = nessuna modifica tracciata resta fuori (working tree pulito, escluso .omc-loop)
@@ -290,11 +293,15 @@ const askHint = (slot) => `${LOOP} ask <provider> ${slot} -- "<prompt>" (provide
 const extPlanHint = externals.length
   ? ` Poi chiedi a un modello esterno una critica indipendente del piano con ${askHint('plan')}, passandogli task e piano; integra le osservazioni fondate (pareri salvati in .omc-loop/external-plan-*.md).`
   : '';
+// nei prompt agli esterni su temi security va dichiarato il contesto legittimo: una richiesta
+// di "falsificare/attaccare" senza contesto puo' far scattare i filtri di policy del provider
+// (rifiuto = parere perso, non un finding — successo realmente osservato al gate di un run)
+const extFraming = " dichiarando nel prompt il contesto legittimo (review difensiva del PROPRIO codice, progetto autorizzato: evita i falsi rifiuti dei filtri di policy)";
 const extFixHint = externals.length
-  ? ` Prima di riprovare, chiedi una diagnosi indipendente a un modello esterno con ${askHint('fix')}, descrivendo il problema che continua a fallire (salvata in .omc-loop/external-fix-*.md).`
+  ? ` Prima di riprovare, chiedi una diagnosi indipendente a un modello esterno con ${askHint('fix')}, descrivendo il problema che continua a fallire${extFraming}; diagnosi salvata in .omc-loop/external-fix-*.md.`
   : '';
 const extVerifyHint = externals.length
-  ? ` In aggiunta al subagent, chiedi a uno o piu' modelli esterni di falsificare il lavoro con ${askHint('verify')}, passandogli piano e diff; pesa i loro findings (salvati in .omc-loop/external-verify-*.md).`
+  ? ` In aggiunta al subagent, chiedi a uno o piu' modelli esterni di falsificare il lavoro con ${askHint('verify')}, passandogli piano e diff${extFraming}. Pesa i loro findings (salvati in .omc-loop/external-verify-*.md); un rifiuto di policy, un errore o un timeout del provider NON e' un finding: se nessun esterno risponde, prosegui col solo verdetto del subagent (la chiusura lo annota nel commit).`
   : '';
 const secHint = s.complexity === 'high'
   ? ' Includi una lente security: secrets nel codice, input non fidati, injection, path traversal.'
@@ -356,15 +363,42 @@ function pauseForHuman(why) {
   process.exit(0);
 }
 
+// il gate finale doveva includere la falsificazione esterna: se erano stati rilevati provider
+// ma NESSUN parere e' riuscito (tutti rifiuti/errori/timeout, o nessuno registrato), il pass
+// poggia sulla SOLA verifica interna. Non e' una bocciatura (il verdetto vincolante resta
+// verify.json), ma va detto in modo DUREVOLE: gli artefatti external-*.md e history.log
+// muoiono col disarm, quindi — come per baseline-dirty — l'avviso finisce nel corpo del commit.
+function externalGateNote() {
+  const ext = Array.isArray(s.externals) ? s.externals : [];
+  if (!ext.length) return '';
+  let arts = [];
+  try {
+    arts = readdirSync(gateDir)
+      .filter((n) => /^external-verify-.+\.md$/i.test(n))
+      .map((n) => {
+        let text = '';
+        try { text = readFileSync(join(gateDir, n), 'utf8'); } catch { /* illeggibile = non ok */ }
+        return { label: n.replace(/^external-verify-/i, '').replace(/\.md$/i, ''), text };
+      });
+  } catch { return ''; } // la nota e' un di piu': mai bloccare la chiusura
+  const sum = summarizeExternalOpinions(arts);
+  if (sum.ok > 0) return '';
+  return sum.attempted === 0
+    ? `falsificazione esterna non registrata al gate finale (provider rilevati: ${ext.join(', ')}); il pass poggia sulla sola verifica interna`
+    : `falsificazione esterna indisponibile al gate finale (0/${sum.attempted} pareri riusciti: ${sum.failed.join(', ')}); il pass poggia sulla sola verifica interna`;
+}
+
 // chiusura del progetto: commit+push e VERIFICA che siano avvenuti davvero.
 // se la chiusura git non e' confermata (push fallito, nessun upstream, modifiche residue)
 // NON dichiara finito: passa alla fase git-finish in pausa e avvisa, cosi' il lavoro non
 // risulta "fatto" mentre e' ancora non pushato; dopo `resume` la chiusura viene ritentata.
 function closeWithGit(isRetry) {
   let gitNote = '';
+  const extNote = externalGateNote();
+  if (extNote) logStep(`external-gate: ${extNote}`);
   if (s.gitFinish !== false) {
     const push = s.gitPush !== false; // --no-push -> commit locale, niente push (retro-compat: default push)
-    const g = gitFinish(cwd, s.task, { push, baselineDirty: Array.isArray(s.baselineDirty) ? s.baselineDirty : [] });
+    const g = gitFinish(cwd, s.task, { push, baselineDirty: Array.isArray(s.baselineDirty) ? s.baselineDirty : [], externalNote: extNote });
     if (g.ran && !g.confirmed) {
       const why = !g.committed ? 'commit non riuscito (restano modifiche non committate)'
         : !g.hasUpstream ? 'push impossibile: nessun upstream configurato per il branch'
@@ -393,6 +427,7 @@ function closeWithGit(isRetry) {
       logStep(`baseline-dirty: ${baseDirty.length} file pre-esistenti possibilmente nel commit (${lst})`);
     }
   }
+  if (extNote) gitNote += " · ⚠ gate senza parere esterno riuscito (dettaglio nel corpo del commit, se in git)";
   disarm();
   notify('Claude Code - OMC-loop', `Progetto finito e verificato - ${proj}${gitNote}`);
   process.exit(0);

@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.14.0-blue)
+![versione](https://img.shields.io/badge/versione-1.16.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -89,8 +89,8 @@ una nuova versione.
   `pf-verifier`, `pf-executor`) sono inclusi. Se hai oh-my-claudecode i suoi agenti
   restano usabili, ma non servono
 - Opzionali, auto-rilevati per il secondo parere indipendente: CLI di modelli esterni
-  (`codex`, `gemini`, e `agy` solo su macOS/Linux — su Windows la sua print mode è
-  inutilizzabile, bug noto gemini-cli#27466) e/o `ollama-cloud` via API (basta esportare
+  (`codex`, `agy`, `grok`, `cursor-agent`, e la stessa `claude` come controprova a
+  contesto pulito) e/o `ollama-cloud` via API (basta esportare
   chiave nel file `~/.perseveranza/config.json` o in `OLLAMA_API_KEY`; modelli con `model`/
   `OLLAMA_MODEL`, anche una lista separata da virgole per interrogarne più d'uno in un
   colpo; default `glm-5.2`)
@@ -204,8 +204,24 @@ All'arm vengono auto-rilevati i modelli esterni disponibili sulla macchina. Il r
 dei provider è centralizzato in `scripts/providers.mjs` (unica fonte di verità: come si
 rilevano, come si interrogano, quale modello/chiave usano), con due trasporti:
 
-- **CLI locali**: `codex`, `gemini`, e `agy` (solo su macOS/Linux); rilevate via `where`/`which`;
+- **CLI locali**, rilevate via `where`/`which`, con tre stili di invocazione (il prompt non
+  passa **mai** da una shell):
+  - `codex` e `agy` — headless, prompt via stdin (anche su Windows);
+  - `grok` e `cursor` (binario `cursor-agent`) — le loro CLI vogliono il prompt come
+    argomento: argv puri **senza shell** (niente quoting possibile) e cwd isolata in una
+    directory temporanea, così i loro flag di auto-approvazione non toccano mai il repo;
+  - `claude` — print mode via stdin, con cwd isolata (nella dir del progetto caricherebbe
+    gli stessi hook di perseveranza). ⚠ È lo **stesso vendor** della sessione: il suo parere
+    vale come controprova a contesto pulito, non come diversità di modello — chi non lo
+    vuole lo spegne con la denylist qui sotto;
 - **API remota**: `ollama-cloud`, rilevata se è presente la chiave in `OLLAMA_API_KEY`.
+
+Rilevare non basta a garantire che un provider *funzioni*: una CLI può esserci ma essere
+morta a runtime (tier dismesso, filtri aziendali). In quel caso la si spegne da config,
+senza disinstallare nulla: `{ "providers": { "disabled": ["codex"] } }` in
+`~/.perseveranza/config.json` (ispezionabile con `omc-loop.mjs config`). Ogni parere ha un
+timeout di 180 s, regolabile con `OMC_ASK_TIMEOUT_MS` (millisecondi, validato): i prompt di
+falsificazione al gate (piano + diff) su modelli grossi possono legittimamente superarlo.
 
 Se c'è almeno un provider, il ciclo aggiunge un secondo parere indipendente nei tre punti
 a maggior leva, senza costare iterazioni:
@@ -307,6 +323,11 @@ aggiornare basta il pannello `/plugin`.
 - la chiusura richiede il pass della verifica finale avversariale (niente
   auto-certificazione), preceduta da un giro di cleanup e, per complessità high, estesa
   a una lente security
+- se all'arm erano stati rilevati provider esterni ma al gate finale **nessun** parere è
+  riuscito (rifiuti di policy, errori, timeout), il progetto chiude comunque — il verdetto
+  vincolante è `verify.json` — ma l'avviso «il pass poggia sulla sola verifica interna»
+  finisce **nel corpo del commit** (durevole in `git log`, come baseline-dirty), oltre che
+  in notifica e `history.log`
 - stato corrotto → disarmo pulito con notifica
 - l'hook non blocca quando Claude Code deve potersi fermare per davvero (stop da limite di
   contesto — altrimenti non potrebbe compattare; interruzione dell'utente), evitando

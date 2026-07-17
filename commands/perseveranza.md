@@ -20,8 +20,9 @@ Passi da eseguire ORA, in ordine:
    node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" arm "<task senza flag>" [--max N] [--commit] [--external off] [--test "npm test"]
 
    (`--commit` = commit atomico dopo ogni step validato; `--external off` = niente
-   confronto con modelli esterni, che altrimenti vengono auto-rilevati: codex, gemini,
-   agy (quest'ultimo solo su macOS/Linux); `--test` = comando della suite, il claim-done richiedera' la prova di un
+   confronto con modelli esterni, che altrimenti vengono auto-rilevati: codex, agy, grok,
+   cursor, claude (contesto pulito ma stesso vendor: preferisci gli altri se disponibili),
+   ollama-cloud; `--test` = comando della suite, il claim-done richiedera' la prova di un
    run verde fresco; `--no-git-finish` = a fine progetto NON fare commit+push automatico;
    `--no-push` = a fine progetto committa in locale ma NON pusha)
 
@@ -33,8 +34,11 @@ Passi da eseguire ORA, in ordine:
    test attuali), POI scrivi il piano in `.omc-loop/plan.md` come checklist markdown
    (`- [ ] step`), con step piccoli e verificabili. Se l'arm ha rilevato modelli esterni
    (riga "Modelli esterni per il confronto"), sottoponi il piano a uno di essi per una
-   critica indipendente (es. `codex exec --skip-git-repo-check "<task + piano>"` oppure `gemini -p "..."`) e
-   integra le osservazioni fondate. Poi valuta la complessita' del task e registrala:
+   critica indipendente con il verbo `ask` (che salva il parere in `.omc-loop/external-plan-*.md`):
+
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" ask <provider> plan -- "<task + piano>"
+
+   e integra le osservazioni fondate. Poi valuta la complessita' del task e registrala:
 
    node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" complexity low|medium|high
 

@@ -3,7 +3,7 @@
 // Uso (dal prompt di Claude Code con il prefisso !, o da Claude stesso):
 //   node ... arm "implementa la feature X" [--max 25] [--max-retries 3] [--complexity low|medium|high] [--commit] [--external off] [--test "npm test"]
 //     --commit        dopo ogni review passata, commit atomico dello step
-//     --external off  disattiva il confronto con modelli esterni (default: auto-rilevati codex/gemini)
+//     --external off  disattiva il confronto con modelli esterni (default: auto-rilevati codex/agy/grok/cursor/claude/ollama-cloud)
 //     --test "<cmd>"  comando della suite: il claim-done richiedera' un test verde fresco
 //     --no-git-finish a fine progetto NON fare commit+push automatico (default: si', se in un repo git)
 //   node ... test -- <comando>             esegue il comando LUI STESSO e registra l'exit code reale
@@ -23,7 +23,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { detectAvailable, askProvider, providerModels, effectiveEnv, loadConfig, CONFIG_PATH, PROVIDERS } from './providers.mjs';
+import { detectAvailable, disabledProviders, askProvider, providerModels, effectiveEnv, loadConfig, CONFIG_PATH, PROVIDERS } from './providers.mjs';
 import { maybeSpawnRefresh, updateAvailable } from './update.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -135,9 +135,12 @@ switch (action) {
     const has = (name) =>
       spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore', timeout: 4000 }).status === 0;
     const provEnv = effectiveEnv(process.env); // env reale + file di config (~/.perseveranza/config.json)
+    // provider spenti dall'utente da config: rilevabili ma inutilizzabili a runtime
+    // (es. tier dismesso) non devono sprecare tentativi a ogni gate
+    const disabled = disabledProviders();
     const externals = external === 'off'
       ? []
-      : detectAvailable({ has, env: provEnv, platform: process.platform });
+      : detectAvailable({ has, env: provEnv, platform: process.platform, disabled });
     // snapshot del working tree all'arm: i path GIA' modificati PRIMA del task. A fine progetto
     // gitFinish fa `git add -A`, quindi questi file pre-esistenti finirebbero nel commit del task.
     // Non li escludiamo (potrebbero essere correlati al task), ma li REGISTRIAMO per avvisare
@@ -176,7 +179,7 @@ switch (action) {
       lastFireAt: 0,                        // ultimo fire del proprietario (per il takeover su inattivita')
     });
     console.log(`OMC-loop ARMATO (max ${max} iterazioni, ${maxRetries} retry per step${commitSteps ? ', commit per step' : ''}). Task: ${value}`);
-    console.log(`Modelli esterni per il confronto: ${externals.length ? externals.join(', ') : 'nessuno'}`);
+    console.log(`Modelli esterni per il confronto: ${externals.length ? externals.join(', ') : 'nessuno'}${external !== 'off' && disabled.length ? ` (disabilitati da config: ${disabled.join(', ')})` : ''}`);
     if (externals.includes('ollama-cloud')) {
       const ms = PROVIDERS['ollama-cloud'].models(provEnv);
       console.log(`  ollama-cloud: modell${ms.length > 1 ? 'i' : 'o'} ${ms.join(', ')} (lista in OLLAMA_MODEL/config separata da virgole; host ${PROVIDERS['ollama-cloud'].host(provEnv)})`);
@@ -270,9 +273,12 @@ switch (action) {
     console.log(`OLLAMA_API_KEY: ${env.OLLAMA_API_KEY ? `impostata (da ${keySrc})` : 'NON impostata'}`);
     console.log(`Modelli ollama-cloud: ${PROVIDERS['ollama-cloud'].models(env).join(', ')}`);
     console.log(`Host ollama-cloud:    ${PROVIDERS['ollama-cloud'].host(env)}`);
+    console.log(`Provider disabilitati: ${disabledProviders().join(', ') || 'nessuno'}`);
     console.log('');
     console.log('Per impostare chiave e modelli senza variabili d\'ambiente, crea il file sopra con:');
     console.log('  { "ollama": { "apiKey": "<la-tua-chiave>", "model": "glm-5.2,kimi-k2.7-code" } }');
+    console.log('Per spegnere un provider rilevabile ma inutilizzabile (tier dismesso, policy):');
+    console.log('  { "providers": { "disabled": ["codex"] } }');
     break;
   }
   case 'hud': {

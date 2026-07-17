@@ -14,6 +14,7 @@ raccoglie in un punto solo i tetti e gli interruttori, ispirato al `loop-budget`
 | Review fallite consecutive / step | 3 | `--max-retries N` all'arm | **pausa** + handoff `ESCALATION.md` |
 | Verifiche finali fallite | 3 | `--max-retries N` all'arm | **pausa** + handoff `ESCALATION.md` |
 | Timeout di un run di test | 30 min | `OMC_TEST_TIMEOUT_MS` (ms) | test registrato rosso (exit 124) |
+| Timeout di un parere esterno (`ask`) | 3 min | `OMC_ASK_TIMEOUT_MS` (ms) | parere registrato ERRORE nell'artefatto `external-*.md` |
 | Takeover sessione inattiva | 6 h | `OMC_SESSION_TAKEOVER_MS` (ms) | un'altra sessione subentra dalla fase corrente |
 
 L'iterazione è l'unità di spesa: ogni fase iniettata (plan, implement, review, fix, verifica…)

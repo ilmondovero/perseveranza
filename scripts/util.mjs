@@ -26,3 +26,17 @@ export function parseTimeoutMs(envValue, def, floor = 1000) {
   const n = Math.trunc(Number(envValue));
   return Number.isFinite(n) && n > 0 ? Math.max(floor, n) : def;
 }
+
+// Riassume i pareri esterni di uno slot a partire dagli artefatti external-<slot>-*.md
+// scritti dal verbo `ask` (riga "- esito: ok|ERRORE"). Input: [{label, text}] (pura,
+// testabile). Serve al gate finale per sapere se la falsificazione esterna e' davvero
+// avvenuta o se il gate poggia sulla sola verifica interna.
+export function summarizeExternalOpinions(arts) {
+  const failed = [];
+  let ok = 0;
+  for (const a of Array.isArray(arts) ? arts : []) {
+    if (/^-\s*esito:\s*ok\s*$/m.test(String(a.text))) ok += 1;
+    else failed.push(String(a.label));
+  }
+  return { attempted: Array.isArray(arts) ? arts.length : 0, ok, failed };
+}

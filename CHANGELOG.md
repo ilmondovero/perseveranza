@@ -3,6 +3,66 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json` e nel badge del README; non si usano tag git.
 
+## 1.16.0
+- **Tre nuovi provider per il secondo parere: `grok`, `cursor`, `claude`** — il registro copre
+  ora tutti i provider CLI dell'`ask` di OMC, più `ollama-cloud` che OMC non ha. Tre stili di
+  invocazione, perché il vincolo di ogni CLI è diverso ma l'invariante è unico (il prompt non
+  passa MAI da una shell):
+  - `claude -p` — prompt su **stdin**, verificato empiricamente (2.1.212: risposta su stdout,
+    exit 0). **cwd isolata obbligatoria** in tmpdir: nella dir del progetto un `claude -p`
+    caricherebbe anche gli hook di perseveranza, e il suo Stop potrebbe rivendicare un loop non
+    ancora rivendicato. ⚠ Stesso vendor della sessione principale: il parere vale come
+    controprova a contesto pulito, non come diversità di modello (documentato ovunque;
+    escludibile con la denylist `providers.disabled` della 1.15.0 — sinergia voluta).
+  - `grok` / `cursor` (binario `cursor-agent`) — le loro CLI riservano stdin e vogliono il
+    prompt come argomento: nuovo stile `argv()` **senza shell** (argv puri: nessun quoting
+    possibile) con cwd isolata, così i flag di auto-approvazione headless
+    (`--always-approve`, `--force --trust`) valgono per una directory temporanea vuota, mai
+    per il repo. Invocazioni modellate su quelle testate da OMC; non verificate su questa
+    macchina (CLI assenti): un errore resta un ERRORE onesto in artefatto, fail-soft come da
+    design 1.15.0. Su Windows `argv()` richiede binari nativi: gli shim `.cmd` senza shell
+    sono rifiutati da Node (EINVAL, CVE-2024-27980) → errore esplicito con hint, mai
+    fallback via shell.
+- **Suite di regressione 58 → 59**: registro dei tre provider (rilevamento, prompt ostile
+  intatto come singolo elemento argv, cwd isolata fuori dal progetto).
+
+## 1.15.0
+- **Lezioni da un run reale** (gate finale di un task di hardening security): tutti e tre gli
+  esterni fallirono per motivi non sostanziali — codex bloccato dal filtro di policy sul prompt
+  "falsifica" a tema security; gemini morto a monte (`IneligibleTierError`, free tier dismesso);
+  ollama-cloud in timeout a 180s su entrambi i modelli. Il loop chiuse correttamente sulla sola
+  verifica interna (legittimo: il verdetto vincolante è `verify.json`) ma senza lasciarne traccia
+  durevole. Da qui cinque interventi:
+- **`agy` al posto di `gemini`** nel registro provider. `gemini` era rilevabile ma sempre morto a
+  runtime (client free-tier dismesso). `agy` viene ora invocato **headless via stdin, senza flag**:
+  dalla 1.1.x `-p ""` è rifiutato ("Error: empty prompt") e l'invariante resta che il prompt non
+  tocca mai la command line. Verificato su Windows con la 1.1.3 (risposta su stdout, exit 0):
+  il vecchio bug della print mode (gemini-cli#27466) non riguarda questa invocazione, quindi
+  cade anche l'esclusione `win32`.
+- **Denylist provider da config**: `{ "providers": { "disabled": ["..."] } }` in
+  `~/.perseveranza/config.json` spegne un provider rilevabile ma inutilizzabile a runtime (tier
+  dismesso, filtri aziendali) senza disinstallare nulla; mostrata da `config` e all'`arm`.
+  *Perché:* `detect` prova solo che la CLI/chiave esista; un provider morto sprecherebbe un
+  tentativo a ogni gate, per sempre.
+- **Timeout dei pareri esterni configurabile**: `OMC_ASK_TIMEOUT_MS` (default 180 s, floor 1 s,
+  validato — `askTimeoutMs`, stesso pattern di `parseTimeoutMs`). *Perché:* i prompt di
+  falsificazione al gate (piano + diff) su modelli grossi superano legittimamente i 3 minuti;
+  prima il tetto era cablato nel codice.
+- **Nota durevole nel commit quando il gate resta "interno"**: se all'arm erano stati rilevati
+  provider ma nessun artefatto `external-verify-*.md` risulta riuscito (o nessuno è stato
+  registrato), il corpo del commit di chiusura dichiara «falsificazione esterna
+  indisponibile/non registrata … il pass poggia sulla sola verifica interna», più marker in
+  notifica e `history.log`. *Perché:* artefatti e log muoiono col disarm; come per
+  baseline-dirty, la trasparenza deve sopravvivere in `git log`. Parser dei verdetti
+  (`summarizeExternalOpinions`) in `util.mjs`: puro, testato in isolamento.
+- **Framing anti-falso-rifiuto negli hint di fix e verifica**: il prompt agli esterni deve
+  dichiarare il contesto legittimo (review difensiva del PROPRIO codice, progetto autorizzato) e
+  un rifiuto di policy / errore / timeout del provider **non è un finding**: se nessun esterno
+  risponde si prosegue col solo verdetto del subagent.
+- **Suite di regressione 52 → 58**: denylist (`disabledProviders` + `detectAvailable`),
+  `askTimeoutMs`, parser dei pareri, e tre e2e sulla nota nel commit (tutti falliti / uno ok /
+  nessuno registrato).
+
 ## 1.14.0
 - **Release di consolidamento da code review** — undici punti di una revisione, raccolti per
   tema. Nessun cambio al routing delle fasi: l'anello di stato resta identico, migliorano

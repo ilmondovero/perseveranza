@@ -15,9 +15,9 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { countOpenSteps, countDoneSteps } from './hud.mjs';
-import { effectiveEnv, providerModels, detectAvailable, PROVIDERS } from './providers.mjs';
+import { effectiveEnv, providerModels, detectAvailable, disabledProviders, askTimeoutMs, PROVIDERS } from './providers.mjs';
 import { cmpSemver } from './update.mjs';
-import { underLoop, dirtyBeyondLoop, parseTimeoutMs } from './util.mjs';
+import { underLoop, dirtyBeyondLoop, parseTimeoutMs, summarizeExternalOpinions } from './util.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(SCRIPT_DIR, 'loop-drive.mjs');
@@ -432,12 +432,49 @@ test('providers: PROVIDERS ollama-cloud models/host', () => {
   eq(PROVIDERS['ollama-cloud'].host({}), 'https://ollama.com', 'host default');
 });
 
-test('providers: detectAvailable rispetta has/env/platform', () => {
+test('providers: detectAvailable rispetta has/env/platform e la denylist', () => {
   eq(JSON.stringify(detectAvailable({ has: () => false, env: {}, platform: 'win32' })), JSON.stringify([]), 'niente CLI/chiave -> []');
   check(detectAvailable({ has: (n) => n === 'codex', env: {}, platform: 'win32' }).includes('codex'), 'codex rilevato');
-  check(!detectAvailable({ has: (n) => n === 'agy', env: {}, platform: 'win32' }).includes('agy'), 'agy NON su win32 (bug print mode)');
+  check(detectAvailable({ has: (n) => n === 'agy', env: {}, platform: 'win32' }).includes('agy'), 'agy rilevato ANCHE su win32 (stdin headless verificato con la 1.1.3)');
   check(detectAvailable({ has: (n) => n === 'agy', env: {}, platform: 'linux' }).includes('agy'), 'agy su linux');
+  check(!('gemini' in PROVIDERS), 'gemini non e\' piu\' nel registro (free tier dismesso: al suo posto agy)');
   check(detectAvailable({ has: () => false, env: { OLLAMA_API_KEY: 'k' }, platform: 'linux' }).includes('ollama-cloud'), 'ollama-cloud se c\'e\' la chiave');
+  eq(JSON.stringify(detectAvailable({ has: (n) => n === 'codex', env: {}, platform: 'win32', disabled: ['codex'] })), JSON.stringify([]), 'denylist: escluso anche se presente');
+});
+
+test('providers: registro claude/grok/cursor (argv puri, cwd isolata)', () => {
+  check(detectAvailable({ has: (n) => n === 'claude', env: {}, platform: 'win32' }).includes('claude'), 'claude rilevato');
+  check(detectAvailable({ has: (n) => n === 'grok', env: {}, platform: 'linux' }).includes('grok'), 'grok rilevato');
+  check(detectAvailable({ has: (n) => n === 'cursor-agent', env: {}, platform: 'win32' }).includes('cursor'), 'cursor rilevato via binario cursor-agent');
+  const hostile = 'prompt con "doppi apici", %PATH%, $HOME e ^caret';
+  const g = PROVIDERS.grok.argv(hostile);
+  eq(g[0], 'grok', 'grok: argv[0] e\' il binario');
+  check(g.includes(hostile), 'grok: il prompt e\' UN SOLO elemento argv, intatto');
+  const c = PROVIDERS.cursor.argv(hostile);
+  eq(c[0], 'cursor-agent', 'cursor: argv[0] e\' cursor-agent');
+  eq(c[c.length - 1], hostile, 'cursor: prompt come ultimo argomento posizionale, intatto');
+  eq(PROVIDERS.claude.cmdline(), 'claude -p', 'claude: print mode, prompt su stdin');
+  for (const id of ['claude', 'grok', 'cursor']) {
+    const d = PROVIDERS[id].cwd();
+    check(typeof d === 'string' && d.length > 0 && !d.includes('.omc-loop'), `${id}: cwd isolata fuori dal progetto`);
+  }
+});
+
+test('providers: disabledProviders legge la denylist dal file di config', (dir) => {
+  const cfg = join(dir, 'config.json');
+  writeFileSync(cfg, JSON.stringify({ providers: { disabled: ['codex', 'agy'] } }));
+  eq(JSON.stringify(disabledProviders(cfg)), JSON.stringify(['codex', 'agy']), 'lista letta dal file');
+  eq(JSON.stringify(disabledProviders(join(dir, 'niente.json'))), JSON.stringify([]), 'file assente -> nessun disabilitato');
+  writeFileSync(cfg, JSON.stringify({ providers: { disabled: 'codex' } }));
+  eq(JSON.stringify(disabledProviders(cfg)), JSON.stringify([]), 'formato non-array -> ignorato senza crash');
+});
+
+test('providers: askTimeoutMs (override > OMC_ASK_TIMEOUT_MS validata > default 180s)', () => {
+  eq(askTimeoutMs({}, null), 180000, 'default 180s');
+  eq(askTimeoutMs({ OMC_ASK_TIMEOUT_MS: '600000' }), 600000, 'env valida');
+  eq(askTimeoutMs({ OMC_ASK_TIMEOUT_MS: 'abc' }), 180000, 'env non valida -> default');
+  eq(askTimeoutMs({ OMC_ASK_TIMEOUT_MS: '-5' }), 180000, 'negativa -> default');
+  eq(askTimeoutMs({ OMC_ASK_TIMEOUT_MS: '600000' }, 60000), 60000, 'override esplicito batte la env');
 });
 
 test('providers: effectiveEnv precedenza env > file > default', (dir) => {
@@ -481,6 +518,16 @@ test('util: dirtyBeyondLoop distingue lavoro vero da stato del loop', () => {
   eq(dirtyBeyondLoop('R  src/old.js -> src/new.js'), true, 'rename di file di lavoro (un lato fuori) -> sporco');
   eq(dirtyBeyondLoop(' M .omc-loop/x\n M src/foo.js'), true, 'almeno una riga fuori da .omc-loop/ -> sporco');
   eq(dirtyBeyondLoop(''), false, 'output vuoto -> pulito');
+});
+
+test('util: summarizeExternalOpinions distingue pareri ok da falliti', () => {
+  const okArt = { label: 'codex', text: '# Parere esterno - codex\n\n- slot: verify\n- esito: ok\n\n## Risposta\n\n...' };
+  const koArt = { label: 'ollama-cloud-glm-5.2', text: '- slot: verify\n- esito: ERRORE\n' };
+  eq(JSON.stringify(summarizeExternalOpinions([okArt, koArt])),
+    JSON.stringify({ attempted: 2, ok: 1, failed: ['ollama-cloud-glm-5.2'] }), 'un ok e un fallito');
+  eq(JSON.stringify(summarizeExternalOpinions([])), JSON.stringify({ attempted: 0, ok: 0, failed: [] }), 'nessun artefatto');
+  eq(JSON.stringify(summarizeExternalOpinions(null)), JSON.stringify({ attempted: 0, ok: 0, failed: [] }), 'input non-array -> zero senza crash');
+  eq(summarizeExternalOpinions([{ label: 'x', text: 'senza riga esito' }]).ok, 0, 'testo senza riga esito -> non ok');
 });
 
 test('util: parseTimeoutMs robusto (intero positivo, floor, default)', () => {
@@ -579,6 +626,50 @@ test('git: filtro .omc-loop rename-safe (src/omc-loop-helper.js e\' lavoro vero)
   eq(readState(repo.dir), null, 'chiusura confermata: disarmato');
   const files = repo.g('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD').stdout;
   has(files, 'omc-loop-helper.js', 'il file con "omc-loop" nel nome e\' committato (non scambiato per stato)');
+});
+
+test('git: gate senza parere esterno riuscito -> nota durevole nel commit', () => {
+  const repo = gitRepo({ withRemote: true });
+  if (!repo) { console.log('    (git assente: test chiusura git saltato)'); return; }
+  writeFileSync(join(repo.dir, 'work.txt'), 'lavoro del task\n');
+  armGitFinish(repo.dir);
+  // simula il run reale: provider rilevati all'arm, ma al gate tutti i pareri falliti
+  patchState(repo.dir, { externals: ['codex', 'ollama-cloud'] });
+  writeFileSync(gatePath(repo.dir, 'external-verify-codex.md'),
+    '# Parere esterno - codex\n\n- slot: verify\n- esito: ERRORE\n\n## Risposta\n\nrifiuto policy\n');
+  driveToClose(repo);
+  eq(readState(repo.dir), null, 'chiusura confermata: disarmato');
+  const body = repo.g('log', '-1', '--format=%B').stdout;
+  has(body, 'falsificazione esterna indisponibile', 'nota nel corpo del commit');
+  has(body, '0/1 pareri riusciti', 'conteggio dei pareri');
+  has(body, 'codex', 'etichetta del provider fallito');
+});
+
+test('git: parere esterno riuscito al gate -> NESSUNA nota nel commit', () => {
+  const repo = gitRepo({ withRemote: true });
+  if (!repo) { console.log('    (git assente: test chiusura git saltato)'); return; }
+  writeFileSync(join(repo.dir, 'work.txt'), 'lavoro del task\n');
+  armGitFinish(repo.dir);
+  patchState(repo.dir, { externals: ['codex'] });
+  writeFileSync(gatePath(repo.dir, 'external-verify-codex.md'),
+    '# Parere esterno - codex\n\n- slot: verify\n- esito: ok\n\n## Risposta\n\nnessuna falsificazione trovata\n');
+  driveToClose(repo);
+  eq(readState(repo.dir), null, 'chiusura confermata: disarmato');
+  const body = repo.g('log', '-1', '--format=%B').stdout;
+  check(!body.includes('falsificazione esterna'), 'niente nota quando almeno un parere e\' riuscito');
+});
+
+test('git: provider rilevati ma nessun parere registrato -> nota "non registrata"', () => {
+  const repo = gitRepo({ withRemote: true });
+  if (!repo) { console.log('    (git assente: test chiusura git saltato)'); return; }
+  writeFileSync(join(repo.dir, 'work.txt'), 'lavoro del task\n');
+  armGitFinish(repo.dir);
+  patchState(repo.dir, { externals: ['codex'] }); // nessun external-verify-*.md scritto
+  driveToClose(repo);
+  eq(readState(repo.dir), null, 'chiusura confermata: disarmato');
+  const body = repo.g('log', '-1', '--format=%B').stdout;
+  has(body, 'falsificazione esterna non registrata', 'nota quando i pareri mancano del tutto');
+  has(body, 'sola verifica interna', 'esplicita su cosa poggia il pass');
 });
 
 test('git: baselineDirty finisce nel corpo del commit (avviso durevole)', () => {
