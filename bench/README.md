@@ -24,7 +24,11 @@ non sono un segreto per gli umani.
 - perseveranza installato (il plugin) e CLI `claude` autenticata (abbonamento: nessuna
   `ANTHROPIC_API_KEY` necessaria — verificato: SDK e orchestrator al massimo avvisano);
 - `py -m pip install "sia-agent[claude]"` (Python 3.11+);
-- env `PERSEVERANZA_ROOT` = path del repo perseveranza (per gli script del loop).
+- env `PERSEVERANZA_ROOT` = path del repo perseveranza (per gli script del loop);
+- ⚠ **su Windows**: SIA 0.5.1 costruisce i path del venv alla POSIX (`venv/bin/python`):
+  vanno patchate le due funzioni `venv_python_path`/`venv_pip_path` nel `layout.py`
+  installato (site-packages) per usare `Scripts\` su `os.name == "nt"` — 4 righe,
+  da segnalare upstream.
 
 ## Lancio
 
