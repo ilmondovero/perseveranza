@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.18.0-blue)
+![versione](https://img.shields.io/badge/versione-1.19.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -237,6 +237,9 @@ Nato per far evolvere i prompt misurandoli su un benchmark (esperimenti self-imp
 stile [SIA](https://github.com/hexo-ai/sia)), è utile anche per l'A/B testing manuale delle
 istruzioni. I loop funzionano anche headless (`claude -p` in una directory armata: lo Stop
 hook guida le fasi fino a chiusura e disarm), che è ciò che rende possibile misurarli.
+Funziona per davvero: le guide di `plan-write`, `implement-first` e `review-advance` nei
+default 1.19.0 vengono dal pack vincente del primo esperimento (baseline 0.7369 → 0.9437
+sul [bench](bench/README.md), giudizio umano prima dell'adozione).
 
 ## Agenti inclusi
 

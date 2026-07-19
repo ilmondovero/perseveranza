@@ -605,6 +605,21 @@ test('prompt pack e2e: override in .omc-loop/prompts.json cambia l\'istruzione i
   eq(r.state.phase, 'implement', 'il routing non cambia: solo il testo');
 });
 
+test('v1.19: le guide adottate dal bench (gen_2 run 4) sono nei default', (dir) => {
+  arm(dir);
+  const r1 = fire(dir);                       // plan senza plan.md -> plan-write
+  has(r1.reason, 'NON frammentare', 'plan-write: step coesi (non micro-step)');
+  has(r1.reason, 'CON ONESTA', 'plan-write: valutazione onesta della complessita\'');
+  writePlan(dir, '- [ ] step uno\n');
+  const r2 = fire(dir);                       // -> implement-first
+  has(r2.reason, 'Copri TUTTO', 'implement-first: tutta la specifica, non solo il caso comune');
+  patchState(dir, { phase: 'review' });
+  writeArtifact(dir, 'review.json', { blocking: 0, findings: [] });
+  const r3 = fire(dir);                       // review pass -> review-advance
+  has(r3.reason, 'PRIMA la suite col verbo test', 'review-advance: prova fresca prima del claim');
+  has(r3.reason, 'claim-done', 'il verbo operativo resta al suo posto');
+});
+
 // === chiusura git (repo temporaneo) ======================================
 // Esercitano gitFinish/closeWithGit PER DAVVERO: un repo git vero in tmp, con un
 // bare remote LOCALE come origin/main (push offline e deterministico, niente rete,

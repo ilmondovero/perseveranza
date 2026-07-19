@@ -77,9 +77,11 @@ Lo storico delle decisioni è in `../CHANGELOG.md`.
 - L'host viene **validato** (`http`/`https`) prima di inviare la chiave.
 
 ## Prompt pack (`scripts/prompts.mjs`)
-- I **default DEVONO restare identici** alle istruzioni storiche: la suite li esercita via
-  `fire()` (asserzioni sul testo iniettato) ed è la rete contro le divergenze. Cambiare un
-  default = decisione consapevole, con test aggiornati.
+- I **default cambiano solo per decisione consapevole, con evidenza e test aggiornati** —
+  mai per deriva: la suite li esercita via `fire()` (asserzioni sul testo iniettato) ed è
+  la rete contro le divergenze. Precedente: in 1.19.0 tre chiavi hanno adottato le guide
+  del pack vincente del primo esperimento SIA (`bench/`, baseline 0.7369 → 0.9437), con
+  test dedicato che le àncora; i **verbi operativi** delle istruzioni non si toccano mai.
 - Ogni nuova istruzione di fase in `loop-drive.mjs` è una **nuova chiave** in
   `DEFAULT_PROMPTS` + `P('chiave', vars)`: niente template literal inline (tornerebbero
   non sovrascrivibili).

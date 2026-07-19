@@ -3,6 +3,31 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json` e nel badge del README; non si usano tag git.
 
+## 1.19.0
+- **Prime guide adottate dall'esperimento SIA** — il cerchio si chiude: un loop
+  self-improving ([SIA](https://github.com/hexo-ai/sia) sul nostro `bench/`) ha misurato
+  i prompt default (baseline 0.7369) e la sua mutazione vincente (gen_2 del run 4, score
+  0.9437: test nascosti 3/3, chiusure autonome 3/3, ~6 iterazioni/task) e' stata giudicata
+  a mano e adottata. Tre chiavi ritoccate in `prompts.mjs`, tutte AGGIUNTE attorno ai
+  verbi operativi (mai rimosso nulla):
+  - `plan-write`: non frammentare in micro-step i cambiamenti coesi (ogni step apre un
+    giro di review) + valutare la complessita' con onesta' (una modifica piccola e isolata
+    e' spesso `low`, non `medium` per default);
+  - `implement-first`: coprire TUTTO cio' che lo step promette, inclusi i casi limite
+    gia' scritti in specifica/commenti — una review che trova un caso mancante costa un
+    giro intero (era esattamente la debolezza misurata nel run 1: spec sotto-implementata
+    con verifica passata);
+  - `review-advance`: a piano completo, PRIMA il verbo `test` per la prova verde fresca e
+    NELLA STESSA RISPOSTA il `claim-done` — elimina l'iterazione sprecata sistematica del
+    claim rifiutato per prova non fresca.
+  *Perche' fidarsi:* le tre idee reggono anche a prescindere dai numeri (N=1 per
+  generazione); il controfattuale esiste — nel run 1 la mutazione libera che riscriveva i
+  verbi era PEGGIORATA (0.53 -> 0.41), quella vincolata additiva e' migliorata (+28%).
+- **Suite di regressione 64 → 65**: test che ancora le tre guide nelle istruzioni iniettate
+  e verifica che i verbi operativi restino al loro posto.
+- Cronaca completa dell'esperimento (4 run, 4 cause di guasto diverse, tutte codificate):
+  `bench/README.md` e i commit `bench:`.
+
 ## 1.18.0
 - **Prompt pack esternalizzato** — Fase 1 del progetto "SIA × perseveranza" (usare un loop
   self-improving per far evolvere i prompt del nostro, misurandoli su un benchmark con test
