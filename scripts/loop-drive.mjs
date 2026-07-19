@@ -25,6 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { renderProgress, countOpenSteps } from './hud.mjs';
 import { maybeSpawnRefresh, updateAvailable, currentVersion } from './update.mjs';
 import { dirtyBeyondLoop, summarizeExternalOpinions } from './util.mjs';
+import { renderPrompt, loadPromptOverrides } from './prompts.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const LOOP = `node "${join(SCRIPT_DIR, 'omc-loop.mjs')}"`;
@@ -281,8 +282,14 @@ const verifyModel = { low: 'sonnet', medium: 'opus', high: 'opus' }[s.complexity
 // sia da installazione manuale (agente utente), sia senza (subagent generico)
 const agentRef = (name, fallback) =>
   `l'agente ${name} (subagent_type "${name}"; se l'hai installato come plugin diventa "perseveranza:${name}"; se nessuno dei due esiste, ${fallback})`;
+// prompt pack: le istruzioni di fase vivono come template in prompts.mjs, sovrascrivibili
+// (env OMC_PROMPT_PACK > .omc-loop/prompts.json > default). L'header HUD resta fuori dai
+// template: lo antepone sempre l'hook, un pack non puo' spegnere l'osservabilita'.
+const pack = loadPromptOverrides(gateDir, process.env);
+if (pack.error) logStep(`prompt-pack: ${pack.source} illeggibile (${pack.error}), uso i default`);
+const P = (key, vars = {}) => renderPrompt(key, vars, pack.overrides);
 const implHint = s.complexity === 'high'
-  ? ` Il task e' ad alta complessita': delega l'implementazione a ${agentRef('pf-executor', 'un subagent executor generico')} con model=opus, tu coordina e controlla il risultato.`
+  ? P('hint-impl-high', { executorRef: agentRef('pf-executor', 'un subagent executor generico') })
   : '';
 
 // confronto con modelli esterni (solo se rilevati all'arm) + lente security + commit per step
@@ -290,29 +297,17 @@ const externals = Array.isArray(s.externals) ? s.externals : [];
 const extList = externals.join(', ');
 // il verbo `ask` centralizza i flag per-CLI (e l'HTTP di ollama-cloud), esegue il modello e
 // SALVA il parere in .omc-loop/external-<slot>.md: artefatto persistente e auditabile.
-const askHint = (slot) => `${LOOP} ask <provider> ${slot} -- "<prompt>" (provider tra: ${extList}; per prompt lunghi passa via stdin: ... | ${LOOP} ask <provider> ${slot}; ollama-cloud interroga tutti i modelli in OLLAMA_MODEL)`;
-const extPlanHint = externals.length
-  ? ` Poi chiedi a un modello esterno una critica indipendente del piano con ${askHint('plan')}, passandogli task e piano; integra le osservazioni fondate (pareri salvati in .omc-loop/external-plan-*.md).`
-  : '';
-// nei prompt agli esterni su temi security va dichiarato il contesto legittimo: una richiesta
-// di "falsificare/attaccare" senza contesto puo' far scattare i filtri di policy del provider
-// (rifiuto = parere perso, non un finding — successo realmente osservato al gate di un run)
-const extFraming = " dichiarando nel prompt il contesto legittimo (review difensiva del PROPRIO codice, progetto autorizzato: evita i falsi rifiuti dei filtri di policy)";
-const extFixHint = externals.length
-  ? ` Prima di riprovare, chiedi una diagnosi indipendente a un modello esterno con ${askHint('fix')}, descrivendo il problema che continua a fallire${extFraming}; diagnosi salvata in .omc-loop/external-fix-*.md.`
-  : '';
-const extVerifyHint = externals.length
-  ? ` In aggiunta al subagent, chiedi a uno o piu' modelli esterni di falsificare il lavoro con ${askHint('verify')}, passandogli piano e diff${extFraming}. Pesa i loro findings (salvati in .omc-loop/external-verify-*.md); un rifiuto di policy, un errore o un timeout del provider NON e' un finding: se nessun esterno risponde, prosegui col solo verdetto del subagent (la chiusura lo annota nel commit).`
-  : '';
-const secHint = s.complexity === 'high'
-  ? ' Includi una lente security: secrets nel codice, input non fidati, injection, path traversal.'
-  : '';
-const commitHint = s.commitSteps
-  ? ' Poi committa lo step appena validato con un commit atomico, seguendo le convenzioni del repo.'
-  : '';
+// I testi vivono in prompts.mjs; qui il codice decide solo QUALI hint sono attivi.
+const askHint = (slot) => P('hint-ask', { LOOP, slot, extList });
+const extFraming = P('hint-ext-framing');
+const extPlanHint = externals.length ? P('hint-ext-plan', { askHint: askHint('plan') }) : '';
+const extFixHint = externals.length ? P('hint-ext-fix', { askHint: askHint('fix'), extFraming }) : '';
+const extVerifyHint = externals.length ? P('hint-ext-verify', { askHint: askHint('verify'), extFraming }) : '';
+const secHint = s.complexity === 'high' ? P('hint-security') : '';
+const commitHint = s.commitSteps ? P('hint-commit') : '';
 
 const finalVerifyReason = () =>
-  `${header()} FASE: verifica finale avversariale. Hai dichiarato il progetto completo: ora va falsificato. Delega a ${agentRef('pf-verifier', 'un subagent indipendente avversariale')} con model=${verifyModel} (contesto pulito) la verifica, passandogli nel prompt il piano completo e il diff totale (se enorme: elenco dei file + estratti rilevanti): assuma che il lavoro sia SBAGLIATO, costruisca casi limite e input ostili, esegua DAVVERO test e build, verifichi ogni claim contro l'esecuzione reale.${secHint}${extVerifyHint} NON correggere nulla in questa fase. L'agente DEVE scrivere il verdetto in .omc-loop/verify.json nel formato {"pass": true|false, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. Solo se non ha potuto scriverlo, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail`;
+  `${header()} ${P('final-verify', { verifierRef: agentRef('pf-verifier', 'un subagent indipendente avversariale'), verifyModel, secHint, extVerifyHint, LOOP })}`;
 
 // handoff scritto per l'umano quando il loop si arrende: cosa stava facendo, quanti tentativi,
 // ultimo test, cosa guardare e come ripartire. Scritto in .omc-loop/ESCALATION.md, che resta
@@ -445,15 +440,15 @@ if (claimed) {
   const testRun = s.testCmd ? `${LOOP} test -- ${s.testCmd}` : `${LOOP} test -- <comando dei test>`;
   if (openSteps > 0) {
     // non tutti i fix sono chiusi: niente rampa d'uscita finche' il piano non e' completo
-    reason = `${header()} claim-done RIFIUTATO: in .omc-loop/plan.md restano ${openSteps} step non spuntati. Completali (ognuno passa per la sua review come gli altri) e, solo quando il piano e' interamente '- [x]', ridichiara: ${LOOP} claim-done.`;
+    reason = `${header()} ${P('claim-open-steps', { openSteps, LOOP })}`;
   } else if (testRequired && !freshGreen) {
     // niente transizione: il claim va ripetuto con la prova
-    reason = `${header()} claim-done RIFIUTATO: manca la prova di un test verde fresco. Esegui ORA: ${testRun} e, se l'esito e' verde, rilancia ${LOOP} claim-done NELLA STESSA RISPOSTA. Se e' rosso, correggi prima i fallimenti.`;
+    reason = `${header()} ${P('claim-no-fresh-test', { testRun, LOOP })}`;
   } else if (!s.cleanedOnce) {
     // pulizia una tantum PRIMA del gate, cosi' la verifica valida il codice gia' ripulito
     s.repeated = false; s.retries = 0;
     s.cleanedOnce = true; s.phase = 'cleanup';
-    reason = `${header()} FASE: cleanup pre-verifica. Hai dichiarato il progetto completo: prima del gate finale fai una passata di pulizia SENZA aggiungere funzionalita': rimuovi codice morto e duplicazioni, semplifica dove possibile senza cambiare comportamento, allinea lo stile al resto del repo, aggiorna README/docstring se il comportamento e' cambiato. Dopo la pulizia dimostra che i test restano verdi con: ${testRun}. Al prossimo stop parte la verifica finale.`;
+    reason = `${header()} ${P('cleanup', { testRun })}`;
   } else {
     s.repeated = false; s.retries = 0;
     s.phase = 'final-verify';
@@ -474,14 +469,14 @@ if (claimed) {
           s.paused = true;
           s.repeated = false;
           notify('Claude Code - OMC-loop', `Piano pronto: revisiona .omc-loop/plan.md e poi esegui resume - ${proj}`);
-          reason = `${header()} FASE: approvazione del piano (--approve-plan). Il piano e' scritto e il loop e' in PAUSA. Presenta ORA all'utente una sintesi del piano (obiettivo, gli step con il loro numero, scelte e rischi principali) e spiegagli che per approvarlo e avviare l'implementazione deve eseguire: ${LOOP} resume (prima puo' modificare .omc-loop/plan.md a mano). NON iniziare a implementare e NON eseguire tu il resume: l'approvazione spetta all'utente.`;
+          reason = `${header()} ${P('plan-approval', { LOOP })}`;
           break;
         }
         s.phase = 'implement'; s.repeated = false;
-        reason = `${header()} FASE: implement. Apri .omc-loop/plan.md e implementa il PRIMO step non spuntato.${implHint} NON spuntare la casella ora: si spunta solo dopo che la review e' passata. Se per procedere serve input dell'utente: esegui ${LOOP} pause e poi fai la domanda.`;
+        reason = `${header()} ${P('implement-first', { implHint, LOOP })}`;
       } else {
         s.repeated = true;
-        reason = `${header()} FASE: plan. Manca .omc-loop/plan.md. PRIMA esplora il codice rilevante (moduli coinvolti, pattern esistenti, test attuali), POI scrivi il piano come checklist markdown ('- [ ] step'), step piccoli e verificabili.${extPlanHint} Poi valuta la complessita' del task e registrala con: ${LOOP} complexity low|medium|high (instrada i modelli delle fasi successive). Infine fermati.`;
+        reason = `${header()} ${P('plan-write', { extPlanHint, LOOP })}`;
       }
       break;
     }
@@ -495,7 +490,7 @@ if (claimed) {
     case 'implement': {
       s.phase = 'review'; s.repeated = false;
       dropStaleArtifact('review.json');
-      reason = `${header()} FASE: code-review. Delega a ${agentRef('pf-reviewer', 'un subagent code-reviewer generico')} con model=${reviewModel} (contesto pulito) la review dello step appena implementato, passandogli nel prompt: lo step del piano, l'elenco dei file toccati e il diff (se enorme: elenco dei file + estratti rilevanti). Verifichi: correttezza, edge case, regressioni, sicurezza, adeguatezza dei test. L'agente DEVE scrivere il verdetto in .omc-loop/review.json nel formato {"blocking": <numero di problemi bloccanti>, "findings": [{"severity": "...", "desc": "..."}]}: e' quel file a instradare il loop. NON correggere nulla in questa fase: le correzioni appartengono alla fase di fix, dove verranno ri-revisionate. Solo se l'agente non ha potuto scrivere il file, registra tu l'esito con: ${LOOP} report pass oppure: ${LOOP} report fail. NON modificare .omc-loop/state.json a mano.`;
+      reason = `${header()} ${P('review-delegate', { reviewerRef: agentRef('pf-reviewer', 'un subagent code-reviewer generico'), reviewModel, LOOP })}`;
       break;
     }
     case 'review': {
@@ -503,17 +498,17 @@ if (claimed) {
         s.retries += 1;
         if (s.retries >= s.maxRetries) pauseForHuman(`${s.retries} review fallite sullo stesso step`);
         s.phase = 'implement'; s.repeated = false;
-        reason = `${header()} FASE: fix (tentativo ${s.retries}/${s.maxRetries}). La review ha lasciato problemi aperti: correggili TUTTI restando sullo stesso step del piano ed esegui i test pertinenti.${implHint}${s.retries >= 2 ? extFixHint : ''} NON spuntare lo step.`;
+        reason = `${header()} ${P('review-fix', { retries: s.retries, maxRetries: s.maxRetries, implHint, extFixHint: s.retries >= 2 ? extFixHint : '' })}`;
       } else if (report === 'pass') {
         s.retries = 0; s.phase = 'implement'; s.repeated = false;
-        reason = `${header()} FASE: implement. Review superata: spunta lo step completato in .omc-loop/plan.md ('- [x]') e appendi 2-3 righe a .omc-loop/notes.md (decisioni prese, trappole incontrate).${commitHint} Se restano step non spuntati, implementa il PROSSIMO; se la sua complessita' e' chiaramente diversa da quella registrata, prima aggiornala con: ${LOOP} complexity low|medium|high.${implHint} Se hai perso il filo, rileggi .omc-loop/plan.md e .omc-loop/notes.md. Se invece TUTTI gli step sono spuntati e il progetto e' completo, esegui: ${LOOP} claim-done (innesca la verifica finale). Se serve input dell'utente: ${LOOP} pause e poi fai la domanda.`;
+        reason = `${header()} ${P('review-advance', { commitHint, implHint, LOOP })}`;
       } else if (!s.repeated) {
         s.repeated = true; // resta in review, chiedi l'esito una volta sola
-        reason = `${header()} FASE: code-review (esito mancante). Non hai registrato l'esito della review. Completala se serve, poi esegui ORA: ${LOOP} report pass oppure: ${LOOP} report fail`;
+        reason = `${header()} ${P('review-missing-outcome', { LOOP })}`;
       } else {
         // esito mancante due volte: avanza comunque (ciclo interno tollerante)
         s.retries = 0; s.phase = 'implement'; s.repeated = false;
-        reason = `${header()} FASE: implement (review senza esito registrato, considerata superata). Spunta lo step completato in .omc-loop/plan.md e appendi 2-3 righe a .omc-loop/notes.md.${commitHint} Implementa il PROSSIMO step non spuntato.${implHint} Se tutti gli step sono spuntati: ${LOOP} claim-done. D'ora in poi registra SEMPRE l'esito con report pass|fail.`;
+        reason = `${header()} ${P('review-advance-no-outcome', { commitHint, implHint, LOOP })}`;
       }
       break;
     }
@@ -525,16 +520,16 @@ if (claimed) {
         s.finalFails += 1;
         if (s.finalFails >= s.maxRetries) pauseForHuman(`${s.finalFails} verifiche finali fallite`);
         s.phase = 'implement'; s.repeated = false;
-        reason = `${header()} FASE: fix post-verifica (bocciatura ${s.finalFails}/${s.maxRetries}). La verifica finale ha trovato difetti: correggili tutti e riapri in .omc-loop/plan.md gli step interessati ('- [ ]').${implHint} Quando tutto e' di nuovo completo e testato, riesegui: ${LOOP} claim-done`;
+        reason = `${header()} ${P('verify-postfix', { finalFails: s.finalFails, maxRetries: s.maxRetries, implHint, LOOP })}`;
       } else if (!s.repeated) {
         s.repeated = true; // resta in final-verify, chiedi l'esito una volta sola
-        reason = `${header()} FASE: verifica finale (esito mancante). Non hai registrato l'esito della verifica. Completala se serve, poi esegui ORA: ${LOOP} report pass oppure: ${LOOP} report fail`;
+        reason = `${header()} ${P('verify-missing-outcome', { LOOP })}`;
       } else {
         // gate di uscita severo: esito mancante due volte = bocciatura
         s.finalFails += 1;
         if (s.finalFails >= s.maxRetries) pauseForHuman('verifica finale senza esito per 2 volte');
         s.phase = 'implement'; s.repeated = false;
-        reason = `${header()} FASE: implement (verifica finale senza esito registrato: considerata FALLITA). Rivedi il lavoro, poi riesegui: ${LOOP} claim-done e stavolta registra l'esito con report pass|fail.`;
+        reason = `${header()} ${P('verify-failed-no-outcome', { LOOP })}`;
       }
       break;
     }
@@ -546,7 +541,7 @@ if (claimed) {
     default: {
       // fase sconosciuta (stato manomesso): riparti dal piano
       s.phase = 'plan'; s.repeated = false;
-      reason = `${header()} FASE: plan (stato incoerente, ripristinato). Verifica .omc-loop/plan.md: se manca scrivilo come checklist '- [ ] step', poi fermati.`;
+      reason = `${header()} ${P('phase-recovered')}`;
     }
   }
 }

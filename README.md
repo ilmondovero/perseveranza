@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.17.0-blue)
+![versione](https://img.shields.io/badge/versione-1.18.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -213,6 +213,30 @@ delle fasi (hint per i subagent):
 | code-review (subagent) | haiku | sonnet | opus |
 | verifica finale (subagent) | sonnet | opus | opus |
 | implement | in sessione | in sessione | delega a executor `model=opus` |
+
+## Prompt pack (avanzato)
+
+Le istruzioni che l'hook inietta a ogni fase non sono cablate nel codice: sono **template**
+in `scripts/prompts.mjs` (chiavi come `implement-first`, `review-delegate`, `final-verify`…,
+placeholder `{{LOOP}}`, `{{testRun}}`, `{{implHint}}`…) e si possono **sovrascrivere senza
+toccare nulla**:
+
+- variabile d'ambiente `OMC_PROMPT_PACK=<path a un JSON>` (precedenza più alta), oppure
+- file `.omc-loop/prompts.json` nel progetto (per-run: muore col disarm).
+
+```json
+{ "prompts": { "implement-first": "FASE: implement. <il tuo testo> {{implHint}}" } }
+```
+
+Regole: l'header HUD è **sempre** anteposto dall'hook (un pack non può spegnere
+l'osservabilità); le chiavi sconosciute sono ignorate; un JSON illeggibile fa ricadere sui
+default con una riga in `history.log` — l'hook non si rompe mai per un pack sbagliato. Il
+routing delle fasi non è modificabile: il pack cambia *cosa si dice*, mai *dove si va*.
+
+Nato per far evolvere i prompt misurandoli su un benchmark (esperimenti self-improving in
+stile [SIA](https://github.com/hexo-ai/sia)), è utile anche per l'A/B testing manuale delle
+istruzioni. I loop funzionano anche headless (`claude -p` in una directory armata: lo Stop
+hook guida le fasi fino a chiusura e disarm), che è ciò che rende possibile misurarli.
 
 ## Agenti inclusi
 

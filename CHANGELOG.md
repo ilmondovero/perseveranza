@@ -3,6 +3,27 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json` e nel badge del README; non si usano tag git.
 
+## 1.18.0
+- **Prompt pack esternalizzato** — Fase 1 del progetto "SIA × perseveranza" (usare un loop
+  self-improving per far evolvere i prompt del nostro, misurandoli su un benchmark con test
+  nascosti). Utile anche da sola: A/B testing manuale delle istruzioni senza fork.
+- **Nuovo `scripts/prompts.mjs`**: tutte le istruzioni di fase e gli hint vivono come template
+  (`DEFAULT_PROMPTS`, placeholder `{{...}}`), estratti **fedelmente** dalle stringhe storiche;
+  `loop-drive.mjs` li renderizza con `renderPrompt` e decide solo routing e variabili.
+  Override: env `OMC_PROMPT_PACK` > `.omc-loop/prompts.json` > default. *Guardrail:* l'header
+  HUD e' sempre anteposto dall'hook (un pack non spegne l'osservabilita'); chiavi ignote
+  ignorate, placeholder ignoti restano letterali (typo visibile), JSON malformato → default con
+  riga in `history.log`: l'hook non si rompe mai per un pack sbagliato. Il pack cambia *cosa si
+  dice*, mai il routing.
+- **Spike headless riuscito** (prerequisito del benchmark): `claude -p` in una directory armata
+  percorre l'intero ciclo da solo — plan → implement → review → claim-done → verifica finale
+  avversariale (verdetto in `verify.json`) → chiusura e disarm — con i plugin caricati e lo
+  Stop hook a guidare le fasi in print mode. Misurare i loop e' quindi possibile.
+- **Suite di regressione 61 → 64**: rendering puro (interpolazione, placeholder ignoto
+  letterale, chiave ignota vuota), precedenza env>file e fallback su JSON rotto, e2e con
+  override che cambia l'istruzione iniettata mantenendo header e routing.
+- `install.mjs` copia/rimuove anche `prompts.mjs` (packaging manuale allineato al plugin).
+
 ## 1.17.0
 - **Tre idee dal workflow di Kun Chen** (ex-L8 Meta/Microsoft/Atlassian, via David Ondrej +
   recap ByteByteGo) — notevole per quanto quel setup converge in modo indipendente col design

@@ -18,6 +18,7 @@ import { countOpenSteps, countDoneSteps } from './hud.mjs';
 import { effectiveEnv, providerModels, detectAvailable, disabledProviders, askTimeoutMs, PROVIDERS } from './providers.mjs';
 import { cmpSemver } from './update.mjs';
 import { underLoop, dirtyBeyondLoop, parseTimeoutMs, summarizeExternalOpinions } from './util.mjs';
+import { renderPrompt, loadPromptOverrides } from './prompts.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(SCRIPT_DIR, 'loop-drive.mjs');
@@ -566,6 +567,42 @@ test('util: parseTimeoutMs robusto (intero positivo, floor, default)', () => {
   eq(parseTimeoutMs('9000', 5000), 9000, 'intero valido sopra il floor');
   eq(parseTimeoutMs('500', 5000), 1000, 'sotto il floor 1000 -> floor');
   eq(parseTimeoutMs(undefined, 5000), 5000, 'assente -> default');
+});
+
+// === prompt pack (prompts.mjs) ===========================================
+test('prompts: renderPrompt interpola, placeholder ignoto letterale, chiave ignota vuota', () => {
+  has(renderPrompt('claim-open-steps', { openSteps: 3, LOOP: 'X' }), 'restano 3 step', 'interpolazione della variabile');
+  has(renderPrompt('claim-open-steps', { openSteps: 3 }), '{{LOOP}}', 'placeholder senza variabile resta letterale (typo visibile)');
+  eq(renderPrompt('chiave-inesistente', {}), '', 'chiave ignota -> stringa vuota, mai crash');
+  eq(renderPrompt('cleanup', { testRun: 'T' }, { cleanup: 'CUSTOM {{testRun}}' }), 'CUSTOM T', 'override vince e interpola');
+});
+
+test('prompts: loadPromptOverrides precedenza env > file, malformato -> default', (dir) => {
+  const gate = join(dir, '.omc-loop');
+  mkdirSync(gate, { recursive: true });
+  writeFileSync(join(gate, 'prompts.json'), JSON.stringify({ prompts: { cleanup: 'DAL FILE' } }));
+  let r = loadPromptOverrides(gate, {});
+  eq(r.overrides.cleanup, 'DAL FILE', 'file di progetto letto');
+  const envPack = join(dir, 'pack.json');
+  writeFileSync(envPack, JSON.stringify({ prompts: { cleanup: 'DA ENV', 'chiave-ignota': 'x' } }));
+  r = loadPromptOverrides(gate, { OMC_PROMPT_PACK: envPack });
+  eq(r.overrides.cleanup, 'DA ENV', 'env batte il file di progetto');
+  eq(r.overrides['chiave-ignota'], undefined, 'chiave sconosciuta scartata');
+  writeFileSync(join(gate, 'prompts.json'), '{ rotto');
+  r = loadPromptOverrides(gate, {});
+  eq(Object.keys(r.overrides).length, 0, 'JSON malformato -> nessun override');
+  check(!!r.error, 'errore riportato al chiamante (finisce in history.log)');
+});
+
+test('prompt pack e2e: override in .omc-loop/prompts.json cambia l\'istruzione iniettata', (dir) => {
+  arm(dir);
+  writePlan(dir, '- [ ] step uno\n');
+  writeFileSync(gatePath(dir, 'prompts.json'), JSON.stringify({ prompts: { 'implement-first': 'ISTRUZIONE CUSTOM: esegui {{LOOP}} status' } }));
+  const r = fire(dir);
+  has(r.reason, 'ISTRUZIONE CUSTOM', 'il template custom e\' iniettato al posto del default');
+  check(!r.reason.includes('{{LOOP}}'), 'il placeholder viene interpolato davvero');
+  has(r.reason, '[perseveranza', 'l\'header HUD resta anteposto: un pack non lo puo\' sopprimere');
+  eq(r.state.phase, 'implement', 'il routing non cambia: solo il testo');
 });
 
 // === chiusura git (repo temporaneo) ======================================

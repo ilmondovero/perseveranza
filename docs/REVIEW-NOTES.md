@@ -76,6 +76,21 @@ Lo storico delle decisioni è in `../CHANGELOG.md`.
   artefatti `external-*.md` o nei log. Precedenza **env > file > default**.
 - L'host viene **validato** (`http`/`https`) prima di inviare la chiave.
 
+## Prompt pack (`scripts/prompts.mjs`)
+- I **default DEVONO restare identici** alle istruzioni storiche: la suite li esercita via
+  `fire()` (asserzioni sul testo iniettato) ed è la rete contro le divergenze. Cambiare un
+  default = decisione consapevole, con test aggiornati.
+- Ogni nuova istruzione di fase in `loop-drive.mjs` è una **nuova chiave** in
+  `DEFAULT_PROMPTS` + `P('chiave', vars)`: niente template literal inline (tornerebbero
+  non sovrascrivibili).
+- L'**header HUD non sta nei template**: lo antepone sempre l'hook. Un pack non può
+  spegnere l'osservabilità del loop.
+- `renderPrompt`/`loadPromptOverrides` **non lanciano mai**: chiave ignota → `''`,
+  placeholder ignoto → resta letterale (typo visibile), JSON malformato → default + riga
+  `prompt-pack:` in `history.log`. Precedenza: `OMC_PROMPT_PACK` (env) >
+  `.omc-loop/prompts.json` > default.
+- Il pack cambia *cosa si dice*, mai il routing: le transizioni restano proprietà del codice.
+
 ## Provider esterni (`scripts/providers.mjs`)
 - Unica fonte di verità per rilevamento/invocazione/flag. Aggiungere un provider = una voce.
 - Le CLI si invocano con il **prompt su stdin** + flag fissi (`shell:true` per i `.cmd` di
