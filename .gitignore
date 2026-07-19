@@ -10,3 +10,6 @@ config.local.json
 # output del perseveranza-bench (run SIA e workdir dei mini-task)
 runs/
 minitask-runs/
+
+# bytecode Python (py_compile del bench)
+__pycache__/
