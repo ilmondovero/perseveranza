@@ -6,7 +6,7 @@ test nascosti. Questo NON fa parte del runtime del plugin: è tooling di svilupp
 
 ## Come funziona
 
-- Il **target agent** (`task/reference/target_agent.py`, seed della generazione 1) porta
+- Il **target agent** (`task/reference/reference_target_agent.py`, seed della generazione 1) porta
   con sé un `PROMPT_PACK` (gen 1: vuoto = default del plugin), esegue i 3 mini-task di
   `task/data/public/minitasks/` armando un loop perseveranza **headless** (`claude -p`)
   in una copia usa-e-getta di ciascuno, e scrive `submission.json` con gli esiti.
