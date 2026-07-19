@@ -1,6 +1,6 @@
 # Perseveranza
 
-![versione](https://img.shields.io/badge/versione-1.16.0-blue)
+![versione](https://img.shields.io/badge/versione-1.17.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js-339933)
@@ -50,7 +50,11 @@ Tre principi guidano il disegno:
 2. **Ciclo interno economico, gate di uscita severo.** La review per step è leggera; il
    controllo costoso (verifica avversariale, security, modello esterno) scatta una sola
    volta, quando Claude dichiara di aver finito. Dichiararsi finiti non chiude il ciclo:
-   **innesca il controllo**. Niente auto-certificazione.
+   **innesca il controllo**. Niente auto-certificazione. Non è eccesso di zelo: un
+   principal L8 ex-Meta misura che il **68% delle modifiche** passate dal suo strumento di
+   validazione conteneva bug da correggere prima della PR
+   ([Kun Chen, `no-mistakes`](https://blog.bytebytego.com/p/an-ex-meta-l8s-agentic-engineering)) —
+   la review per step e il gate avversariale esistono perché servono.
 3. **Prove, non parole.** I test li esegue lo script stesso (verbo `test`: è lui a
    lanciare il comando e registrare l'exit code reale), e il `claim-done` è accettato
    solo con un run verde fresco. I verdetti di review e verifica sono file JSON scritti
@@ -125,6 +129,7 @@ avanzare le fasi due volte per risposta. Prima di passare al plugin, eseguire
 /perseveranza fix veloce --external off       # senza confronto con modelli esterni
 /perseveranza feature W --no-git-finish       # niente commit+push automatico a fine progetto
 /perseveranza feature V --no-push             # commit locale a fine progetto, niente push
+/perseveranza feature K --approve-plan        # pausa dopo il piano: approvi tu con resume
 ```
 
 Claude scrive il piano in `.omc-loop/plan.md` (checklist), registra la complessità e da
@@ -133,11 +138,39 @@ della fase successiva. Per interromperlo in qualsiasi momento basta eliminare la
 cartella `.omc-loop/` del progetto (equivale al verbo `disarm`), o chiedere a Claude di
 eseguire il disarm.
 
+## Più task in parallelo (git worktree)
+
+Perseveranza è un-loop-per-progetto, ma "progetto" significa *directory*: con i worktree
+di git ottieni N loop davvero paralleli **senza configurare nulla** — ogni worktree ha la
+sua `.omc-loop/`, e lo scoping per-sessione lega ogni loop alla sessione che lo guida (è
+il pattern "pool di worktree + un agente per finestra" dei workflow agentici alla Kun
+Chen, che qui emerge per costruzione: stato per-directory + claim-on-first-fire).
+
+```bash
+git worktree add ../repo-task-a -b task-a     # un worktree e un branch per task
+git worktree add ../repo-task-b -b task-b
+# poi: una sessione Claude Code per worktree, e in ciascuna /perseveranza <il suo task>
+```
+
+Avvertenze oneste, prima di lanciarne cinque:
+
+- ogni worktree vive su un **branch proprio** (git lo impone) e la chiusura pusha quel
+  branch: serve l'upstream (`git push -u origin task-a` una volta, o
+  `git config push.autoSetupRemote true`), altrimenti la chiusura va in pausa in
+  `git-finish` come da contratto; in alternativa usa `--no-push`;
+- kill switch: il file `.omc-loop/STOP` è **selettivo** (ferma solo quel worktree),
+  `OMC_LOOP_KILL=1` è **globale** (al prossimo Stop ferma tutti i loop della macchina);
+- metti `.omc-loop/` nel `.gitignore` **committato**: vale per tutti i worktree in un colpo;
+- dai ai worktree nomi parlanti: le notifiche dicono il nome della directory
+  (`repo-task-a` si capisce al volo, `wt1` no);
+- scegli task che toccano **aree diverse** del codice: i worktree isolano i file mentre i
+  loop girano, ma i conflitti non spariscono — si spostano al momento del merge.
+
 ## Le fasi, una per una
 
 | fase | cosa succede | chi lavora |
 |---|---|---|
-| **plan** | esplorazione del codice rilevante, checklist in `plan.md`, critica del piano da un modello esterno, registrazione della complessità | sessione |
+| **plan** | esplorazione del codice rilevante, checklist in `plan.md`, critica del piano da un modello esterno, registrazione della complessità; con `--approve-plan` il loop si ferma qui in pausa (piano presentato in chat) finché non esegui `resume` | sessione |
 | **implement** | un solo step della checklist, niente anticipi | sessione (high: agente `pf-executor` opus) |
 | **review** | revisione dello step appena fatto — riceve nel prompt step, file toccati e diff; scrive il verdetto in `review.json` (blocking + findings) | agente `pf-reviewer`, read-only, contesto pulito |
 | **fix** | correzione dei problemi segnalati dalla review, stesso step; il fix viene poi ri-revisionato | sessione; dal 2º tentativo con diagnosi esterna |

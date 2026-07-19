@@ -6,6 +6,8 @@
 //     --external off  disattiva il confronto con modelli esterni (default: auto-rilevati codex/agy/grok/cursor/claude/ollama-cloud)
 //     --test "<cmd>"  comando della suite: il claim-done richiedera' un test verde fresco
 //     --no-git-finish a fine progetto NON fare commit+push automatico (default: si', se in un repo git)
+//     --approve-plan  gate umano sul piano: dopo la fase plan il loop si mette in PAUSA
+//                     (presentando il piano all'utente) e riparte solo con `resume`
 //   node ... test -- <comando>             esegue il comando LUI STESSO e registra l'exit code reale
 //                                          (prova non falsificabile: e' lo script a misurare)
 //   node ... report pass|fail              esito della fase corrente (review / verifica finale)
@@ -43,6 +45,7 @@ let external = 'auto';
 let testCmd = '';
 let gitFinish = true;
 let gitPush = true;
+let approvePlan = false;
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--') break; // tutto cio' che segue appartiene al verbo `test`
@@ -54,6 +57,7 @@ for (let i = 1; i < argv.length; i++) {
   else if (a === '--test') testCmd = String(argv[++i] ?? '');
   else if (a === '--no-git-finish') gitFinish = false;
   else if (a === '--no-push') gitPush = false;
+  else if (a === '--approve-plan') approvePlan = true;
   else if (!value) value = a;
 }
 if (!Number.isFinite(max) || max < 1) max = 25;
@@ -165,6 +169,8 @@ switch (action) {
       lastTest: null,                      // ultimo run registrato dal verbo `test`: {cmd, exitCode, iteration, at}
       gitFinish,                           // a fine progetto: commit+push automatico se si e' dentro un repo git
       gitPush,                             // --no-push: a fine progetto committa ma NON pusha (commit locale)
+      approvePlan,                         // --approve-plan: pausa dopo il piano, riparte con `resume`
+      planPresented: false,                // il gate di approvazione e' gia' scattato (non si ripete)
       baselineDirty,                       // path gia' modificati all'arm: a fine progetto avvisa (git add -A li include)
       iterations: 0,
       max,

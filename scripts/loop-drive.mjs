@@ -174,6 +174,7 @@ const s = {
   claimedDone: false, paused: false, repeated: false,
   commitSteps: false, externals: [], cleanedOnce: false,
   testCmd: null, lastTest: null, gitFinish: true, gitPush: true,
+  approvePlan: false, planPresented: false,   // gate di approvazione del piano (--approve-plan)
   baselineDirty: [],                // path gia' sporchi all'arm: avviso (non bloccante) a fine progetto
   sessionId: null, lastFireAt: 0,   // proprieta' del loop: claim-on-first-fire (vedi sotto)
   ...rawState,
@@ -463,6 +464,19 @@ if (claimed) {
   switch (phase) {
     case 'plan': {
       if (existsSync(planPath) || s.repeated) {
+        // gate di approvazione del piano (--approve-plan): scatta UNA volta sola, e solo se il
+        // piano esiste davvero. Si BLOCCA con l'istruzione "presenta il piano" (una pausa muta
+        // fermerebbe Claude senza spiegare nulla in chat), poi paused=true fa tacere i fire
+        // successivi; `resume` riparte e planPresented=true instrada nel ramo normale. Vale solo
+        // per il piano iniziale: i fix post-verifica che riaprono step NON ripassano da qui.
+        if (s.approvePlan === true && s.planPresented !== true && existsSync(planPath)) {
+          s.planPresented = true;
+          s.paused = true;
+          s.repeated = false;
+          notify('Claude Code - OMC-loop', `Piano pronto: revisiona .omc-loop/plan.md e poi esegui resume - ${proj}`);
+          reason = `${header()} FASE: approvazione del piano (--approve-plan). Il piano e' scritto e il loop e' in PAUSA. Presenta ORA all'utente una sintesi del piano (obiettivo, gli step con il loro numero, scelte e rischi principali) e spiegagli che per approvarlo e avviare l'implementazione deve eseguire: ${LOOP} resume (prima puo' modificare .omc-loop/plan.md a mano). NON iniziare a implementare e NON eseguire tu il resume: l'approvazione spetta all'utente.`;
+          break;
+        }
         s.phase = 'implement'; s.repeated = false;
         reason = `${header()} FASE: implement. Apri .omc-loop/plan.md e implementa il PRIMO step non spuntato.${implHint} NON spuntare la casella ora: si spunta solo dopo che la review e' passata. Se per procedere serve input dell'utente: esegui ${LOOP} pause e poi fai la domanda.`;
       } else {

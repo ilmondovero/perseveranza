@@ -3,6 +3,31 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json` e nel badge del README; non si usano tag git.
 
+## 1.17.0
+- **Tre idee dal workflow di Kun Chen** (ex-L8 Meta/Microsoft/Atlassian, via David Ondrej +
+  recap ByteByteGo) — notevole per quanto quel setup converge in modo indipendente col design
+  del loop (step in contesto fresco, checker prima della PR, escalation solo su decisioni
+  ambigue). Una feature e due integrazioni ai docs:
+- **`--approve-plan`: gate umano sul piano.** Dopo la fase plan il loop si BLOCCA una volta
+  sola con l'istruzione di presentare il piano all'utente in chat, poi va in pausa
+  (`paused=true`); `resume` approva e avvia l'implementazione (prima si può editare
+  `plan.md` a mano). Riusa pausa/resume esistenti: nessun verbo nuovo, nessuna fase nuova;
+  campo `planPresented` per non ripetere il gate (i fix post-verifica che riaprono step non
+  ripassano da qui). *Perché il blocco e non la sola pausa:* una pausa muta fermerebbe Claude
+  senza spiegare nulla in chat; il blocco unico produce la sintesi del piano e la richiesta
+  di approvazione, poi il loop tace. Default off, retro-compatibile.
+- **Docs: più task in parallelo con git worktree.** Nuova sezione README: N worktree = N
+  `.omc-loop/` indipendenti = N loop paralleli, gratis per costruzione (stato per-directory +
+  claim-on-first-fire). Con le avvertenze oneste: upstream per branch (o `--no-push`), STOP
+  selettivo vs `OMC_LOOP_KILL` globale, `.gitignore` committato, nomi di directory parlanti,
+  task su aree diverse (i conflitti si spostano al merge, non spariscono).
+- **Docs: la statistica del 68%.** Nel principio 2 ("gate di uscita severo") la misura di Kun
+  Chen: il 68% delle modifiche passate dal suo `no-mistakes` conteneva bug da correggere
+  prima della PR — conferma empirica, da un principal L8, del perché maker/checker e gate
+  avversariale esistono.
+- **Suite di regressione 59 → 61**: il gate `--approve-plan` end-to-end (blocco unico,
+  pausa, silenzio in pausa, ripartenza post-resume senza ripetere il gate) e il default off.
+
 ## 1.16.0
 - **Tre nuovi provider per il secondo parere: `grok`, `cursor`, `claude`** — il registro copre
   ora tutti i provider CLI dell'`ask` di OMC, più `ollama-cloud` che OMC non ha. Tre stili di

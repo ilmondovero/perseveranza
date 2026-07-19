@@ -219,6 +219,34 @@ test('plan con plan.md presente -> implement', (dir) => {
   has(r.reason, 'FASE: implement', 'istruzione di implement');
 });
 
+test('--approve-plan: pausa dopo il piano, blocco unico "presenta il piano"', (dir) => {
+  arm(dir, 'task', ['--approve-plan']);
+  eq(readState(dir).approvePlan, true, 'arm registra il flag');
+  writePlan(dir, '- [ ] step uno\n');
+  const r = fire(dir);
+  check(r.blocked, 'primo fire: blocca con l\'istruzione di presentazione');
+  has(r.reason, 'approvazione del piano', 'istruzione di approvazione');
+  eq(r.state.paused, true, 'loop in pausa');
+  eq(r.state.planPresented, true, 'gate segnato come gia\' scattato');
+  eq(r.state.phase, 'plan', 'resta in fase plan');
+  const r2 = fire(dir);
+  check(!r2.blocked, 'secondo fire: in pausa, nessun blocco');
+  loop(dir, 'resume');
+  const r3 = fire(dir);
+  check(r3.blocked, 'dopo resume: il loop riparte');
+  eq(r3.state.phase, 'implement', 'passa a implement');
+  has(r3.reason, 'FASE: implement', 'istruzione di implement (il gate non si ripete)');
+});
+
+test('--approve-plan assente: default false, nessun gate', (dir) => {
+  arm(dir);
+  eq(readState(dir).approvePlan, false, 'default retro-compatibile');
+  writePlan(dir, '- [ ] step uno\n');
+  const r = fire(dir);
+  eq(r.state.phase, 'implement', 'va dritto a implement come sempre');
+  eq(r.state.paused, false, 'nessuna pausa');
+});
+
 test('implement -> review (delega al revisore)', (dir) => {
   arm(dir);
   writePlan(dir, '- [ ] step uno\n');

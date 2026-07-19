@@ -1,6 +1,6 @@
 ---
 description: Arma il ciclo OMC-loop a feedback (plan -> implement -> review -> verifica finale avversariale) e inizia il task
-argument-hint: <descrizione del task> [--max N] [--commit] [--external off] [--test "cmd"] [--no-git-finish] [--no-push]
+argument-hint: <descrizione del task> [--max N] [--commit] [--external off] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan]
 ---
 
 Attiva la modalita' "perseveranza" per il task indicato e comincia a lavorarci.
@@ -24,7 +24,9 @@ Passi da eseguire ORA, in ordine:
    cursor, claude (contesto pulito ma stesso vendor: preferisci gli altri se disponibili),
    ollama-cloud; `--test` = comando della suite, il claim-done richiedera' la prova di un
    run verde fresco; `--no-git-finish` = a fine progetto NON fare commit+push automatico;
-   `--no-push` = a fine progetto committa in locale ma NON pusha)
+   `--no-push` = a fine progetto committa in locale ma NON pusha; `--approve-plan` = dopo
+   la fase plan il loop si mette in PAUSA presentando il piano all'utente, e riparte solo
+   quando lui esegue `resume` — approvazione umana del piano prima di implementare)
 
 2. Verifica che sia armato:
 
