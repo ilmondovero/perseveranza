@@ -28,7 +28,11 @@ non sono un segreto per gli umani.
 - ⚠ **su Windows**: SIA 0.5.1 costruisce i path del venv alla POSIX (`venv/bin/python`):
   vanno patchate le due funzioni `venv_python_path`/`venv_pip_path` nel `layout.py`
   installato (site-packages) per usare `Scripts\` su `os.name == "nt"` — 4 righe,
-  da segnalare upstream.
+  da segnalare upstream;
+- ⚠ **su Windows**: lanciare con **`PYTHONUTF8=1`** nell'ambiente: lo stdout cp1252 fa
+  crashare i target agent generati appena stampano un simbolo unicode (visto nel run 2:
+  `UnicodeEncodeError` su `✓`). Il reference si difende da solo (`reconfigure utf-8`),
+  ma i rigenerati ereditano solo l'ambiente.
 
 ## Lancio
 

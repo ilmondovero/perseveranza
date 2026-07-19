@@ -10,13 +10,23 @@ esecuzione qui sotto va lasciata intatta salvo bug reali; NON leggere data/priva
 NON modificare i mini-task ne' i loro test: e' barare, e i test nascosti lo scoprono.
 """
 
+import argparse
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+# stdout/stderr SEMPRE utf-8: su Windows il default cp1252 fa crashare qualsiasi print
+# con simboli unicode (successo reale nel run 2: UnicodeEncodeError su '✓')
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
 
 # ====================== SUPERFICIE DI EVOLUZIONE ======================
 # Override dei template di scripts/prompts.mjs del plugin. Generazione 1:
@@ -25,9 +35,20 @@ from pathlib import Path
 PROMPT_PACK = {"prompts": {}}
 # ======================================================================
 
-ROOT = Path(os.environ["PERSEVERANZA_ROOT"])  # obbligatoria: path del repo perseveranza
+# CONTRATTO DI INVOCAZIONE SIA (orchestrator.py):
+#   target_agent.py --dataset_dir <task>/data/public --working_dir <gen_dir>
+# Questi argomenti sono GIA' gestiti qui sotto: NON riscrivere la risoluzione dei path
+# (i run 1 e 2 sono falliti in gen_1 proprio per riscritture di questa logica).
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--dataset_dir", default=None)
+_ap.add_argument("--working_dir", default=None)
+_ARGS, _ = _ap.parse_known_args()
+
+ROOT = Path(os.environ["PERSEVERANZA_ROOT"])  # repo del plugin: script del loop + guard git
 LOOP_MJS = ROOT / "scripts" / "omc-loop.mjs"
-MINITASKS = ROOT / "bench" / "task" / "data" / "public" / "minitasks"
+DATASET = Path(_ARGS.dataset_dir) if _ARGS.dataset_dir else ROOT / "bench" / "task" / "data" / "public"
+MINITASKS = DATASET / "minitasks"           # fonte autorevole: il --dataset_dir passato da SIA
+WORKROOT = Path(_ARGS.working_dir) if _ARGS.working_dir else Path.cwd()
 EXPECTED = ["t1-slugify", "t2-bugfix", "t3-refactor"]
 
 MODEL = os.environ.get("BENCH_LOOP_MODEL", "sonnet")
@@ -47,7 +68,7 @@ KICK = (
 
 def run_minitask(name: str) -> dict:
     template = MINITASKS / name
-    work = Path.cwd() / "minitask-runs" / name
+    work = WORKROOT / "minitask-runs" / name
     if work.exists():
         shutil.rmtree(work)
     shutil.copytree(template, work)
@@ -135,13 +156,16 @@ def run_minitask(name: str) -> dict:
 
 
 def main():
+    if not MINITASKS.is_dir():
+        print(f"[bench] ERRORE: minitasks non trovati in {MINITASKS} (controlla --dataset_dir)")
+        sys.exit(1)
     results = []
     for name in EXPECTED:
         print(f"[bench] mini-task {name}...", flush=True)
         t = run_minitask(name)
         print(f"[bench]   closed={t['closed']} iterations={t['iterations']} escalated={t['escalated']}", flush=True)
         results.append(t)
-    Path("submission.json").write_text(json.dumps({"tasks": results}, indent=2), encoding="utf-8")
+    (WORKROOT / "submission.json").write_text(json.dumps({"tasks": results}, indent=2), encoding="utf-8")
     print("[bench] submission.json scritta")
 
 
