@@ -38,7 +38,18 @@ non sono un segreto per gli umani.
 
 ```powershell
 $env:PERSEVERANZA_ROOT = "C:\2026\perseveranza"
-sia run --task_dir C:\2026\perseveranza\bench\task --max_gen 3 --run_id 1
+$env:PYTHONUTF8 = "1"          # Windows: stdout cp1252 uccide i target agent (vedi sotto)
+$env:SIA_MAX_TURNS = "40"      # default 20: troppo pochi se il meta agent e' cerimonioso
+sia run --task_dir C:\2026\perseveranza\bench\task --max_gen 3 --run_id 1 --meta-agent-profile pf-meta
+```
+
+Il profilo `pf-meta` (file `profiles/pf-meta.json` nella dir di lancio) usa **sonnet** per
+meta/feedback agent al posto del default `haiku`: nel run 3 haiku ha bruciato i 20 turni
+in documenti di contorno senza mai eseguire (e SIA tratta il max-turns come errore fatale);
+nei run 1-2 le sue riscritture del runner erano la causa dei crash di gen_1.
+
+```json
+{ "profile_id": "pf-meta", "name": "...", "agent_impl": "claude", "model": "sonnet", "provider_id": "anthropic" }
 ```
 
 Tuning: `BENCH_LOOP_MODEL` (default `sonnet`), `BENCH_LOOP_TIMEOUT_S` (default 900 per
