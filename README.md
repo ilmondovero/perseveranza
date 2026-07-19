@@ -383,6 +383,13 @@ babysitter…). Perseveranza copre un asse diverso — **far convergere un singo
 sessione — quindi i livelli L1 "report-only schedulato" non si applicano: i due strumenti sono
 complementari, non alternativi.
 
+L'etichetta stessa è dibattuta: c'è chi la considera [un rebrand che frena](https://www.youtube.com/watch?v=VQy50fuxI34)
+(IndyDevDan: la leva vera è *uscire* dal loop e codificare gli standard negli agenti, non
+ingegnerizzare la ripetizione). Perseveranza è **agnostica sul nome**: instrada sugli esiti e non
+a cadenza, il piano guida le fasi, l'umano rientra solo all'escalation — e ciò che conta resta
+identico comunque lo si chiami: verifier che esegue davvero, stato esterno al contesto, tetti di
+spesa. Di fatto, "armi e te ne vai" è già l'uscita dal loop che quella critica invoca.
+
 **Failure mode noti della loop engineering, e come perseveranza li mitiga:**
 
 - **Verifier theater** (il checker dice "ok" senza controllare davvero) → `pf-verifier` ha mandato
