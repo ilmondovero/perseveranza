@@ -20,7 +20,7 @@ TASK_DIR = Path(__file__).resolve().parent.parent.parent  # .../bench/task
 PRIVATE = TASK_DIR / "data" / "private"
 EXPECTED = ["t1-slugify", "t2-bugfix", "t3-refactor"]
 HIDDEN_TIMEOUT_S = 120
-DEFAULT_LOOP_MAX = 10
+DEFAULT_LOOP_MAX = 14
 
 
 def _run_hidden(name: str, workdir: Path) -> bool:
@@ -47,6 +47,11 @@ def evaluate(submission_path: Path) -> dict:
         t = by_name.get(name)
         if not t:
             per_task.append({"name": name, "score": 0.0, "note": "assente dalla submission"})
+            continue
+        if t.get("contaminated"):
+            # il loop ha toccato i template nel repo: misura invalida, non negoziabile
+            per_task.append({"name": name, "score": 0.0, "contaminated": True,
+                             "note": "template contaminati durante il run: misura invalida"})
             continue
         workdir = Path(str(t.get("workdir", "")))
         hidden_ok = _run_hidden(name, workdir)

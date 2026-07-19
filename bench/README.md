@@ -43,6 +43,25 @@ mini-task), `BENCH_LOOP_MAX` (default 10 iterazioni per loop).
 ⚠ **Costi**: ogni generazione = 3 loop perseveranza completi (usage dell'abbonamento
 Claude) + le chiamate del meta/feedback agent di SIA. Partire con `--max_gen 3`.
 
+## Lezioni del run pilota 1 → guardrail v2
+
+Il primo run (baseline 0.5333 con pack default; prima mutazione 0.41, peggiorativa) ha
+insegnato quattro cose, ora codificate nel bench:
+
+1. **t3 misurabile**: i test nascosti verificano anche la *struttura* (dedup reale: le
+   occorrenze della logica comune nel sorgente), non solo il comportamento;
+2. **iterazioni precise** dalla copia di `history.log` (il polling dello stato perdeva
+   gli ultimi incrementi);
+3. **guard anti-contaminazione**: nel run 1 un loop ha riscritto un template *nel repo*
+   (conosceva il path dall'istruzione iniettata). Ora: vincolo di confinamento nel kick
+   prompt + check git post-run con auto-ripristino + task contaminato = score 0;
+4. **vincolo sui verbi operativi** in `task.md`: le mutazioni del pack devono preservare
+   i comandi che fanno avanzare il loop — la gen_3 li aveva riscritti in "coaching"
+   perdendoli, ed è crollata (evidenza citata nel task stesso).
+
+`--max` dei loop portato da 10 a **14**: un run perfetto con la rampa d'uscita completa
+consuma già ~7 fire, e la baseline mostrava lavoro corretto senza chiusura formale.
+
 ## Adozione dei risultati
 
 I pack delle generazioni vivono in `runs/run_*/gen_*/target_agent.py` con la motivazione

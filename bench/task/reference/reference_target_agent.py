@@ -12,6 +12,7 @@ NON modificare i mini-task ne' i loro test: e' barare, e i test nascosti lo scop
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -31,11 +32,16 @@ EXPECTED = ["t1-slugify", "t2-bugfix", "t3-refactor"]
 
 MODEL = os.environ.get("BENCH_LOOP_MODEL", "sonnet")
 TIMEOUT_S = int(os.environ.get("BENCH_LOOP_TIMEOUT_S", "900"))
-LOOP_MAX = int(os.environ.get("BENCH_LOOP_MAX", "10"))
-POLL_S = 5
+# 14, non 10: un run PERFETTO con la rampa d'uscita completa (plan, implement, review,
+# advance, claim->cleanup, cleanup->verify, verify->close) consuma gia' ~7 fire; ogni giro
+# di fix ne aggiunge 2. Col vecchio 10 la baseline chiudeva il lavoro ma non la cerimonia.
+LOOP_MAX = int(os.environ.get("BENCH_LOOP_MAX", "14"))
+POLL_S = 2
 KICK = (
     "Il ciclo perseveranza e' armato in questa directory: sei tu la sessione che lo guida. "
-    "Comincia dalla fase plan seguendo le istruzioni che lo Stop hook ti iniettera' a ogni fine risposta."
+    "Comincia dalla fase plan seguendo le istruzioni che lo Stop hook ti iniettera' a ogni fine risposta. "
+    "VINCOLO: lavora ESCLUSIVAMENTE dentro questa directory; non leggere ne' modificare file "
+    "fuori da essa (in particolare il repo del plugin perseveranza e i suoi bench/template)."
 )
 
 
@@ -69,6 +75,7 @@ def run_minitask(name: str) -> dict:
     )
     last_state: dict = {}
     escalated = False
+    hist_copy = work.parent / f"{name}.history.log"  # sopravvive al disarm (che rimuove il gate)
     start = time.time()
     while proc.poll() is None and time.time() - start < TIMEOUT_S:
         time.sleep(POLL_S)
@@ -76,19 +83,53 @@ def run_minitask(name: str) -> dict:
             last_state = json.loads((gate / "state.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass  # gate gia' rimosso (chiusura) o scrittura concorrente: tengo l'ultimo
+        try:
+            shutil.copy2(gate / "history.log", hist_copy)
+        except OSError:
+            pass
         if (gate / "ESCALATION.md").exists() or last_state.get("paused"):
             escalated = True
     timed_out = proc.poll() is None
     if timed_out:
         proc.kill()
 
+    # iterazioni PRECISE dalla copia di history.log (v2: il polling del solo state.json
+    # perdeva gli ultimi incrementi — un loop veloce risultava "0 iterazioni")
+    iterations = last_state.get("iterations")
+    try:
+        iters = re.findall(r"\|\s*iter\s+(\d+)", hist_copy.read_text(encoding="utf-8"))
+        if iters:
+            iterations = max(int(i) for i in iters)
+    except OSError:
+        pass
+
+    # guard anti-contaminazione (v2): se il loop ha toccato i TEMPLATE nel repo (successo
+    # reale nel run pilota: t3 riscritto nel repo durante il run), la misura non vale.
+    # Rileva via git, RIPRISTINA e marca l'esito: evaluate.py azzerera' lo score del task.
+    contaminated = False
+    try:
+        dirty = subprocess.run(
+            ["git", "-C", str(ROOT), "status", "--porcelain", "--", "bench/task/data/public/minitasks"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+        if dirty:
+            contaminated = True
+            subprocess.run(
+                ["git", "-C", str(ROOT), "checkout", "--", "bench/task/data/public/minitasks"],
+                capture_output=True, text=True, timeout=30,
+            )
+            print(f"[bench]   CONTAMINAZIONE rilevata e ripristinata: {dirty.splitlines()[0]}...", flush=True)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # senza git il guard non blocca il run: la misura resta, non marcata
+
     return {
         "name": name,
         "workdir": str(work),
         "closed": (not gate.exists()) and not timed_out,  # disarm a fine progetto = convergenza
-        "iterations": last_state.get("iterations"),
+        "iterations": iterations,
         "escalated": escalated,
         "timed_out": timed_out,
+        "contaminated": contaminated,
         "max": LOOP_MAX,
     }
 

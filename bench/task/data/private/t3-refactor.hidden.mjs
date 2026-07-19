@@ -1,8 +1,12 @@
-// Test NASCOSTO di t3-refactor: blocca il comportamento dei tre parser dopo il refactor.
+// Test NASCOSTO di t3-refactor: blocca il comportamento dei tre parser dopo il refactor
+// E verifica STRUTTURALMENTE che la deduplicazione sia avvenuta (v2: il solo comportamento
+// passava anche sul template mai toccato — non misurava l'obiettivo del task).
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 
-const m = await import(pathToFileURL(join(process.cwd(), 'src', 'parsers.mjs')));
+const srcPath = join(process.cwd(), 'src', 'parsers.mjs');
+const m = await import(pathToFileURL(srcPath));
 const { parseUser, parseProduct, parseOrder } = m;
 
 let fail = 0, tot = 0;
@@ -22,6 +26,14 @@ eq(parseOrder('o1;A1;tre;7.5'), null, 'qty NaN -> null');
 eq(parseOrder('o1;A1;3;tot'), null, 'total NaN -> null');
 eq(parseOrder('o1;A1;3'), null, 'order 3 campi -> null');
 eq(parseOrder(null), null, 'null -> null');
+
+// verifica strutturale della deduplicazione: la logica comune deve vivere in UN punto.
+// Proxy robusti: nel template originale split(';') e la guardia non-stringa compaiono
+// 3 volte (una per parser); dopo un refactor vero al massimo 1.
+const src = readFileSync(srcPath, 'utf8');
+const count = (re) => (src.match(re) || []).length;
+tot++; { const n = count(/split\(\s*['"`];['"`]\s*\)/g); if (n > 1) { console.error(`FAIL dedup: split(';') compare ${n} volte nel sorgente (atteso 1: helper comune)`); fail++; } }
+tot++; { const n = count(/typeof\s+\w+\s*!==\s*['"`]string['"`]/g); if (n > 1) { console.error(`FAIL dedup: la guardia non-stringa e' duplicata ${n} volte (attesa 1)`); fail++; } }
 
 console.log(`HIDDEN t3: ${tot - fail}/${tot}`);
 process.exit(fail ? 1 : 0);
