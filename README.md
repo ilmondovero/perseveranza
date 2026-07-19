@@ -237,9 +237,11 @@ Nato per far evolvere i prompt misurandoli su un benchmark (esperimenti self-imp
 stile [SIA](https://github.com/hexo-ai/sia)), è utile anche per l'A/B testing manuale delle
 istruzioni. I loop funzionano anche headless (`claude -p` in una directory armata: lo Stop
 hook guida le fasi fino a chiusura e disarm), che è ciò che rende possibile misurarli.
-Funziona per davvero: le guide di `plan-write`, `implement-first` e `review-advance` nei
-default 1.19.0 vengono dal pack vincente del primo esperimento (baseline 0.7369 → 0.9437
-sul [bench](bench/README.md), giudizio umano prima dell'adozione).
+Le guide di `plan-write`, `implement-first` e `review-advance` nei default 1.19.0 nascono
+dal primo esperimento sul [bench](bench/README.md), adottate per **giudizio umano sul
+merito** — la misura di quell'esperimento si rivelò poi invalida (il motore installato era
+vecchio e ignorava il pack: v. CHANGELOG 1.19.0); da allora il bench verifica la versione
+del motore prima di misurare.
 
 ## Agenti inclusi
 

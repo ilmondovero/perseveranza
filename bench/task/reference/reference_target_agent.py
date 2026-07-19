@@ -52,7 +52,9 @@ WORKROOT = Path(_ARGS.working_dir) if _ARGS.working_dir else Path.cwd()
 EXPECTED = ["t1-slugify", "t2-bugfix", "t3-refactor"]
 
 MODEL = os.environ.get("BENCH_LOOP_MODEL", "sonnet")
-TIMEOUT_S = int(os.environ.get("BENCH_LOOP_TIMEOUT_S", "900"))
+# 1800, non 900: nel run 4 il timeout da 15 min uccideva a meta' loop sani (diagnosi
+# corretta del feedback agent di gen_2, che lo alzo' motivandolo: adottata)
+TIMEOUT_S = int(os.environ.get("BENCH_LOOP_TIMEOUT_S", "1800"))
 # 14, non 10: un run PERFETTO con la rampa d'uscita completa (plan, implement, review,
 # advance, claim->cleanup, cleanup->verify, verify->close) consuma gia' ~7 fire; ogni giro
 # di fix ne aggiunge 2. Col vecchio 10 la baseline chiudeva il lavoro ma non la cerimonia.
@@ -64,6 +66,51 @@ KICK = (
     "VINCOLO: lavora ESCLUSIVAMENTE dentro questa directory; non leggere ne' modificare file "
     "fuori da essa (in particolare il repo del plugin perseveranza e i suoi bench/template)."
 )
+
+
+# GUARD DI VERSIONE DEL MOTORE. I loop sono guidati dallo Stop hook del plugin
+# INSTALLATO, non dagli script del repo: se l'installato e' < 1.18.0 il pack
+# (.omc-loop/prompts.json) viene IGNORATO e ogni misura e' invalida — e' successo
+# davvero (run 1-4 girati con la 1.12.0: risultati buttati). Meglio abortire subito.
+REQUIRED_ENGINE = (1, 18, 0)
+
+
+def installed_engine_version():
+    """Versione del plugin perseveranza installato, dal registro di Claude Code."""
+    reg = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    try:
+        data = json.loads(reg.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    def find(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "perseveranza@perseveranza" and isinstance(v, list) and v:
+                    return str(v[0].get("version", ""))
+                got = find(v)
+                if got:
+                    return got
+        elif isinstance(node, list):
+            for item in node:
+                got = find(item)
+                if got:
+                    return got
+        return None
+
+    return find(data)
+
+
+def require_engine():
+    engine = installed_engine_version()
+    parts = tuple(int(x) for x in (engine or "").split(".")[:3] if x.isdigit())
+    if len(parts) < 3 or parts < REQUIRED_ENGINE:
+        print(f"[bench] ERRORE: plugin perseveranza installato = {engine or 'non trovato'}; "
+              f"serve >= {'.'.join(map(str, REQUIRED_ENGINE))} o il pack viene ignorato e la misura "
+              f"e' invalida. Aggiorna: claude plugin update perseveranza@perseveranza")
+        sys.exit(1)
+    print(f"[bench] motore: perseveranza {engine} (installato)", flush=True)
+    return engine
 
 
 def run_minitask(name: str) -> dict:
@@ -156,6 +203,7 @@ def run_minitask(name: str) -> dict:
 
 
 def main():
+    engine = require_engine()
     if not MINITASKS.is_dir():
         print(f"[bench] ERRORE: minitasks non trovati in {MINITASKS} (controlla --dataset_dir)")
         sys.exit(1)
@@ -165,7 +213,8 @@ def main():
         t = run_minitask(name)
         print(f"[bench]   closed={t['closed']} iterations={t['iterations']} escalated={t['escalated']}", flush=True)
         results.append(t)
-    (WORKROOT / "submission.json").write_text(json.dumps({"tasks": results}, indent=2), encoding="utf-8")
+    (WORKROOT / "submission.json").write_text(
+        json.dumps({"engine": engine, "tasks": results}, indent=2), encoding="utf-8")
     print("[bench] submission.json scritta")
 
 

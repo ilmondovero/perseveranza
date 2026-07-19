@@ -52,8 +52,13 @@ nei run 1-2 le sue riscritture del runner erano la causa dei crash di gen_1.
 { "profile_id": "pf-meta", "name": "...", "agent_impl": "claude", "model": "sonnet", "provider_id": "anthropic" }
 ```
 
-Tuning: `BENCH_LOOP_MODEL` (default `sonnet`), `BENCH_LOOP_TIMEOUT_S` (default 900 per
-mini-task), `BENCH_LOOP_MAX` (default 10 iterazioni per loop).
+Tuning: `BENCH_LOOP_MODEL` (default `sonnet`), `BENCH_LOOP_TIMEOUT_S` (default 1800 per
+mini-task — 900 uccideva loop sani a metà), `BENCH_LOOP_MAX` (default 14 iterazioni).
+
+⚠ **Il motore dei loop è il plugin INSTALLATO**, non il repo: il runner verifica che sia
+>= 1.18.0 (registro `installed_plugins.json`) e abortisce altrimenti — i run 1-4 girarono
+inconsapevolmente con la 1.12.0 (pack ignorato, misure invalide). Prima di un run:
+`claude plugin update perseveranza@perseveranza`.
 
 ⚠ **Costi**: ogni generazione = 3 loop perseveranza completi (usage dell'abbonamento
 Claude) + le chiamate del meta/feedback agent di SIA. Partire con `--max_gen 3`.

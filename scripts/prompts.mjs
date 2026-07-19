@@ -15,9 +15,10 @@
 //     sempre l'hook. Un pack non puo' spegnere l'osservabilita' del loop;
 //   - i default cambiano SOLO per decisione consapevole e con evidenza, mai per deriva:
 //     la suite di regressione li esercita via fire() ed e' la rete contro le divergenze.
-//     In 1.19.0 tre chiavi (plan-write, implement-first, review-advance) hanno adottato le
-//     guide del pack vincente del primo esperimento SIA (bench/: baseline 0.7369 -> 0.9437),
-//     giudicate valide anche a prescindere dai numeri; il resto e' identico allo storico.
+//     In 1.19.0 tre chiavi (plan-write, implement-first, review-advance) hanno adottato
+//     guide nate dal primo esperimento SIA (bench/), per giudizio di merito — la misura di
+//     quell'esperimento si rivelo' invalida (motore installato che ignorava il pack); il
+//     resto e' identico allo storico.
 //
 // Nato per la sperimentazione SIA-style (evolvere i prompt misurandoli su un benchmark),
 // utile anche per l'A/B testing manuale delle istruzioni.

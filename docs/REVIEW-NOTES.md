@@ -79,9 +79,11 @@ Lo storico delle decisioni è in `../CHANGELOG.md`.
 ## Prompt pack (`scripts/prompts.mjs`)
 - I **default cambiano solo per decisione consapevole, con evidenza e test aggiornati** —
   mai per deriva: la suite li esercita via `fire()` (asserzioni sul testo iniettato) ed è
-  la rete contro le divergenze. Precedente: in 1.19.0 tre chiavi hanno adottato le guide
-  del pack vincente del primo esperimento SIA (`bench/`, baseline 0.7369 → 0.9437), con
-  test dedicato che le àncora; i **verbi operativi** delle istruzioni non si toccano mai.
+  la rete contro le divergenze. Precedente: in 1.19.0 tre chiavi hanno adottato guide nate
+  dal primo esperimento SIA (`bench/`) — adozione per **giudizio di merito**: la misura di
+  quell'esperimento si rivelò invalida (motore installato 1.12.0 che ignorava il pack).
+  Lezione: **il bench verifica la versione del motore** prima di misurare. I **verbi
+  operativi** delle istruzioni non si toccano mai.
 - Ogni nuova istruzione di fase in `loop-drive.mjs` è una **nuova chiave** in
   `DEFAULT_PROMPTS` + `P('chiave', vars)`: niente template literal inline (tornerebbero
   non sovrascrivibili).

@@ -23,6 +23,16 @@ Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive
   *Perche' fidarsi:* le tre idee reggono anche a prescindere dai numeri (N=1 per
   generazione); il controfattuale esiste — nel run 1 la mutazione libera che riscriveva i
   verbi era PEGGIORATA (0.53 -> 0.41), quella vincolata additiva e' migliorata (+28%).
+- ⚠ **CORREZIONE (stesso giorno, prima del run di conferma):** l'esperimento sopra si e'
+  rivelato **invalido**. Il plugin installato sulla macchina era la **1.12.0**, che ignora
+  `.omc-loop/prompts.json`: il pack non e' mai stato letto dai loop, e il "+28%" veniva da
+  un fix — legittimo e ben diagnosticato — del feedback agent al *harness* (`TIMEOUT_S`
+  900→1800: i loop di gen_1 venivano uccisi a meta' dal timeout, non dai prompt). Le tre
+  guide **restano** nei default come migliorie adottate per giudizio di merito, NON come
+  provate dal bench. Lezione codificata: il runner ora **verifica la versione del motore**
+  (>= 1.18.0 da `installed_plugins.json`, abort altrimenti) e la registra nella
+  submission; adottato anche il timeout 1800 del feedback agent. Il run di conferma con la
+  1.19.0 installata e' la prima misura valida.
 - **Suite di regressione 64 → 65**: test che ancora le tre guide nelle istruzioni iniettate
   e verifica che i verbi operativi restino al loro posto.
 - Cronaca completa dell'esperimento (4 run, 4 cause di guasto diverse, tutte codificate):

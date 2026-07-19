@@ -16,6 +16,9 @@ Il runner viene invocato da SIA come `target_agent.py --dataset_dir <task>/data/
 `<dataset_dir>/minitasks`, output in `<working_dir>`): NON riscrivere la risoluzione dei
 path — nei run 1 e 2 la gen_1 è morta esattamente per riscritture di questa logica.
 
+0. verifica che il **motore installato** (il plugin perseveranza, il cui Stop hook guida i
+   loop) sia >= 1.18.0 e lo registra nella submission (`engine`): con un motore piu'
+   vecchio il pack verrebbe ignorato e la misura sarebbe invalida — abort immediato;
 1. per ogni mini-task in `minitasks/` copia il template in un workdir usa-e-getta;
 2. arma un loop perseveranza (`--max 10 --external off --no-git-finish`, suite visibile
    come `--test`) e scrive il `PROMPT_PACK` in `.omc-loop/prompts.json`;
