@@ -1,0 +1,4 @@
+In src/parsers.mjs tre funzioni duplicano la stessa logica di parsing con piccole
+variazioni. Rifattorizza eliminando la duplicazione (un helper comune) SENZA cambiare il
+comportamento osservabile di parseUser/parseProduct/parseOrder, che restano esportate con
+la stessa firma. La suite visibile e' `node visible/test.mjs`. Non modificare i test.

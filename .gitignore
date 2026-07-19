@@ -6,3 +6,7 @@
 .perseveranza/
 *.local.json
 config.local.json
+
+# output del perseveranza-bench (run SIA e workdir dei mini-task)
+runs/
+minitask-runs/

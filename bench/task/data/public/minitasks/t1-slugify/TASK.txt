@@ -1,0 +1,2 @@
+Implementa la funzione slugify in src/slugify.mjs secondo la specifica scritta nel file
+(commento in testa). La suite visibile e' `node visible/test.mjs`. Non modificare i test.

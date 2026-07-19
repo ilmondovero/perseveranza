@@ -483,6 +483,8 @@ spesa. Di fatto, "armi e te ne vai" è già l'uscita dal loop che quella critica
   tutto è verde, 1 al primo fallimento — quindi è anche il comando da passare a `--test` quando si
   arma perseveranza sul proprio repo.
 - Storico delle modifiche con le motivazioni: [`CHANGELOG.md`](CHANGELOG.md)
+- Esperimento self-improvement (SIA evolve il prompt pack su un benchmark con test
+  nascosti, eseguendo loop headless): [`bench/README.md`](bench/README.md)
 - Invarianti e trappole da conoscere prima di rivedere/modificare gli script:
   [`docs/REVIEW-NOTES.md`](docs/REVIEW-NOTES.md)
 
