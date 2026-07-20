@@ -82,6 +82,21 @@ insegnato quattro cose, ora codificate nel bench:
 `--max` dei loop portato da 10 a **14**: un run perfetto con la rampa d'uscita completa
 consuma già ~7 fire, e la baseline mostrava lavoro corretto senza chiusura formale.
 
+## Esito del run di conferma (run 5, 2026-07-20 — prima misura valida)
+
+Motore 1.19.0 certificato dal guard (`engine` nella submission), timeout 1800:
+
+| gen | score | note |
+|---|---|---|
+| 1 — **baseline default 1.19.0** | **0.8964** | test nascosti 3/3, chiusure autonome 3/3 (9/9/11 iter) |
+| 2 — mutazione | 0.9000 | +0.004: rumore |
+| 3 — mutazione | 0.9178 | +0.021: dentro il rumore con N=1 |
+
+Le mutazioni non hanno battuto i default: i prompt 1.19.0 sono vicini all'ottimo per
+questo bench. **0.8964 è la baseline di riferimento** per i run futuri; per rilevare
+margini più fini servono ripetizioni multiple per generazione (il rumore domina sotto
+±0.05 circa).
+
 ## Adozione dei risultati
 
 I pack delle generazioni vivono in `runs/run_*/gen_*/target_agent.py` con la motivazione
