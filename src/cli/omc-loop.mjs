@@ -19,6 +19,8 @@
 //   config                     effective local configuration (never prints the key)
 //   hud on|off|status          live statusline
 //   disarm [--no-archive]      stop and remove the loop
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { VerbError } from './shared.mjs';
 
 export const VERBS = ['arm', 'test', 'report', 'complexity', 'claim-done', 'ask', 'pause', 'resume', 'status', 'history', 'explain', 'providers', 'runs', 'prompts', 'config', 'hud', 'disarm'];
@@ -34,7 +36,13 @@ async function main() {
   return Number.isInteger(code) ? code : 0;
 }
 
-main().then((code) => process.exit(code)).catch((e) => {
+// run only as the entry point: importing this module (tests, tooling) must not execute a verb
+function isMainModule() {
+  try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1] || '.')).href; }
+  catch { return false; }
+}
+
+if (isMainModule()) main().then((code) => process.exit(code)).catch((e) => {
   if (e instanceof VerbError) { console.log(e.message); process.exit(e.code); }
   console.error(`perseveranza: ${e && e.stack || e}`);
   process.exit(1);
