@@ -1,0 +1,19 @@
+{
+  "name": "perseveranza",
+  "version": "2.0.0",
+  "description": "Autonomous feedback loop for Claude Code: plan -> implement -> review -> adversarial final verification",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/run.mjs",
+    "test:unit": "node test/run.mjs unit",
+    "test:verbs": "node test/run.mjs verbs",
+    "test:e2e": "node test/run.mjs e2e",
+    "test:packaging": "node test/run.mjs packaging",
+    "explain": "node src/cli/omc-loop.mjs explain"
+  }
+}

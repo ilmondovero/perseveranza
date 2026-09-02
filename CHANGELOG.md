@@ -1,7 +1,46 @@
 # Changelog
 
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
-`.claude-plugin/plugin.json` e nel badge del README; non si usano tag git.
+`.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
+
+## 2.0.0
+- **Riscrittura da zero** secondo `docs/PIANO-V2.md`, nata dalla rilettura della 1.19.0.
+  Stessi principi (hook dormiente, anello chiuso, prove non parole, gate severo, zero
+  dipendenze), struttura nuova. Compatibile: stesso `.omc-loop/`, stessi verbi, stato 1.x
+  migrato al primo Stop.
+- **Core puro + shell** (`src/core/`, `src/shell/`): `step(state, event, ctx)` restituisce
+  stato ed **effetti** dichiarativi; l'hook li esegue. Il routing è una **tabella** di dati
+  (`explain`, riprodotta nei README con un test). Il core ha unit test senza processi.
+- **Stato v2** raggruppato per proprietario (`counters`, `limits`, `signals`, `flags`,
+  `owner`, `usage`), `schemaVersion`, migrazione dalla v1.
+- **Journal JSONL** al posto di `history.log`; a fine run `.omc-loop/` viene **archiviata**
+  in `~/.perseveranza/runs/` con `summary.json` (anche su disarm, kill e budget) invece di
+  essere cancellata. Verbi `history`, `runs`.
+- **Deadline unica dell'hook**: `hooks.json` a 120 s, git dentro la deadline (push 45 s).
+  Nella v1 il timeout di 20 s era più corto del solo push (60 s): l'hook poteva morire a
+  metà chiusura lasciando il loop armato.
+- **Budget a token reali** (`--budget-tokens`) letti dalla trascrizione, best-effort;
+  iterazioni adattive dal piano (`8 + 3 × step`) quando `--max` non è esplicito; margine
+  di 3 iterazioni sulla rampa di uscita.
+- **Retry onesti**: `maxRetries` = fix concessi davvero (la v1 mostrava "2/3" e poi
+  pausava). **Esito mancante = bocciatura** anche in review (la v1 promuoveva).
+  **Verdetti con schema**: malformato → mancante; se verdetto e findings non concordano
+  vince la lettura più severa.
+- **`arm` rifiuta** se già armato (`--force`); il verbo `test` registra un'impronta del
+  working tree e un `claim-done` dopo altre modifiche è rifiutato come stantio.
+- **Provider**: `providers check` prova la vita e popola la denylist con motivo e data;
+  timeout per provider nel config.
+- **Lingua**: codice, CLI e prompt in inglese; `packs/it.json` copre tutte le istruzioni
+  (`--lang it`, `PERSEVERANZA_LANG`, `lang` nel config, locale); README bilingue.
+- **Test** su `node:test` in quattro livelli (unit, verbi, e2e con remoto git locale,
+  packaging) e **CI** su Ubuntu/macOS/Windows × Node 20/22. `manifest.mjs` unico elenco
+  dei file distribuiti, usato da `install.mjs` e dai test.
+- **Rimosso**: le guardie sul limite di contesto basate su campi non documentati del
+  payload (ora si loggano le chiavi ricevute), il mini framework di test, la lista file
+  triplicata in `install.mjs`, le chiavi `review-advance-no-outcome` e
+  `verify-failed-no-outcome`. Nuova chiave: `claim-stale-test`.
+- **Bench**: il runner verifica il motore ≥ 2.0.0, supporta N ripetizioni per generazione
+  e un `--dry-run` per la CI.
 
 ## 1.19.0
 - **Prime guide adottate dall'esperimento SIA** — il cerchio si chiude: un loop

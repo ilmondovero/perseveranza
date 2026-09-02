@@ -17,22 +17,24 @@ Il runner viene invocato da SIA come `target_agent.py --dataset_dir <task>/data/
 path — nei run 1 e 2 la gen_1 è morta esattamente per riscritture di questa logica.
 
 0. verifica che il **motore installato** (il plugin perseveranza, il cui Stop hook guida i
-   loop) sia >= 1.18.0 e lo registra nella submission (`engine`): con un motore piu'
+   loop) sia >= 2.0.0 e lo registra nella submission (`engine`): con un motore piu'
    vecchio il pack verrebbe ignorato e la misura sarebbe invalida — abort immediato;
 1. per ogni mini-task in `minitasks/` copia il template in un workdir usa-e-getta;
 2. arma un loop perseveranza (`--max 10 --external off --no-git-finish`, suite visibile
    come `--test`) e scrive il `PROMPT_PACK` in `.omc-loop/prompts.json`;
 3. lancia `claude -p` nel workdir: lo Stop hook del plugin guida le fasi fino a chiusura;
-4. misura le iterazioni dalla copia di `history.log` (non dal polling dello stato), verifica
-   che i template nel repo non siano stati toccati (contaminazione → ripristino + flag) e
-   registra gli esiti in `submission.json`:
-   `{"tasks": [{"name", "workdir", "closed", "iterations", "escalated", "contaminated", "max"}]}`
-   (un task `contaminated` vale 0, sempre).
+4. misura iterazioni, esito e token dal **journal archiviato** del run
+   (`~/.perseveranza/runs/<workdir>/.../journal.jsonl`, copia di riserva accanto al workdir),
+   verifica che i template nel repo non siano stati toccati (contaminazione → ripristino +
+   flag) e registra gli esiti in `submission.json`:
+   `{"engine", "repeats", "tasks": [{"name", "repeat", "workdir", "closed", "iterations", "tokens", "escalated", "contaminated", "max"}]}`
+   (un task `contaminated` vale 0, sempre; con `BENCH_REPEATS=N` ogni task compare N volte
+   e `evaluate.py` fa la media riportando il rumore).
 
 ## La superficie di evoluzione: PROMPT_PACK
 
 `{"prompts": {"<chiave>": "template con {{placeholder}}"}}`. Chiavi non presenti = default
-del plugin. Le chiavi principali (le altre in `scripts/prompts.mjs` del repo):
+del plugin. Le chiavi principali (le altre in `src/core/prompts.mjs` del repo; i default sono in inglese):
 
 | chiave | quando viene iniettata | placeholder utili |
 |---|---|---|
@@ -41,7 +43,7 @@ del plugin. Le chiavi principali (le altre in `scripts/prompts.mjs` del repo):
 | `review-delegate` | delegare la review al subagent | `{{reviewerRef}}` `{{reviewModel}}` `{{LOOP}}` |
 | `review-fix` | correggere dopo una review bocciata | `{{retries}}` `{{maxRetries}}` `{{implHint}}` `{{extFixHint}}` |
 | `review-advance` | avanzare dopo review passata | `{{commitHint}}` `{{implHint}}` `{{LOOP}}` |
-| `claim-open-steps` / `claim-no-fresh-test` | claim-done rifiutato | `{{openSteps}}` `{{testRun}}` `{{LOOP}}` |
+| `claim-open-steps` / `claim-no-fresh-test` / `claim-stale-test` | claim-done rifiutato | `{{openSteps}}` `{{testRun}}` `{{LOOP}}` |
 | `cleanup` | pulizia pre-verifica | `{{testRun}}` |
 | `final-verify` | verifica finale avversariale | `{{verifierRef}}` `{{verifyModel}}` `{{secHint}}` `{{extVerifyHint}}` `{{LOOP}}` |
 | `verify-postfix` | fix dopo bocciatura finale | `{{finalFails}}` `{{maxRetries}}` `{{implHint}}` `{{LOOP}}` |

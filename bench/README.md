@@ -1,8 +1,22 @@
 # perseveranza-bench — evolvere il prompt pack con SIA
 
 Esperimento di self-improvement: [SIA](https://github.com/hexo-ai/sia) fa evolvere il
-**prompt pack** di perseveranza (v1.18.0+) misurandolo su una batteria di mini-task con
+**prompt pack** di perseveranza (v2.0.0+) misurandolo su una batteria di mini-task con
 test nascosti. Questo NON fa parte del runtime del plugin: è tooling di sviluppo.
+
+## Novità con il motore v2
+
+- il runner richiede il plugin installato **>= 2.0.0** (CLI in `src/cli/omc-loop.mjs`,
+  journal `journal.jsonl`, run archiviato in `~/.perseveranza/runs/`): iterazioni, esito
+  e token vengono letti dal journal archiviato, non dal polling dello stato;
+- **`BENCH_REPEATS=N`** ripete ogni mini-task N volte per generazione: `evaluate.py` fa la
+  media per task e riporta la deviazione standard (`noise`), così le mutazioni sotto il
+  rumore (±0.05 con N=1, vedi run 5) si riconoscono invece di essere adottate;
+- **`--dry-run`** (senza `claude`): il runner pilota il vero Stop hook con eventi finti,
+  scrive la submission e la valuta. Gira in CI (`bench-dry`) a guardia di runner ed
+  evaluator;
+- i loop del bench sono armati con `--lang en`: il pack mutato sovrascrive i default
+  inglesi (`src/core/prompts.mjs`), non il pack italiano.
 
 ## Come funziona
 
@@ -21,7 +35,7 @@ non sono un segreto per gli umani.
 
 ## Prerequisiti
 
-- perseveranza installato (il plugin) e CLI `claude` autenticata (abbonamento: nessuna
+- perseveranza **>= 2.0.0** installato (il plugin) e CLI `claude` autenticata (abbonamento: nessuna
   `ANTHROPIC_API_KEY` necessaria — verificato: SDK e orchestrator al massimo avvisano);
 - `py -m pip install "sia-agent[claude]"` (Python 3.11+);
 - env `PERSEVERANZA_ROOT` = path del repo perseveranza (per gli script del loop);
@@ -53,12 +67,14 @@ nei run 1-2 le sue riscritture del runner erano la causa dei crash di gen_1.
 ```
 
 Tuning: `BENCH_LOOP_MODEL` (default `sonnet`), `BENCH_LOOP_TIMEOUT_S` (default 1800 per
-mini-task — 900 uccideva loop sani a metà), `BENCH_LOOP_MAX` (default 14 iterazioni).
+mini-task — 900 uccideva loop sani a metà), `BENCH_LOOP_MAX` (default 14 iterazioni),
+`BENCH_REPEATS` (default 1; con 3 il rumore per task diventa misurabile).
 
 ⚠ **Il motore dei loop è il plugin INSTALLATO**, non il repo: il runner verifica che sia
->= 1.18.0 (registro `installed_plugins.json`) e abortisce altrimenti — i run 1-4 girarono
-inconsapevolmente con la 1.12.0 (pack ignorato, misure invalide). Prima di un run:
-`claude plugin update perseveranza@perseveranza`.
+>= 2.0.0 (registro `installed_plugins.json`) e abortisce altrimenti — i run 1-4 del bench
+v1 girarono inconsapevolmente con la 1.12.0 (pack ignorato, misure invalide). Prima di un
+run: `claude plugin update perseveranza@perseveranza`. Prova a vuoto senza costi:
+`PERSEVERANZA_ROOT=<repo> python bench/task/reference/reference_target_agent.py --dry-run --working_dir <dir>`.
 
 ⚠ **Costi**: ogni generazione = 3 loop perseveranza completi (usage dell'abbonamento
 Claude) + le chiamate del meta/feedback agent di SIA. Partire con `--max_gen 3`.
@@ -101,5 +117,5 @@ margini più fini servono ripetizioni multiple per generazione (il rumore domina
 
 I pack delle generazioni vivono in `runs/run_*/gen_*/target_agent.py` con la motivazione
 delle mutazioni in `improvement.md`. Un pack vincente NON si adotta alla cieca: si fa il
-diff con i default in `scripts/prompts.mjs`, si giudica a mano, e si porta nei default con
-la suite (`node scripts/test.mjs`) a guardia. SIA propone, il maker/checker restiamo noi.
+diff con i default in `src/core/prompts.mjs`, si giudica a mano, e si porta nei default con
+la suite (`npm test`) a guardia. SIA propone, il maker/checker restiamo noi.

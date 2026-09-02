@@ -1,111 +1,117 @@
 ---
-description: Arma il ciclo OMC-loop a feedback (plan -> implement -> review -> verifica finale avversariale) e inizia il task
-argument-hint: <descrizione del task> [--max N] [--commit] [--external off] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan]
+description: Arm the perseveranza feedback loop (plan -> implement -> review -> adversarial final verification) and start the task
+argument-hint: <task description> [--max N] [--commit] [--external off] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--lang it]
 ---
 
-Attiva la modalita' "perseveranza" per il task indicato e comincia a lavorarci.
+Enable "perseveranza" mode for the task below and start working on it.
 
-Task richiesto dall'utente:
+Task requested by the user:
 
 $ARGUMENTS
 
-Passi da eseguire ORA, in ordine:
+Steps to run NOW, in order:
 
-1. Se il testo sopra contiene flag (`--max N`, `--commit`, `--external off`,
-   `--test "cmd"`), RIMUOVILI dalla descrizione del task e passali al comando; altrimenti
-   lascia i default. Se il task contiene virgolette doppie, escapale. Se il progetto ha
-   una suite di test e l'utente non ha passato `--test`, individuala tu (package.json,
-   Makefile, pytest...) e passala. Arma il ciclo:
+1. If the text above contains flags (`--max N`, `--commit`, `--external off`, `--test "cmd"`,
+   `--no-git-finish`, `--no-push`, `--approve-plan`, `--budget-tokens N`, `--lang xx`),
+   REMOVE them from the task description and pass them to the command; otherwise keep the
+   defaults. Escape double quotes inside the task. If the project has a test suite and the
+   user did not pass `--test`, find it yourself (package.json, Makefile, pytest...) and pass
+   it. If the user writes in Italian and did not pass `--lang`, pass `--lang it` (the
+   injected instructions come in Italian). Arm the loop:
 
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" arm "<task senza flag>" [--max N] [--commit] [--external off] [--test "npm test"]
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" arm "<task without flags>" [--max N] [--commit] [--external off] [--test "npm test"] [--lang it]
 
-   (`--commit` = commit atomico dopo ogni step validato; `--external off` = niente
-   confronto con modelli esterni, che altrimenti vengono auto-rilevati: codex, agy, grok,
-   cursor, claude (contesto pulito ma stesso vendor: preferisci gli altri se disponibili),
-   ollama-cloud; `--test` = comando della suite, il claim-done richiedera' la prova di un
-   run verde fresco; `--no-git-finish` = a fine progetto NON fare commit+push automatico;
-   `--no-push` = a fine progetto committa in locale ma NON pusha; `--approve-plan` = dopo
-   la fase plan il loop si mette in PAUSA presentando il piano all'utente, e riparte solo
-   quando lui esegue `resume` — approvazione umana del piano prima di implementare)
+   (`--commit` = atomic commit after every validated step; `--external off` = no comparison
+   with external models, which are otherwise auto-detected: codex, agy, grok, cursor, claude
+   (clean context but same vendor: prefer the others when available), ollama-cloud;
+   `--test` = the suite command, claim-done will require a fresh green run; `--no-git-finish`
+   = no automatic commit+push at the end; `--no-push` = local commit only at the end;
+   `--approve-plan` = after the plan phase the loop PAUSES presenting the plan to the user
+   and restarts only when they run `resume`; `--budget-tokens N` = token cap in addition to
+   the iteration cap; `--max N` = iteration cap, otherwise adaptive from the number of steps.)
+   If the command says the loop is ALREADY armed, do not force it: show the user
+   `status` and ask whether to `disarm` first.
 
-2. Verifica che sia armato:
+2. Check it is armed:
 
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" status
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" status
 
-3. FASE PLAN: PRIMA esplora il codice rilevante (moduli coinvolti, pattern esistenti,
-   test attuali), POI scrivi il piano in `.omc-loop/plan.md` come checklist markdown
-   (`- [ ] step`), con step piccoli e verificabili. Se l'arm ha rilevato modelli esterni
-   (riga "Modelli esterni per il confronto"), sottoponi il piano a uno di essi per una
-   critica indipendente con il verbo `ask` (che salva il parere in `.omc-loop/external-plan-*.md`):
+3. PLAN PHASE: FIRST explore the relevant code (modules involved, existing patterns, current
+   tests), THEN write the plan to `.omc-loop/plan.md` as a markdown checklist (`- [ ] step`)
+   with small, verifiable steps. If arm detected external models (line "External models for
+   the second opinion"), submit the plan to one of them for an independent critique with the
+   `ask` verb (it saves the opinion in `.omc-loop/external-plan-*.md`):
 
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" ask <provider> plan -- "<task + piano>"
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" ask <provider> plan -- "<task + plan>"
 
-   e integra le osservazioni fondate. Poi valuta la complessita' del task e registrala:
+   and integrate the well-founded remarks. Then assess the task complexity and record it:
 
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" complexity low|medium|high
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" complexity low|medium|high
 
-   (criterio: low = modifica piccola e localizzata; medium = feature multi-file standard;
-   high = architettura, refactor esteso, dominio delicato. Default se non registri: medium.)
-   Infine FERMATI (termina la risposta senza implementare). Da qui in poi lo Stop hook
-   `loop-drive.mjs` guida le fasi iniettando a ogni fine risposta l'istruzione successiva,
-   instradando in base agli esiti che registri.
+   (criterion: low = small, localised change; medium = standard multi-file feature; high =
+   architecture, wide refactor, delicate domain. Default if you do not record it: medium.)
+   Finally STOP (end the response without implementing). From here on the Stop hook drives
+   the phases, injecting the next instruction at the end of every response and routing on
+   the outcomes you record.
 
-La complessita' instrada i modelli delle fasi (hint per i subagent):
+Complexity routes the models of the phases (hints for the subagents):
 
-   | fase                       | low    | medium | high |
-   |----------------------------|--------|--------|------|
-   | code-review (subagent)     | haiku  | sonnet | opus |
-   | verifica finale (subagent) | sonnet | opus   | opus |
-   | implement                  | in sessione | in sessione | delega a executor model=opus |
+   | phase                        | low         | medium      | high                        |
+   |------------------------------|-------------|-------------|-----------------------------|
+   | code review (subagent)       | haiku       | sonnet      | opus                        |
+   | final verification (subagent)| sonnet      | opus        | opus                        |
+   | implement                    | in session  | in session  | delegated to executor, opus |
 
-Come funziona il ciclo (a feedback):
+How the loop works (feedback):
 
-- implement -> code-review (delegata a un subagent con contesto pulito): il revisore
-  scrive il verdetto in `.omc-loop/review.json` (`{"blocking": N, "findings": [...]}`)
-  ed e' quel file a instradare il loop; solo se manca, registri tu l'esito con
-  `report pass|fail`.
-  - blocking > 0 -> torni a correggere lo STESSO step, e il fix verra' ri-revisionato
-    (al 3o fallimento il loop si mette in pausa e notifica l'utente);
-  - blocking = 0 -> spunti lo step in `plan.md` (`- [x]`) e passi al successivo.
-- Per eseguire la suite di test usa SEMPRE il verbo dedicato (e' lo script a lanciare il
-  comando e registrare l'exit code reale: la prova non e' autodichiarata):
-  node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" test -- <comando>
-- Con `--commit`, dopo ogni review passata committi lo step validato (commit atomico).
-- Se un fix fallisce due volte, la fase successiva include una diagnosi indipendente
-  chiesta a un modello esterno (se rilevato).
-- Quando TUTTI gli step sono spuntati e il progetto e' completo:
-  node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" claim-done
-  Il claim viene ACCETTATO solo se nella stessa risposta c'e' un run verde fresco del
-  verbo `test` (quando una suite e' nota). -> prima un giro di cleanup (solo al primo
-  claim: codice morto, duplicazioni, docs), poi la verifica finale avversariale (subagent
-  indipendente + falsificazione da modello esterno se rilevato; lente security per
-  complessita' high): il verificatore scrive `.omc-loop/verify.json`
-  (`{"pass": true|false, "findings": [...]}`); `pass` chiude il ciclo, `fail` ti rimanda
-  a correggere.
-- Alla chiusura, se la directory e' dentro un repo git, l'hook fa da solo `git add -A`
-  (escludendo `.omc-loop/`), commit `perseveranza: <task>` e `git push` (best-effort: un
-  push senza upstream/remote non blocca la chiusura). Se non e' un repo git, salta. Tu
-  non devi fare nulla: avviene nello Stop hook. Disattivabile con `--no-git-finish`; con
-  `--no-push` committa in locale ma non pusha (commit locale a fine progetto, niente push).
-- Se ti serve input dell'utente: esegui `pause`, poi fai la domanda; quando l'utente risponde,
-  esegui `resume` e prosegui.
-- Limite globale di iterazioni (default 25): raggiunto quello, il loop si ferma da solo.
-- Interruzione manuale in qualsiasi momento:
-  node "${CLAUDE_PLUGIN_ROOT}/scripts/omc-loop.mjs" disarm
-  (kill switch d'emergenza, ancora piu' rapido e da qualunque sessione: crea il file
-  `.omc-loop/STOP` oppure imposta `OMC_LOOP_KILL=1` -> al primo Stop il loop si disarma da solo)
+- implement -> code review (delegated to a subagent with a clean context): the reviewer
+  writes the verdict to `.omc-loop/review.json` (`{"blocking": N, "findings": [...]}`) and
+  that file routes the loop; only if it is missing, you record the outcome with
+  `report pass|fail`. A missing outcome is asked for once, then counts as a failed review.
+  - blocking > 0 -> back to fixing the SAME step, and the fix gets re-reviewed (after the
+    configured number of fixes, default 3, the loop pauses and notifies the user);
+  - blocking = 0 -> tick the step in `plan.md` (`- [x]`) and move to the next.
+- To run the test suite ALWAYS use the dedicated verb (the script runs the command and
+  records the real exit code: the proof is not self-declared):
+  node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" test -- <command>
+- With `--commit`, after every passed review you commit the validated step (atomic commit).
+- If a fix fails twice, the next phase includes an independent diagnosis from an external
+  model (if detected).
+- When ALL steps are ticked and the project is complete: run the test verb and, in the same
+  response,
+  node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" claim-done
+  The claim is ACCEPTED only with a fresh green test run (when a suite is known) and only if
+  the code did not change after that run. -> first a cleanup round (only at the first claim:
+  dead code, duplication, docs), then the adversarial final verification (independent
+  subagent + falsification by an external model if detected; security lens for high
+  complexity): the verifier writes `.omc-loop/verify.json` (`{"pass": true|false,
+  "findings": [...]}`); `pass` closes the loop, `fail` sends you back to fix.
+- At closure, if the directory is inside a git repo, the hook itself runs `git add -A`
+  (excluding `.omc-loop/`), commit `perseveranza: <task>` and `git push`, verified on facts
+  (clean tree, HEAD not ahead of upstream). If the closure cannot be confirmed the loop
+  pauses in phase git-finish and tells the user what to fix; `resume` retries. The run
+  (journal, plan, notes, opinions) is archived in `~/.perseveranza/runs/` (verb `runs`).
+- If you need input from the user: run `pause`, then ask; when the user answers, run
+  `resume` and continue.
+- Budget: iterations (adaptive from the plan, or `--max`) and optionally tokens
+  (`--budget-tokens`); at the cap the loop stops by itself.
+- Manual interruption at any time:
+  node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" disarm
+  (emergency kill switch, faster and from any session: create the file `.omc-loop/STOP` or
+  set `OMC_LOOP_KILL=1` -> at the first Stop the loop disarms itself)
 
-Regole:
-- NON modificare mai a mano `.omc-loop/state.json`: usa solo i verbi `report`, `complexity`,
+Rules:
+- NEVER edit `.omc-loop/state.json` by hand: use only the verbs `report`, `complexity`,
   `claim-done`, `pause`, `resume`.
-- I file del ciclo che gestisci tu sono `.omc-loop/plan.md` (checklist degli step) e
-  `.omc-loop/notes.md` (2-3 righe per step completato: decisioni prese, trappole — e' la
-  memoria che sopravvive alla compattazione del contesto; rileggila se perdi il filo).
-- A ogni nuovo step, se la sua complessita' e' chiaramente diversa da quella registrata,
-  aggiornala con il verbo `complexity` prima di implementare.
-- La review usa l'agente `pf-reviewer`, la verifica finale `pf-verifier`, l'implementazione
-  high `pf-executor` (inclusi nel plugin; `perseveranza:pf-*` da plugin o nome semplice da
-  installazione manuale; fallback a subagent generici se assenti). Passa loro nel prompt
-  step/piano, file toccati e diff (se enorme: elenco + estratti): partono da contesto
-  vuoto, non farli scavare.
-- Lo storico delle transizioni e' in `.omc-loop/history.log` (utile per diagnosi).
+- The loop files you manage are `.omc-loop/plan.md` (step checklist) and `.omc-loop/notes.md`
+  (2-3 lines per completed step: decisions, traps — the memory that survives context
+  compaction; re-read it if you lose the thread).
+- At every new step, if its complexity clearly differs from the recorded one, update it
+  with the `complexity` verb before implementing.
+- The review uses the `pf-reviewer` agent, the final verification `pf-verifier`, high
+  complexity implementation `pf-executor` (shipped with the plugin; `perseveranza:pf-*` from
+  the plugin or the plain name from a manual install; fall back to generic subagents if
+  absent). Pass them step/plan, touched files and diff in the prompt (if huge: list +
+  excerpts): they start from an empty context, do not make them dig.
+- The transition history is in `.omc-loop/journal.jsonl` (verb `history` renders it;
+  `explain` shows the transition table and the next possible outcomes).
