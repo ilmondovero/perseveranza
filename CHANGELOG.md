@@ -4,6 +4,14 @@ Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
 ## 2.0.0
+- **Italiano di default** nelle istruzioni iniettate: `packs/it.json` è il livello attivo
+  quando nessuno specifica altro. Precedenza: `--lang` all'arm > `PERSEVERANZA_LANG` >
+  `"lang"` in `~/.perseveranza/config.json` > `it`. Nessuna lettura della locale della
+  shell (`LANG`/`LC_ALL`): la lingua non cambia a seconda del terminale da cui parte la
+  sessione. Per l'inglese: `--lang en` o `"lang": "en"` nel config. I default in
+  `src/core/prompts.mjs` restano in inglese (sono la base che i pack sovrascrivono).
+- **README come pagina di presentazione** (it e en): avvio in 30 secondi, il perché, come
+  funziona, le garanzie, i comandi; i dettagli tecnici restano nei docs.
 - **Riscrittura da zero** secondo `docs/PIANO-V2.md`, nata dalla rilettura della 1.19.0.
   Stessi principi (hook dormiente, anello chiuso, prove non parole, gate severo, zero
   dipendenze), struttura nuova. Compatibile: stesso `.omc-loop/`, stessi verbi, stato 1.x

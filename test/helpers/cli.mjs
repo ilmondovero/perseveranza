@@ -24,8 +24,10 @@ export function freshDir(prefix = 'prs-') {
 export function project({ git = false } = {}) {
   const dir = freshDir();
   const home = freshDir('prs-home-');
-  const env = { ...process.env, OMC_LOOP_NO_NOTIFY: '1', PERSEVERANZA_HOME: home, OMC_NO_UPDATE_CHECK: '1', OMC_PROMPT_PACK: '', LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', PERSEVERANZA_LANG: '' };
-  delete env.OMC_PROMPT_PACK; delete env.PERSEVERANZA_LANG; delete env.OMC_LOOP_KILL;
+  // English by default in the tests (assertions read the shipped templates); PERSEVERANZA_LANG
+  // is deleted by the tests that check the Italian default
+  const env = { ...process.env, OMC_LOOP_NO_NOTIFY: '1', PERSEVERANZA_HOME: home, OMC_NO_UPDATE_CHECK: '1', PERSEVERANZA_LANG: 'en' };
+  delete env.OMC_PROMPT_PACK; delete env.OMC_LOOP_KILL;
   if (git) {
     const g = (...a) => spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
     g('init', '-q');

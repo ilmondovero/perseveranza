@@ -20,7 +20,7 @@ test('arm creates a v2 state in phase plan and journals it', () => {
   assert.equal(s.options.testCmd, 'npm test');
   assert.equal(s.options.gitFinish, false);
   assert.deepEqual(s.options.externals, []);
-  assert.equal(s.options.lang, 'en');
+  assert.equal(s.options.lang, 'en'); // helper env sets PERSEVERANZA_LANG=en
   assert.ok(s.armedAt);
   assert.ok(journal(p).some((j) => j.type === 'note' && /armed/.test(j.text)));
 });
@@ -47,17 +47,27 @@ test('arm validates its flags', () => {
   assert.equal(readState(p), null);
 });
 
-test('arm --lang and language detection from the environment', () => {
+test('arm language: Italian by default, then config, then PERSEVERANZA_LANG, then --lang', () => {
   const p = project();
-  arm(p, 't', ['--lang', 'it']);
+  delete p.env.PERSEVERANZA_LANG;
+  const out0 = arm(p).out;
   assert.equal(readState(p).options.lang, 'it');
+  assert.ok(out0.includes('Instruction language: it (packs/it.json)'));
+  const c = project();
+  delete c.env.PERSEVERANZA_LANG;
+  writeFileSync(join(c.home, 'config.json'), JSON.stringify({ lang: 'en' }));
+  arm(c);
+  assert.equal(readState(c).options.lang, 'en');
   const q = project();
-  q.env.LC_ALL = 'it_IT.UTF-8';
+  q.env.LC_ALL = 'de_DE.UTF-8'; // the shell locale never decides
+  delete q.env.PERSEVERANZA_LANG;
   arm(q);
   assert.equal(readState(q).options.lang, 'it');
+  const e = project();
+  arm(e); // helper env: PERSEVERANZA_LANG=en
+  assert.equal(readState(e).options.lang, 'en');
   const r = project();
-  r.env.PERSEVERANZA_LANG = 'fr';
-  const out = arm(r).out;
+  const out = arm(r, 't', ['--lang', 'fr']).out;
   assert.equal(readState(r).options.lang, 'fr');
   assert.ok(out.includes('no prompt pack for language "fr"'));
 });

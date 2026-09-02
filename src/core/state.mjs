@@ -25,7 +25,7 @@ export function defaultState(overrides = {}) {
       approvePlan: false,
       testCmd: null,
       externals: [],
-      lang: 'en',
+      lang: 'it',
     },
     counters: { iterations: 0, retries: 0, finalFails: 0 },
     limits: { maxIterations: DEFAULT_MAX_ITERATIONS, maxIterationsExplicit: false, maxRetries: DEFAULT_MAX_RETRIES, maxTokens: null },
@@ -86,7 +86,7 @@ export function normalizeState(raw) {
   s.options.approvePlan = bool(s.options.approvePlan, false);
   s.options.testCmd = s.options.testCmd ? String(s.options.testCmd) : null;
   s.options.externals = Array.isArray(s.options.externals) ? s.options.externals.map(String) : [];
-  s.options.lang = typeof s.options.lang === 'string' && s.options.lang ? s.options.lang : 'en';
+  s.options.lang = typeof s.options.lang === 'string' && s.options.lang ? s.options.lang : 'it';
   s.baselineDirty = Array.isArray(s.baselineDirty) ? s.baselineDirty.map(String) : [];
   if (s.lastTest && typeof s.lastTest === 'object') {
     s.lastTest = {

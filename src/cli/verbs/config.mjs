@@ -11,7 +11,7 @@ export function run({ env }) {
   console.log(`Home:                 ${home(env)}`);
   console.log(`Config file:          ${configPath(env)} ${existsSync(configPath(env)) ? '(present)' : '(absent)'}`);
   console.log(`Runs archive:         ${runsDir(env)}`);
-  console.log(`Instruction language: ${detectLang(env)}`);
+  console.log(`Instruction language: ${detectLang(env)} (PERSEVERANZA_LANG > config "lang" > default it)`);
   console.log(`OLLAMA_API_KEY:       ${e.OLLAMA_API_KEY ? `set (from ${keySrc})` : 'NOT set'}`);
   console.log(`ollama-cloud models:  ${PROVIDERS['ollama-cloud'].models(e).join(', ')}`);
   console.log(`ollama-cloud host:    ${PROVIDERS['ollama-cloud'].host(e)}`);

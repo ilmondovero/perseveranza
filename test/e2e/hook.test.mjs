@@ -181,13 +181,15 @@ test('prompt pack: project override and language pack change the wording, header
   arm(p);
   writeFileSync(gate(p, 'prompts.json'), JSON.stringify({ prompts: { 'plan-write': 'CUSTOM PLAN {{LOOP}}' } }));
   const r = fire(p);
-  assert.ok(r.reason.startsWith('[perseveranza v2.0.0'));
+  assert.ok(r.reason.startsWith('[perseveranza v2.'));
   assert.ok(r.reason.includes('CUSTOM PLAN node "'));
   assert.equal(r.state.phase, 'plan');
   const q = project();
-  arm(q, 't', ['--lang', 'it']);
+  delete q.env.PERSEVERANZA_LANG; // the Italian default, no flag
+  arm(q);
   const r2 = fire(q);
   assert.ok(r2.reason.includes('FASE: plan'), r2.reason.slice(0, 200));
+  assert.ok(r2.reason.startsWith('[perseveranza v2.'), 'header stays');
   const bad = project();
   arm(bad);
   writeFileSync(gate(bad, 'prompts.json'), '{broken');

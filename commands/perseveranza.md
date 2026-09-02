@@ -1,6 +1,6 @@
 ---
 description: Arm the perseveranza feedback loop (plan -> implement -> review -> adversarial final verification) and start the task
-argument-hint: <task description> [--max N] [--commit] [--external off] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--lang it]
+argument-hint: <task description> [--max N] [--commit] [--external off] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--lang en]
 ---
 
 Enable "perseveranza" mode for the task below and start working on it.
@@ -16,10 +16,11 @@ Steps to run NOW, in order:
    REMOVE them from the task description and pass them to the command; otherwise keep the
    defaults. Escape double quotes inside the task. If the project has a test suite and the
    user did not pass `--test`, find it yourself (package.json, Makefile, pytest...) and pass
-   it. If the user writes in Italian and did not pass `--lang`, pass `--lang it` (the
-   injected instructions come in Italian). Arm the loop:
+   it. The injected instructions are in Italian by default (`packs/it.json`); pass
+   `--lang en` only if the user writes in English and did not set a language in the
+   config. Arm the loop:
 
-   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" arm "<task without flags>" [--max N] [--commit] [--external off] [--test "npm test"] [--lang it]
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" arm "<task without flags>" [--max N] [--commit] [--external off] [--test "npm test"] [--lang en]
 
    (`--commit` = atomic commit after every validated step; `--external off` = no comparison
    with external models, which are otherwise auto-detected: codex, agy, grok, cursor, claude

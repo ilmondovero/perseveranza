@@ -65,8 +65,12 @@ export function enableProvider(id, env = process.env) {
   saveConfig(cfg, env);
 }
 
-// Language of the injected instructions: PERSEVERANZA_LANG > config.lang > LC_ALL/LC_MESSAGES/LANG > 'en'.
+// Language of the injected instructions: PERSEVERANZA_LANG > config.lang > DEFAULT_LANG.
+// Italian by default (the project's home language); the shipped defaults in prompts.mjs are
+// English and packs/<lang>.json overrides them. No locale sniffing: explicit settings only,
+// so the language never changes with the shell a session was started from.
+export const DEFAULT_LANG = 'it';
 export function detectLang(env = process.env) {
   const pick = (v) => (typeof v === 'string' && /^[a-z]{2}/i.test(v) ? v.slice(0, 2).toLowerCase() : null);
-  return pick(env.PERSEVERANZA_LANG) || pick(loadConfig(env).lang) || pick(env.LC_ALL) || pick(env.LC_MESSAGES) || pick(env.LANG) || 'en';
+  return pick(env.PERSEVERANZA_LANG) || pick(loadConfig(env).lang) || DEFAULT_LANG;
 }

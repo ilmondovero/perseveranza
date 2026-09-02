@@ -80,7 +80,7 @@ export function run({ argv, cwd, env }) {
     console.log(`  ollama-cloud: model${ms.length > 1 ? 's' : ''} ${ms.join(', ')} (host ${PROVIDERS['ollama-cloud'].host(provEnv)})`);
   }
   if (state.options.testCmd) console.log(`Test suite: ${state.options.testCmd} (claim-done will require a fresh green run through the test verb)`);
-  if (lang !== 'en') console.log(`Instruction language: ${lang}`);
+  console.log(`Instruction language: ${lang}${lang === 'en' ? ' (shipped defaults)' : ` (packs/${lang}.json)`}`);
   if (state.baselineDirty.length) console.log(`Note: ${state.baselineDirty.length} file(s) already modified before the task; the final commit may include them.`);
   console.log("Initial phase: plan. Write the plan to .omc-loop/plan.md as a '- [ ] step' checklist, then stop: from there the Stop hook drives.");
   maybeSpawnRefresh(env);

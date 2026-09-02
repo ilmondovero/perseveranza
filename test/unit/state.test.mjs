@@ -9,7 +9,7 @@ test('defaultState has schema v2 and sane defaults', () => {
   assert.equal(s.limits.maxIterations, 25);
   assert.equal(s.limits.maxRetries, 3);
   assert.equal(s.limits.maxTokens, null);
-  assert.equal(s.options.lang, 'en');
+  assert.equal(s.options.lang, 'it');
 });
 
 test('defaultState deep-merges overrides without losing siblings', () => {

@@ -3,6 +3,7 @@ import { DEFAULT_PROMPTS, PROMPT_KEYS, PROMPT_VARS, validatePack, missingKeys } 
 import { loadPromptLayers, packPath } from '../../shell/packs.mjs';
 import { gate, VerbError } from '../shared.mjs';
 import { ROOT } from '../../shell/paths.mjs';
+import { detectLang } from '../../providers/config.mjs';
 
 // prompts validate [file]  | prompts keys | prompts show <key> | prompts layers
 export function run({ argv, cwd, env }) {
@@ -19,7 +20,7 @@ export function run({ argv, cwd, env }) {
   }
   if (sub === 'layers') {
     const paths = gate(cwd);
-    const r = loadPromptLayers({ gateDir: paths.gateDir, env, lang: argv[1] || 'en', root: ROOT });
+    const r = loadPromptLayers({ gateDir: paths.gateDir, env, lang: argv[1] || detectLang(env), root: ROOT });
     if (!r.sources.length && !r.errors.length) console.log('No override layer active: defaults only.');
     for (const s of r.sources) console.log(`  ${s.source.padEnd(24)} ${s.keys} key(s)  ${s.path}`);
     for (const e of r.errors) console.log(`  ${e.source.padEnd(24)} ERROR ${e.error}`);

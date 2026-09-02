@@ -142,8 +142,8 @@ test('config: effectiveEnv precedence, denylist with reasons, timeouts, language
   assert.equal(e.OLLAMA_MODEL, 'from-env');
   assert.equal(detectLang(env), 'it');
   assert.equal(detectLang({ PERSEVERANZA_HOME: home, PERSEVERANZA_LANG: 'de' }), 'de');
-  assert.equal(detectLang({ PERSEVERANZA_HOME: tmp(), LANG: 'fr_FR' }), 'fr');
-  assert.equal(detectLang({ PERSEVERANZA_HOME: tmp() }), 'en');
+  assert.equal(detectLang({ PERSEVERANZA_HOME: tmp(), LANG: 'fr_FR', LC_ALL: 'fr_FR' }), 'it', 'locale never decides');
+  assert.equal(detectLang({ PERSEVERANZA_HOME: tmp() }), 'it');
   assert.equal(providerTimeoutOverride('codex', env), 12345);
   assert.equal(providerTimeoutOverride('agy', env), null);
   disableProvider('codex', 'probe failed', env);
