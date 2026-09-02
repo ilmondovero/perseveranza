@@ -3,12 +3,12 @@
   "owner": {
     "name": "ilmondovero"
   },
-  "description": "Marketplace del plugin perseveranza",
+  "description": "Marketplace of the perseveranza plugin",
   "plugins": [
     {
       "name": "perseveranza",
       "source": "./",
-      "description": "Ciclo autonomo a feedback: plan -> implement -> review -> verifica finale avversariale, con routing dei modelli per complessita'",
+      "description": "Autonomous feedback loop for Claude Code: plan -> implement -> review -> adversarial final verification, with model routing by complexity",
       "category": "development"
     }
   ]
