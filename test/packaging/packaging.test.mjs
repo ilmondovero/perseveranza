@@ -18,6 +18,8 @@ function walk(dir, out = []) {
   return out;
 }
 const rel = (p) => p.slice(ROOT.length + 1).replaceAll('\\', '/');
+// tolerate CRLF checkouts (Windows runners with autocrlf): compare on LF
+const readLf = (p) => readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
 
 test('every manifest file exists', () => {
   for (const f of ALL_FILES) assert.ok(existsSync(join(ROOT, f)), `missing ${f}`);
@@ -46,7 +48,7 @@ test('plugin.json, package.json and the README badge agree on the version', () =
 });
 
 test('the command references the CLI entry and every verb it documents exists', () => {
-  const text = readFileSync(join(ROOT, COMMAND_FILES[0]), 'utf8');
+  const text = readLf(join(ROOT, COMMAND_FILES[0]));
   assert.ok(text.includes(`\${CLAUDE_PLUGIN_ROOT}/${CLI_ENTRY}`));
   for (const v of ['arm', 'test', 'report', 'complexity', 'claim-done', 'ask', 'pause', 'resume', 'disarm', 'status']) {
     assert.ok(text.includes(v), `command does not mention verb ${v}`);
@@ -59,7 +61,7 @@ test('the command references the CLI entry and every verb it documents exists', 
 
 test('the agents exist with the expected front matter', () => {
   for (const a of AGENT_FILES) {
-    const text = readFileSync(join(ROOT, a), 'utf8');
+    const text = readLf(join(ROOT, a));
     assert.ok(text.startsWith('---\nname: pf-'), a);
     assert.ok(/^tools: /m.test(text), a);
   }
@@ -68,7 +70,7 @@ test('the agents exist with the expected front matter', () => {
 test('the README transition tables are generated from the code (both languages)', () => {
   const md = toMarkdown();
   for (const readme of ['README.md', 'README.en.md']) {
-    const text = readFileSync(join(ROOT, readme), 'utf8');
+    const text = readLf(join(ROOT, readme));
     const m = text.match(/<!-- transitions:start -->\n([\s\S]*?)\n<!-- transitions:end -->/);
     assert.ok(m, `${readme}: transitions block missing`);
     assert.equal(m[1].trim(), md.trim(), `${readme}: run \`npm run explain -- --markdown\` and paste between the markers`);
@@ -99,7 +101,7 @@ test('install.mjs copies exactly the manifest, registers the hook, and uninstall
   const st = JSON.parse(readFileSync(join(cdir, 'settings.json'), 'utf8'));
   assert.equal(st.keep, true);
   assert.equal(st.hooks.Stop.length, 1);
-  assert.ok(st.hooks.Stop[0].hooks[0].command.includes(HOOK_ENTRY));
+  assert.ok(st.hooks.Stop[0].hooks[0].command.replaceAll('\\', '/').includes(HOOK_ENTRY));
   assert.equal(st.hooks.Stop[0].hooks[0].timeout, 120);
   const cmd = readFileSync(join(cdir, 'commands', 'perseveranza.md'), 'utf8');
   assert.ok(!cmd.includes('${CLAUDE_PLUGIN_ROOT}'));

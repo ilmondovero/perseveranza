@@ -1,0 +1,6 @@
+# Check out with LF everywhere: the hook, the packs, the agents' front matter and the
+# README transition block are compared byte-for-byte by the packaging tests, and the
+# Stop hook/CLI must behave the same on Windows, macOS and Linux.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

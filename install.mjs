@@ -27,8 +27,10 @@ const installDir = join(claudeDir, 'perseveranza');
 const commandsDir = join(claudeDir, 'commands');
 const agentsDir = join(claudeDir, 'agents');
 const settingsPath = join(claudeDir, 'settings.json');
-const hookPath = join(installDir, HOOK_ENTRY);
-const cliPath = join(installDir, CLI_ENTRY);
+// forward slashes in the registered commands: Node accepts them on Windows too, and they
+// survive JSON/settings editing without escaping surprises
+const hookPath = join(installDir, HOOK_ENTRY).replaceAll('\\', '/');
+const cliPath = join(installDir, CLI_ENTRY).replaceAll('\\', '/');
 const HOOK_RE = /loop-drive\.(ps1|mjs)|perseveranza[\\/]src[\\/]shell[\\/]stop\.mjs/;
 
 function loadSettings() {
