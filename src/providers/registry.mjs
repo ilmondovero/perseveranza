@@ -13,6 +13,9 @@
 //                apply to an empty temp dir, never to the repo; `claude -p` in the project dir
 //                would load OUR hook).
 //
+// The http transport takes a model list where each entry can carry its reasoning effort:
+// see parseModels() below.
+//
 // Timeout per opinion: OMC_ASK_TIMEOUT_MS (default 180 s, floor 1 s), per-provider override
 // in config ("providers.timeouts").
 //
@@ -22,6 +25,41 @@
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { parseTimeoutMs } from '../shell/util.mjs';
+
+// Model spec for the http transport: "glm-5.3#low,deepseek-v4-flash:0731#false".
+// The separator is '#', not ':', because ':' already separates the ollama tag
+// (deepseek-v4-flash:0731). What follows '#' is the reasoning effort, sent as `think`:
+//   high | medium | low | max | true  -> reasoning on, at that effort
+//   false (aliases: none, off)        -> reasoning off
+//   omitted                           -> model default; `think` is not sent at all
+// An unrecognized value never reaches the server: it is refused locally with a clear
+// message, the way an invalid OLLAMA_HOST is.
+const THINK_LEVELS = ['high', 'medium', 'low', 'max'];
+const DEFAULT_OLLAMA_MODEL = 'glm-5.2';
+
+export function parseModels(spec, fallback = DEFAULT_OLLAMA_MODEL) {
+  const out = [];
+  for (const entry of String(spec || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+    const cut = entry.indexOf('#');
+    const name = (cut < 0 ? entry : entry.slice(0, cut)).trim();
+    if (!name) continue;
+    const raw = cut < 0 ? '' : entry.slice(cut + 1).trim().toLowerCase();
+    if (raw === '') out.push({ name });
+    else if (raw === 'true') out.push({ name, think: true });
+    else if (raw === 'false' || raw === 'none' || raw === 'off') out.push({ name, think: false });
+    else if (THINK_LEVELS.includes(raw)) out.push({ name, think: raw });
+    else out.push({ name, invalid: raw });
+  }
+  return out.length ? out : [{ name: fallback }];
+}
+
+// Display form: "glm-5.3 (think: low)". Used in logs, arm output and artifact headers.
+export function modelLabel(m) {
+  if (!m) return '';
+  if (typeof m === 'string') return m;
+  if (m.invalid !== undefined) return `${m.name} (think: ${m.invalid} - INVALID)`;
+  return m.think === undefined ? m.name : `${m.name} (think: ${m.think})`;
+}
 
 export const PROVIDERS = {
   codex: {
@@ -58,10 +96,7 @@ export const PROVIDERS = {
   'ollama-cloud': {
     transport: 'http',
     detect: ({ env }) => !!env.OLLAMA_API_KEY,
-    models: (env) => {
-      const list = (env.OLLAMA_MODEL || 'glm-5.2').split(',').map((m) => m.trim()).filter(Boolean);
-      return list.length ? list : ['glm-5.2'];
-    },
+    models: (env) => parseModels(env.OLLAMA_MODEL),
     host: (env) => (env.OLLAMA_HOST || 'https://ollama.com').replace(/\/+$/, ''),
   },
 };
@@ -93,10 +128,22 @@ export function askTimeoutMs(env = {}, override = null) {
   return override ?? parseTimeoutMs(env.OMC_ASK_TIMEOUT_MS, 180000);
 }
 
+// The model can arrive already parsed (from models()), as a spec string ("glm-5.3#low"), or
+// missing: then the first configured one.
+function normalizeModel(model, p, env) {
+  if (model && typeof model === 'object') return model;
+  if (typeof model === 'string' && model.trim()) return parseModels(model)[0];
+  return p.models(env)[0] || { name: DEFAULT_OLLAMA_MODEL };
+}
+
 async function askHttpOllama(p, prompt, env, timeoutMs, model) {
-  const m = model || p.models(env)[0] || 'glm-5.2';
+  const m = normalizeModel(model, p, env);
+  const label = modelLabel(m);
+  if (m.invalid !== undefined) {
+    return { ok: false, model: label, output: `invalid reasoning effort "${m.invalid}" for ${m.name}: use high, medium, low, max, true or false (aliases for false: none, off).` };
+  }
   const key = env.OLLAMA_API_KEY;
-  if (!key) return { ok: false, model: m, output: 'OLLAMA_API_KEY is not set.' };
+  if (!key) return { ok: false, model: label, output: 'OLLAMA_API_KEY is not set.' };
   const host = p.host(env);
   let endpoint;
   try {
@@ -104,27 +151,32 @@ async function askHttpOllama(p, prompt, env, timeoutMs, model) {
     if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('not http(s)');
     endpoint = u.toString();
   } catch {
-    return { ok: false, model: m, output: `OLLAMA_HOST is not a valid http(s) URL: ${host}` };
+    return { ok: false, model: label, output: `OLLAMA_HOST is not a valid http(s) URL: ${host}` };
   }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const payload = { model: m.name, stream: false, messages: [{ role: 'user', content: prompt }] };
+  if (m.think !== undefined) payload.think = m.think;
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: m, stream: false, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify(payload),
       signal: ctrl.signal,
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      return { ok: false, model: m, output: `HTTP ${res.status} ${res.statusText}: ${body.slice(0, 600)}` };
+      return { ok: false, model: label, output: `HTTP ${res.status} ${res.statusText}: ${body.slice(0, 600)}` };
     }
     const data = await res.json();
-    const output = data?.message?.content?.trim() || JSON.stringify(data).slice(0, 2000);
-    return { ok: true, model: m, output };
+    const msg = data?.message || {};
+    // With reasoning on the answer is in content and the chain of thought in thinking; a model
+    // that only thinks and says nothing is still worth reporting, so fall back to it.
+    const output = msg.content?.trim() || msg.thinking?.trim() || JSON.stringify(data).slice(0, 2000);
+    return { ok: true, model: label, output };
   } catch (e) {
     const why = e?.name === 'AbortError' ? `timeout after ${Math.round(timeoutMs / 1000)}s` : (e?.message || String(e));
-    return { ok: false, model: m, output: `network error: ${why}` };
+    return { ok: false, model: label, output: `network error: ${why}` };
   } finally {
     clearTimeout(t);
   }

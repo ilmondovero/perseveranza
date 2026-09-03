@@ -4,6 +4,19 @@ Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
 ## 2.0.0
+- **Reasoning per modello su `ollama-cloud`**: ogni voce di `OLLAMA_MODEL` (o di
+  `ollama.model` nel config) può portare lo sforzo di ragionamento dopo un `#` —
+  `glm-5.3#low,deepseek-v4-flash:0731#none` — inoltrato all'API come parametro `think`.
+  Il separatore è `#` e non `:` perché i due punti separano già il tag ollama
+  (`deepseek-v4-flash:0731`). Senza `#` il campo non viene inviato affatto e vale il
+  default del modello, quindi le config esistenti non cambiano comportamento. Serviva
+  perché il default non è sempre quello giusto: su `glm-5.3` disattivare il reasoning non
+  lo spegne, lo riversa nel `content` (259 token contro 4), mentre `deepseek-v4-flash`
+  con reasoning spento risponde pulito e nella metà del tempo. Un valore non riconosciuto
+  è rifiutato in locale con un messaggio esplicito, senza spendere la chiamata, come già
+  accade per un `OLLAMA_HOST` non valido; `providers list` mostra i modelli configurati
+  e il loro sforzo. Il nome del file dell'opinione include lo sforzo, così lo stesso
+  modello interrogato a due livelli produce due artefatti distinti.
 - **Test ermetici rispetto all'ambiente**: `test/helpers/cli.mjs` elenca le variabili che lo
   strumento legge (`OWN_ENV_VARS`) e le cancella dall'ambiente ereditato prima di comporre
   quello del progetto di prova; le rimette solo il test che le vuole. Prima la suite ereditava

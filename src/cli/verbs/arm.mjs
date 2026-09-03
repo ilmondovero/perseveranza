@@ -5,7 +5,7 @@ import { gate, saveState, VerbError, positiveInt } from '../shared.mjs';
 import { defaultState, COMPLEXITIES } from '../../core/state.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
 import { baselineDirty } from '../../shell/git.mjs';
-import { detectAvailable, hasBinary, PROVIDERS } from '../../providers/registry.mjs';
+import { detectAvailable, hasBinary, modelLabel, PROVIDERS } from '../../providers/registry.mjs';
 import { effectiveEnv, disabledProviders, detectLang } from '../../providers/config.mjs';
 import { packPath } from '../../shell/packs.mjs';
 import { ROOT } from '../../shell/paths.mjs';
@@ -77,7 +77,7 @@ export function run({ argv, cwd, env }) {
   console.log(`External models for the second opinion: ${externals.length ? externals.join(', ') : 'none'}${v.external !== 'off' && disabled.length ? ` (disabled by config: ${disabled.join(', ')})` : ''}`);
   if (externals.includes('ollama-cloud')) {
     const ms = PROVIDERS['ollama-cloud'].models(provEnv);
-    console.log(`  ollama-cloud: model${ms.length > 1 ? 's' : ''} ${ms.join(', ')} (host ${PROVIDERS['ollama-cloud'].host(provEnv)})`);
+    console.log(`  ollama-cloud: model${ms.length > 1 ? 's' : ''} ${ms.map(modelLabel).join(', ')} (host ${PROVIDERS['ollama-cloud'].host(provEnv)})`);
   }
   if (state.options.testCmd) console.log(`Test suite: ${state.options.testCmd} (claim-done will require a fresh green run through the test verb)`);
   console.log(`Instruction language: ${lang}${lang === 'en' ? ' (shipped defaults)' : ` (packs/${lang}.json)`}`);

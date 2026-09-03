@@ -8,7 +8,7 @@ import { parseTimeoutMs, summarizeExternalOpinions, boolEnv } from '../../src/sh
 import { appendJournal, readJournal, renderHistory, formatEntry } from '../../src/shell/journal.mjs';
 import { loadPromptLayers } from '../../src/shell/packs.mjs';
 import { buildSummary } from '../../src/shell/archive.mjs';
-import { detectAvailable, providerModels, askTimeoutMs, PROVIDERS, askProvider } from '../../src/providers/registry.mjs';
+import { detectAvailable, providerModels, askTimeoutMs, PROVIDERS, askProvider, parseModels, modelLabel } from '../../src/providers/registry.mjs';
 import { effectiveEnv, disabledProviders, detectLang, disableProvider, enableProvider, providerTimeoutOverride } from '../../src/providers/config.mjs';
 import { cmpSemver } from '../../src/update.mjs';
 import { mk } from '../helpers/core.mjs';
@@ -100,8 +100,8 @@ test('providers: registry, detection, models, timeouts', () => {
   const has = (n) => ['codex', 'claude', 'cursor-agent'].includes(n);
   assert.deepEqual(detectAvailable({ has, env: {}, platform: 'linux' }), ['codex', 'cursor', 'claude']);
   assert.deepEqual(detectAvailable({ has, env: { OLLAMA_API_KEY: 'k' }, platform: 'linux', disabled: ['codex'] }), ['cursor', 'claude', 'ollama-cloud']);
-  assert.deepEqual(providerModels('ollama-cloud', { OLLAMA_MODEL: 'a, b,,' }), ['a', 'b']);
-  assert.deepEqual(providerModels('ollama-cloud', { OLLAMA_MODEL: ' , ' }), ['glm-5.2']);
+  assert.deepEqual(providerModels('ollama-cloud', { OLLAMA_MODEL: 'a, b,,' }), [{ name: 'a' }, { name: 'b' }]);
+  assert.deepEqual(providerModels('ollama-cloud', { OLLAMA_MODEL: ' , ' }), [{ name: 'glm-5.2' }]);
   assert.deepEqual(providerModels('codex'), [null]);
   assert.equal(PROVIDERS['ollama-cloud'].host({ OLLAMA_HOST: 'https://x/' }), 'https://x');
   assert.equal(askTimeoutMs({}), 180000);
@@ -111,6 +111,61 @@ test('providers: registry, detection, models, timeouts', () => {
   assert.deepEqual(PROVIDERS.grok.argv(hostile)[2], hostile);
   assert.deepEqual(PROVIDERS.cursor.argv(hostile).at(-1), hostile);
   for (const id of ['grok', 'cursor', 'claude']) assert.ok(PROVIDERS[id].cwd().length > 0);
+});
+
+test('parseModels: reasoning effort per model, aliases, invalid value kept apart', () => {
+  assert.deepEqual(parseModels('glm-5.3#low,deepseek-v4-flash:0731#false'),
+    [{ name: 'glm-5.3', think: 'low' }, { name: 'deepseek-v4-flash:0731', think: false }]);
+  // ':' stays the tag separator; only '#' splits off the effort
+  assert.deepEqual(parseModels('deepseek-v4-flash:0731'), [{ name: 'deepseek-v4-flash:0731' }]);
+  assert.deepEqual(parseModels('a#NONE, b#off, c#true, d#MAX'),
+    [{ name: 'a', think: false }, { name: 'b', think: false }, { name: 'c', think: true }, { name: 'd', think: 'max' }]);
+  assert.deepEqual(parseModels('a#'), [{ name: 'a' }], 'an empty effort is the model default');
+  assert.deepEqual(parseModels('#low'), [{ name: 'glm-5.2' }], 'no name, no model');
+  assert.deepEqual(parseModels('a#lo'), [{ name: 'a', invalid: 'lo' }]);
+  assert.deepEqual(parseModels('', 'fb'), [{ name: 'fb' }]);
+  assert.equal(modelLabel({ name: 'a' }), 'a');
+  assert.equal(modelLabel({ name: 'a', think: false }), 'a (think: false)');
+  assert.equal(modelLabel({ name: 'a', invalid: 'lo' }), 'a (think: lo - INVALID)');
+  assert.equal(modelLabel(null), '');
+});
+
+test('askHttpOllama: think reaches the payload only when configured, invalid effort never hits the network', async () => {
+  const real = globalThis.fetch;
+  const sent = [];
+  globalThis.fetch = async (_url, opts) => {
+    sent.push(JSON.parse(opts.body));
+    return { ok: true, status: 200, json: async () => ({ message: { content: ' 25 ', thinking: 'because' } }) };
+  };
+  try {
+    const env = { OLLAMA_API_KEY: 'k' };
+    const low = await askProvider('ollama-cloud', 'x', { env, model: { name: 'glm-5.3', think: 'low' } });
+    assert.equal(low.ok, true);
+    assert.equal(low.model, 'glm-5.3 (think: low)');
+    assert.equal(low.output, '25');
+    assert.equal(sent.at(-1).think, 'low');
+
+    await askProvider('ollama-cloud', 'x', { env, model: { name: 'd', think: false } });
+    assert.equal(sent.at(-1).think, false);
+
+    await askProvider('ollama-cloud', 'x', { env: { ...env, OLLAMA_MODEL: 'plain' } });
+    assert.equal('think' in sent.at(-1), false, 'no effort configured, no think field');
+    assert.equal(sent.at(-1).model, 'plain');
+
+    // a spec string works too (one ask, one model)
+    await askProvider('ollama-cloud', 'x', { env, model: 'glm-5.3#max' });
+    assert.equal(sent.at(-1).think, 'max');
+
+    const before = sent.length;
+    const bad = await askProvider('ollama-cloud', 'x', { env, model: { name: 'g', invalid: 'lo' } });
+    assert.equal(bad.ok, false);
+    assert.ok(bad.output.includes('invalid reasoning effort "lo"'));
+    assert.equal(sent.length, before, 'refused locally, no request sent');
+
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ message: { thinking: 'only thought' } }) });
+    const thinkOnly = await askProvider('ollama-cloud', 'x', { env });
+    assert.equal(thinkOnly.output, 'only thought');
+  } finally { globalThis.fetch = real; }
 });
 
 test('askProvider: unknown provider, injected spawn for CLI transport, ollama host validation', async () => {

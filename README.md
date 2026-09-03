@@ -171,7 +171,7 @@ I verbi con cui Claude, e tu, parlate al loop (`node "<root>/src/cli/omc-loop.mj
 ```json
 {
   "lang": "it",
-  "ollama": { "apiKey": "<chiave>", "model": "glm-5.2,kimi-k2.7-code" },
+  "ollama": { "apiKey": "<chiave>", "model": "glm-5.3#low,deepseek-v4-flash:0731#none" },
   "providers": { "disabled": ["codex"], "timeouts": { "ollama-cloud": 300000 } }
 }
 ```
@@ -184,6 +184,11 @@ I verbi con cui Claude, e tu, parlate al loop (`node "<root>/src/cli/omc-loop.mj
   mai da una shell; le CLI che auto-approvano girano in una directory temporanea. Un
   rifiuto di policy o un timeout non è un finding: il verdetto vincolante resta quello del
   verificatore.
+- **Reasoning per modello** (solo `ollama-cloud`). Ogni voce di `model` può portare il proprio
+  sforzo di ragionamento dopo un `#`: `glm-5.3#low`, `deepseek-v4-flash:0731#none`. Valori:
+  `high`, `medium`, `low`, `max`, `true`, `false` (alias di `false`: `none`, `off`); senza
+  `#` vale il default del modello. Il separatore è `#` perché i due punti già separano il tag
+  ollama. Un valore non riconosciuto è rifiutato in locale, senza spendere una chiamata.
 - **Prompt pack.** Ogni istruzione di fase è un template sovrascrivibile. Livelli, dal più
   forte: `OMC_PROMPT_PACK=<file>` → `.omc-loop/prompts.json` → `packs/<lang>.json` →
   default. Un pack cambia cosa si dice, mai il routing.

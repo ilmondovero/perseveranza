@@ -1,6 +1,6 @@
 // Local configuration: ~/.perseveranza/config.json (never inside a repo).
 // {
-//   "ollama":    { "apiKey": "...", "model": "glm-5.2,kimi-k2.7-code", "host": "https://ollama.com" },
+//   "ollama":    { "apiKey": "...", "model": "glm-5.3#low,deepseek-v4-flash:0731#none", "host": "https://ollama.com" },
 //   "providers": { "disabled": ["codex"], "disabledReasons": { "codex": {"at": "...", "reason": "..."} },
 //                  "timeouts": { "ollama-cloud": 300000 } },
 //   "lang":      "it",

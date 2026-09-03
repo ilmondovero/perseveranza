@@ -169,7 +169,7 @@ The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/omc-lo
 ```json
 {
   "lang": "en",
-  "ollama": { "apiKey": "<key>", "model": "glm-5.2,kimi-k2.7-code" },
+  "ollama": { "apiKey": "<key>", "model": "glm-5.3#low,deepseek-v4-flash:0731#none" },
   "providers": { "disabled": ["codex"], "timeouts": { "ollama-cloud": 300000 } }
 }
 ```
@@ -181,6 +181,11 @@ The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/omc-lo
   itself as a clean-context counter-check, `ollama-cloud` via API. The prompt never goes
   through a shell; auto-approving CLIs run in a temporary directory. A policy refusal or a
   timeout is not a finding: the binding verdict stays the verifier's.
+- **Per-model reasoning** (`ollama-cloud` only). Every entry of `model` can carry its own
+  reasoning effort after a `#`: `glm-5.3#low`, `deepseek-v4-flash:0731#none`. Values:
+  `high`, `medium`, `low`, `max`, `true`, `false` (aliases for `false`: `none`, `off`);
+  without `#` the model default applies. The separator is `#` because the colon already
+  separates the ollama tag. An unrecognized value is refused locally, without spending a call.
 - **Prompt pack.** Every phase instruction is an overridable template. Layers, strongest
   first: `OMC_PROMPT_PACK=<file>` → `.omc-loop/prompts.json` → `packs/<lang>.json` →
   defaults. A pack changes what is said, never the routing.

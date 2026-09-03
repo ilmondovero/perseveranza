@@ -1,4 +1,4 @@
-import { PROVIDERS, PROVIDER_IDS, detectAvailable, hasBinary, checkProvider } from '../../providers/registry.mjs';
+import { PROVIDERS, PROVIDER_IDS, detectAvailable, hasBinary, checkProvider, modelLabel } from '../../providers/registry.mjs';
 import { effectiveEnv, disabledProviders, disableProvider, enableProvider, loadConfig, providerTimeoutOverride } from '../../providers/config.mjs';
 import { VerbError } from '../shared.mjs';
 
@@ -16,7 +16,9 @@ export async function run({ argv, env }) {
       const dis = disabled.includes(id);
       const why = dis && reasons[id] ? ` (${reasons[id].reason}, ${reasons[id].at.slice(0, 10)})` : '';
       const t = providerTimeoutOverride(id, env);
-      console.log(`  ${id.padEnd(13)} ${p.transport.padEnd(4)} ${dis ? 'DISABLED' : det ? 'detected' : 'absent'}${why}${t ? `  timeout ${t}ms` : ''}`);
+      // For the http transport the configured models are the thing worth checking at a glance.
+      const ms = p.transport === 'http' ? `  models: ${p.models(provEnv).map(modelLabel).join(', ')}` : '';
+      console.log(`  ${id.padEnd(13)} ${p.transport.padEnd(4)} ${dis ? 'DISABLED' : det ? 'detected' : 'absent'}${why}${t ? `  timeout ${t}ms` : ''}${ms}`);
     }
     console.log('\nUse `providers check` to probe the detected ones; a dead provider is disabled in the config with the reason.');
     return 0;
