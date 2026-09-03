@@ -4,6 +4,12 @@ Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
 ## 2.0.0
+- **Test ermetici rispetto all'ambiente**: `test/helpers/cli.mjs` elenca le variabili che lo
+  strumento legge (`OWN_ENV_VARS`) e le cancella dall'ambiente ereditato prima di comporre
+  quello del progetto di prova; le rimette solo il test che le vuole. Prima la suite ereditava
+  la shell di chi la lanciava, quindi passava in CI (ambiente nudo) e falliva su una macchina
+  vera con `OLLAMA_API_KEY` esportata; peggio, un test che avesse dimenticato di impostare
+  `CLAUDE_CONFIG_DIR` avrebbe scritto nel vero `~/.claude`.
 - **Italiano di default** nelle istruzioni iniettate: `packs/it.json` è il livello attivo
   quando nessuno specifica altro. Precedenza: `--lang` all'arm > `PERSEVERANZA_LANG` >
   `"lang"` in `~/.perseveranza/config.json` > `it`. Nessuna lettura della locale della

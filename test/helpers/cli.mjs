@@ -20,14 +20,28 @@ export function freshDir(prefix = 'prs-') {
   return d;
 }
 
+// Every variable the tool itself reads. The developer's shell is not the test fixture: whoever
+// runs the suite may well have OLLAMA_API_KEY or CLAUDE_CONFIG_DIR exported, and inheriting them
+// made assertions pass in CI and fail on a real machine. They are stripped here and set back
+// only by the test that wants them; everything else (PATH, HOME, SystemRoot...) is inherited so
+// node and git still work.
+export const OWN_ENV_VARS = [
+  'OLLAMA_API_KEY', 'OLLAMA_HOST', 'OLLAMA_MODEL',
+  'OMC_ASK_TIMEOUT_MS', 'OMC_HOOK_TIMEOUT_MS', 'OMC_LOOP_KILL', 'OMC_LOOP_NO_NOTIFY',
+  'OMC_NO_UPDATE_CHECK', 'OMC_PROMPT_PACK', 'OMC_SESSION_TAKEOVER_MS',
+  'OMC_STATUSLINE_BASE_TIMEOUT_MS', 'OMC_TEST_TIMEOUT_MS',
+  'PERSEVERANZA_HOME', 'PERSEVERANZA_LANG', 'CLAUDE_CONFIG_DIR',
+];
+
 // A project with its own perseveranza home (config, runs archive) so tests never touch ~/.perseveranza.
 export function project({ git = false } = {}) {
   const dir = freshDir();
   const home = freshDir('prs-home-');
+  const env = { ...process.env };
+  for (const k of OWN_ENV_VARS) delete env[k];
   // English by default in the tests (assertions read the shipped templates); PERSEVERANZA_LANG
   // is deleted by the tests that check the Italian default
-  const env = { ...process.env, OMC_LOOP_NO_NOTIFY: '1', PERSEVERANZA_HOME: home, OMC_NO_UPDATE_CHECK: '1', PERSEVERANZA_LANG: 'en' };
-  delete env.OMC_PROMPT_PACK; delete env.OMC_LOOP_KILL;
+  Object.assign(env, { OMC_LOOP_NO_NOTIFY: '1', PERSEVERANZA_HOME: home, OMC_NO_UPDATE_CHECK: '1', PERSEVERANZA_LANG: 'en' });
   if (git) {
     const g = (...a) => spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
     g('init', '-q');
