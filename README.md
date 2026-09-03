@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-2.0.0-blue)
+![versione](https://img.shields.io/badge/versione-2.0.1-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)

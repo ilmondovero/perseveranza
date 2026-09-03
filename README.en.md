@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-2.0.0-blue)
+![version](https://img.shields.io/badge/version-2.0.1-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)

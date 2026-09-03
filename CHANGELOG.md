@@ -3,7 +3,7 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
-## 2.0.0
+## 2.0.1
 - **Reasoning per modello su `ollama-cloud`**: ogni voce di `OLLAMA_MODEL` (o di
   `ollama.model` nel config) può portare lo sforzo di ragionamento dopo un `#` —
   `glm-5.3#low,deepseek-v4-flash:0731#none` — inoltrato all'API come parametro `think`.
@@ -31,6 +31,8 @@ Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive
   `src/core/prompts.mjs` restano in inglese (sono la base che i pack sovrascrivono).
 - **README come pagina di presentazione** (it e en): avvio in 30 secondi, il perché, come
   funziona, le garanzie, i comandi; i dettagli tecnici restano nei docs.
+
+## 2.0.0
 - **Riscrittura da zero** secondo `docs/PIANO-V2.md`, nata dalla rilettura della 1.19.0.
   Stessi principi (hook dormiente, anello chiuso, prove non parole, gate severo, zero
   dipendenze), struttura nuova. Compatibile: stesso `.omc-loop/`, stessi verbi, stato 1.x
