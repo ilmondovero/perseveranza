@@ -61,3 +61,19 @@ test('git closure confirms successful checks and permits local-only closure', ()
   assert.equal(result.ahead, 2);
   assert.ok(!f.calls.includes('push'));
 });
+
+test('git closure reports why the commit failed, not just that it did', () => {
+  for (const push of [true, false]) {
+    const f = fixture({ 'status --porcelain': ok(' M src/app.mjs\n') });
+    const spawn = (cmd, args) => (args[0] === 'commit'
+      ? { status: 128, stdout: '', stderr: 'Author identity unknown\n\n*** Please tell me who you are.\nfatal: unable to auto-detect email address\n' }
+      : f.spawn(cmd, args));
+    const result = gitFinish('.', { spawn, push });
+    assert.equal(result.confirmed, false);
+    assert.ok(result.error.includes('unable to auto-detect email address'), result.error);
+    assert.ok(!f.calls.includes('push'));
+  }
+  // a clean-looking commit that still leaves the tree dirty keeps the generic wording
+  const dirty = fixture({ 'status --porcelain': ok(' M src/app.mjs\n') });
+  assert.ok(gitFinish('.', { spawn: dirty.spawn }).error.startsWith('commit did not happen'));
+});

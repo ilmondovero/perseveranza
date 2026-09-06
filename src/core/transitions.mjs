@@ -17,6 +17,7 @@ export const TRANSITIONS = [
   { phase: '*',            outcome: 'claim-open',     next: '=',            prompt: 'claim-open-steps',      note: 'claim-done refused: unchecked steps' },
   { phase: '*',            outcome: 'claim-no-test',  next: '=',            prompt: 'claim-no-fresh-test',   note: 'claim-done refused: no fresh green test' },
   { phase: '*',            outcome: 'claim-stale',    next: '=',            prompt: 'claim-stale-test',      note: 'claim-done refused: code changed after the test' },
+  { phase: '*',            outcome: 'claim-unverifiable', next: '=',        prompt: 'claim-unverifiable-tree', note: 'claim-done refused: the work tree could not be snapshotted within the hook deadline' },
   { phase: '*',            outcome: 'claim-first',    next: 'cleanup',      prompt: 'cleanup',               note: 'once per run' },
   { phase: '*',            outcome: 'claim-again',    next: 'final-verify', prompt: 'final-verify',          note: 'drops a stale verify.json' },
   { phase: 'cleanup',      outcome: 'always',         next: 'final-verify', prompt: 'final-verify',          note: '' },

@@ -38,8 +38,10 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   checkbox counter, fence-aware), a green `test` run at the current iteration, and an
   unchanged work-tree **fingerprint** since that run (`shell/git.mjs`, SHA-256 of the
   index, binary-safe working diff and untracked file contents, excluding `.omc-loop/`).
-  An existing fingerprint that cannot be revalidated is stale; a test recorded outside
-  git has no fingerprint. Snapshot work shares the Stop hook deadline.
+  An existing fingerprint the hook cannot recompute (deadline, unreadable tree) is refused
+  with its own outcome, `claim-unverifiable`: the instruction says it is NOT a code change
+  and points at `.gitignore`, so Claude does not rerun the suite blindly. A test recorded
+  outside git has no fingerprint. Snapshot work shares the Stop hook deadline.
 - Verdicts (`core/verdicts.mjs`) are schema-checked. Malformed → journaled and treated as
   **missing**; missing → asked once, then a **failure** (review and final gate alike; the
   v1 "advance anyway" path is gone). When the declared verdict and the findings disagree,
@@ -56,7 +58,10 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   work) and handles renames on both sides.
 - Facts are usable only after successful Git queries. Timeouts, unavailable Git, failed
   status reads and missing ahead counts cannot confirm closure. A push must succeed as
-  well as leave HEAD not ahead. Staging/exclusion failures stop before commit.
+  well as leave HEAD not ahead. Staging/exclusion failures stop before commit. When the
+  facts say "not committed" and `git commit` itself failed, its last stderr line goes into
+  `error` (identity unknown, hooks, locked index): the human reads it in the notification
+  and in ESCALATION, never a bare "not verified".
 - `--no-push`: confirmed by the local commit alone; HEAD staying ahead is the user's choice.
 - Baseline-dirty files and a missing successful external opinion go into the **commit
   body**: durable, unlike notifications.
@@ -71,8 +76,14 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   refuses to overwrite a retained run. If even the state rename fails, report that the
   loop could not be disarmed. The explicit `disarm --no-archive` still permits deletion.
   Journal entries normally precede archival; failures are logged in the retained gate.
-  Across volumes, copy completely before publishing the summary and removing originals.
-  Incomplete archives are excluded from `runs list`.
+  `rename` is refused across volumes (`EXDEV`) and, on Windows, while an indexer, an
+  antivirus or a sync client (Google Drive, OneDrive) holds a file of the gate open
+  (`EPERM`/`EBUSY`/`EACCES`): lock codes get a few short retries, then both cases copy
+  completely before publishing the summary and removing originals. A partial copy is
+  removed; incomplete archives are excluded from `runs list`. If the copy is complete but
+  the locked originals cannot be removed, the run is published once, `state.json` is
+  deleted so the hook is dormant, and the result carries `leftover` (never a retained run:
+  a retry would duplicate the archive). Any other rename error retains the run.
 - `journal.jsonl` is append-only JSON lines; `readJournal` tolerates unparseable lines.
   `history` renders it; a new entry type needs a `formatEntry` case.
 - `PERSEVERANZA_HOME` overrides `~/.perseveranza` (tests use it: never touch the real home).

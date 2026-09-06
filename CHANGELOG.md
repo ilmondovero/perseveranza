@@ -3,6 +3,63 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.0.2
+
+Due passate di review sulla 2.0.1: una locale di Codex (`docs/CODE-REVIEW-2026-09-05.md`),
+concentrata sulle garanzie di completamento, e una seconda lettura di quel diff. Nessuna
+nuova funzionalità: solo casi in cui il loop diceva una cosa e ne faceva un'altra.
+
+- **La chiusura git non si conferma più senza prove leggibili.** Una deadline esaurita
+  durante `rev-parse` veniva letta come "non è un repo" e il progetto si chiudeva; un
+  `git status` fallito passava per working tree pulito; un `rev-list` fallito per zero
+  commit da pubblicare. Ora ogni fatto vale solo dopo una query git riuscita, il push deve
+  riuscire oltre a lasciare HEAD allineato, e un errore di staging o di esclusione di
+  `.omc-loop` ferma tutto prima del commit. Se `git commit` fallisce, l'ultima riga del
+  suo stderr (identità sconosciuta, hook, indice bloccato) arriva nella notifica e in
+  `ESCALATION.md`: prima si leggeva solo "commit non verificato".
+- **Impronta del working tree rifatta.** Quella vecchia era il diff rispetto a HEAD più
+  l'elenco dei nomi non tracciati: cambiare il contenuto di un file già nuovo non la
+  toccava, due modifiche binarie potevano coincidere, due alberi puliti su commit diversi
+  davano la stessa impronta. La nuova combina indice, diff binario e contenuto dei file non
+  tracciati (percorsi NUL-delimited, lettura a blocchi entro la deadline dell'hook).
+  Un run armato con la vecchia impronta chiede un nuovo test verde al primo `claim-done`.
+- **Impronta non ricalcolabile ≠ codice cambiato.** Se l'hook non riesce a ricalcolare
+  l'impronta entro la deadline (tipicamente directory grandi non ignorate da git), il claim
+  è rifiutato con l'esito `claim-unverifiable` e la chiave `claim-unverifiable-tree`, che
+  dice a Claude che NON è una modifica del codice e lo manda a sistemare `.gitignore`.
+  Prima passava per `claim-stale` e Claude rilanciava la suite a vuoto fino a esaurire il
+  budget.
+- **Verdetti malformati non promuovono più.** Un `review.json`/`verify.json` illeggibile
+  lasciava valido un `report pass` precedente; `Number(blocking)` trasformava `null`,
+  `false`, `""` e `[]` in zero. Ora un artefatto malformato annulla il report precedente e
+  segue il percorso "missing"; `blocking` deve essere un intero JSON non negativo.
+- **Archivio fallito = niente si perde.** I percorsi di chiusura cancellavano `.omc-loop`
+  anche se l'archiviazione era fallita. Ora i file restano, `state.json` diventa
+  `state.disarmed.json` (hook dormiente), `status` spiega il recupero, `disarm` ritenta
+  conservando l'esito originale, `arm` rifiuta di sovrascrivere anche con `--force`.
+  Le cartelle di archivio sono univoche (`mkdtemp`); tra volumi la copia deve completarsi
+  prima di pubblicare `summary.json` e rimuovere gli originali; le copie parziali non
+  compaiono in `runs list`.
+- **Rename bloccata su Windows.** La prima versione del punto sopra ricadeva sulla copia
+  solo con `EXDEV`. Su Windows `renameSync` di una cartella con un file aperto dentro
+  fallisce con `EPERM` (verificato): un antivirus, l'indexer o un client di sync come
+  Google Drive facevano fallire l'archivio a fine run e bloccavano `arm` finché non si
+  faceva `disarm` a mano. Ora `EPERM`/`EBUSY`/`EACCES` ricevono qualche retry breve e poi
+  la stessa copia; se la copia è completa ma gli originali bloccati non si cancellano, il
+  run è pubblicato una volta sola, `state.json` viene rimosso e il resto resta come residuo
+  innocuo (`leftover` nel risultato) invece di un run "da recuperare" che al retry si
+  duplicherebbe.
+- **Stato danneggiato non interrompe più l'hook**: contenitori di tipo sbagliato
+  (`options: null`, `counters: "x"`) vengono sostituiti dai default invece di far sollevare
+  `normalizeState`, che nel catch esterno lasciava fermare Claude col loop armato.
+- **`hud off` non cancella più una statusline estranea**: riconosce solo il proprio
+  wrapper, preserva byte per byte le configurazioni altrui, ripristina l'intero oggetto
+  originale (anche `padding`) ed è idempotente; `settings.json` malformato produce un
+  errore senza sovrascrittura.
+- **Provider isolati per invocazione**: `grok`, `cursor` e `claude` girano in una directory
+  vuota creata con `mkdtempSync` a ogni chiamata e rimossa nel `finally`, invece della
+  temp condivisa.
+
 ## 2.0.1
 - **Reasoning per modello su `ollama-cloud`**: ogni voce di `OLLAMA_MODEL` (o di
   `ollama.model` nel config) può portare lo sforzo di ragionamento dopo un `#` —

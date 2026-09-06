@@ -81,6 +81,33 @@ vengono sostituiti con i default; i test coprono tutti e sette i gruppi di stato
   nessuna CLI esterna avviata. La directory dedicata non costituisce una sandbox
   e un processo che mantiene file aperti può impedirne la rimozione immediata.
 
+## Seconda lettura — 6 settembre 2026
+
+Rilettura del diff delle correzioni sopra, con verifiche empiriche su Windows.
+
+- **P1 — Rename bloccata su Windows faceva fallire l'archivio.** Il fallback a copia
+  scattava solo con `EXDEV`. Verificato: `renameSync` di una cartella con un file aperto
+  dentro fallisce con `EPERM`, quindi un handle tenuto da antivirus, indexer o client di
+  sync trasformava ogni fine run in un archivio fallito, con `arm` bloccato fino a un
+  `disarm` manuale. Ora `EPERM`/`EBUSY`/`EACCES` ricevono retry brevi e poi la copia;
+  una copia parziale viene rimossa; se gli originali bloccati non si cancellano dopo una
+  copia completa, il run è pubblicato una volta sola e il residuo resta dormiente.
+  Test con `EXDEV`, `EPERM`, `EBUSY`, `EROFS` e originali bloccati.
+- **P2 — Impronta non ricalcolabile confusa con codice cambiato.** `ctx.fingerprint`
+  nullo produceva `claim-stale`, e l'istruzione mandava Claude a rilanciare la suite in
+  loop fino al budget. Nuovo esito `claim-unverifiable` con chiave
+  `claim-unverifiable-tree` (inglese e italiano) che spiega la causa reale e indirizza a
+  `.gitignore`. Riga in tabella, README rigenerati, test di macchina e di copertura.
+- **P3 — Motivo del commit fallito perso.** `gitFinish` scartava lo stderr di
+  `git commit`: l'umano leggeva "local commit not verified" senza sapere che mancava
+  l'identità git. L'ultima riga dello stderr entra in `error`, anche con `--no-push`.
+- **Processo.** Le correzioni non avevano voce nel CHANGELOG né versione: aggiunta la
+  2.0.2, che le riassume tutte col perché.
+
+Non toccato: `hud off` riconosce il wrapper solo per uguaglianza esatta del comando, quindi
+se `PERSEVERANZA_HOME` cambia tra `on` e `off` risponde "già spento". È la scelta che
+protegge le statusline altrui (un test la impone); il caso è raro e si sistema a mano.
+
 ## Validazione e limiti
 
 La suite iniziale passava 129 test. Prima delle correzioni, i nuovi casi e

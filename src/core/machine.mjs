@@ -215,9 +215,13 @@ export function step(input, event = {}, ctx = {}) {
     const t = s.lastTest;
     const testRequired = !!(s.options.testCmd || t);
     const freshGreen = !!t && Number(t.exitCode) === 0 && Number(t.iteration) === s.counters.iterations;
-    const stale = !!t && !!t.fingerprint && t.fingerprint !== ctx.fingerprint;
+    // A recorded snapshot must be revalidated: null means the shell could not recompute it
+    // (deadline, unreadable tree), which is NOT a code change and gets its own instruction.
+    const unverifiable = !!t && !!t.fingerprint && ctx.fingerprint == null;
+    const stale = !!t && !!t.fingerprint && !unverifiable && t.fingerprint !== ctx.fingerprint;
     if (openSteps > 0) return go('claim-open', { openSteps });
     if (testRequired && !freshGreen) return go('claim-no-test');
+    if (unverifiable) return go('claim-unverifiable');
     if (stale) return go('claim-stale');
     s.flags.repeated = false;
     s.counters.retries = 0;

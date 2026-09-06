@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-2.0.1-blue)
+![versione](https://img.shields.io/badge/versione-2.0.2-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -222,6 +222,7 @@ Requisiti: Claude Code e Node.js ≥ 20. Installazione manuale in alternativa al
 | any | claim-open | unchanged | `claim-open-steps`; claim-done refused: unchecked steps |
 | any | claim-no-test | unchanged | `claim-no-fresh-test`; claim-done refused: no fresh green test |
 | any | claim-stale | unchanged | `claim-stale-test`; claim-done refused: code changed after the test |
+| any | claim-unverifiable | unchanged | `claim-unverifiable-tree`; claim-done refused: the work tree could not be snapshotted within the hook deadline |
 | any | claim-first | cleanup | `cleanup`; once per run |
 | any | claim-again | final-verify | `final-verify`; drops a stale verify.json |
 | cleanup | always | final-verify | `final-verify` |
@@ -261,6 +262,6 @@ La CI gira su Ubuntu, macOS e Windows con Node 20 e 22. Per chi vuole entrare ne
 
 Stesso `.omc-loop/`, stessi verbi: un loop 1.x ancora armato viene migrato al primo Stop.
 L'installazione manuale vive ora in `~/.claude/perseveranza/` (rilancia `node install.mjs`).
-Chiavi del pack rimosse: `review-advance-no-outcome`, `verify-failed-no-outcome`; nuova:
-`claim-stale-test`. Disinstallazione: dal pannello `/plugin`, oppure
+Chiavi del pack rimosse: `review-advance-no-outcome`, `verify-failed-no-outcome`; nuove:
+`claim-stale-test`, `claim-unverifiable-tree`. Disinstallazione: dal pannello `/plugin`, oppure
 `node install.mjs --uninstall` (prima `hud off` se attivo).

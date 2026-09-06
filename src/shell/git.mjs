@@ -113,11 +113,18 @@ export function gitFinish(cwd, { task = '', push = true, baselineDirty: base = [
       + `${base.slice(0, 10).join(', ')}${base.length > 10 ? ` (+${base.length - 10} more)` : ''}.`
     : '';
   const extNote = externalNote ? `\n\nperseveranza note: ${externalNote}.` : '';
-  git(['commit', '-m', `perseveranza: ${task || 'project completed'}${baseNote}${extNote}`]);
+  const commit = git(['commit', '-m', `perseveranza: ${task || 'project completed'}${baseNote}${extNote}`]);
   const status = git(['status', '--porcelain'], 15000);
   if (status.status !== 0) return failed('cannot read git status; closure not verified');
   const head = git(['rev-parse', '--verify', 'HEAD'], 10000);
   const committed = head.status === 0 && !dirtyBeyondLoop(status.stdout);
+  // The facts decide, but when they say "not committed" the human needs git's own reason
+  // (identity unknown, hooks, locked index...): keep its last line.
+  const commitWhy = () => {
+    if (commit.status === 0) return 'commit did not happen (uncommitted changes remain)';
+    const last = `${commit.stderr}\n${commit.stdout}`.trim().split('\n').filter((l) => l.trim()).pop() || 'git commit failed';
+    return `commit failed: ${last.trim().slice(0, 160)}`;
+  };
   const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], 10000);
   const hasUpstream = upstream.status === 0;
   const aheadCount = () => {
@@ -126,8 +133,8 @@ export function gitFinish(cwd, { task = '', push = true, baselineDirty: base = [
     const value = result.stdout.trim();
     return result.status === 0 && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
   };
-  if (!push) return { ran: true, confirmed: committed, committed, pushed: false, pushSkipped: true, hasUpstream, ahead: aheadCount() };
-  if (!committed) return failed('local commit not verified; push skipped');
+  if (!push) return { ran: true, confirmed: committed, committed, pushed: false, pushSkipped: true, hasUpstream, ahead: aheadCount(), ...(committed ? {} : { error: commitWhy() }) };
+  if (!committed) return failed(`${commitWhy()}; push skipped`);
   const pushRes = git(['push'], PUSH_CAP_MS);
   const pushErr = pushRes.status === 0 ? '' : (pushRes.timedOut ? `push timed out (${Math.round(PUSH_CAP_MS / 1000)}s cap)` : (pushRes.stderr.trim().split('\n').pop() || 'push failed').slice(0, 100));
   const pushed = pushRes.status === 0 && hasUpstream && aheadCount() === 0;

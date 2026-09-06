@@ -175,7 +175,15 @@ test('claim-done refused when the code changed after the green test (fingerprint
   assert.equal(r.outcome, 'claim-stale');
   assert.ok(r.reason.includes('stale'));
   assert.equal(run(s, { planText: PLAN_DONE, fingerprint: 'aaa' }).outcome, 'claim-first');
-  assert.equal(run(s, { planText: PLAN_DONE, fingerprint: null }).outcome, 'claim-stale'); // previous proof cannot be verified
+  // a snapshot the shell could not recompute is refused too, but as its own outcome: it is not a code change
+  const u = run(s, { planText: PLAN_DONE, fingerprint: null });
+  assert.equal(u.outcome, 'claim-unverifiable');
+  assert.equal(u.state.phase, 'implement');
+  assert.ok(u.effects.find((e) => e.type === 'block').reason.includes('NOT a code change'));
+  assert.equal(run(s, { planText: PLAN_DONE }).outcome, 'claim-unverifiable'); // undefined counts as "not computed"
+  // no recorded snapshot (test outside git): nothing to revalidate
+  const noFp = { ...s, lastTest: { ...s.lastTest, fingerprint: null } };
+  assert.equal(run(noFp, { planText: PLAN_DONE, fingerprint: null }).outcome, 'claim-first');
 });
 
 test('claim-done without a suite -> cleanup once, then final-verify', () => {
@@ -343,6 +351,7 @@ test('every regular transition row is reachable through step()', () => {
   note(run(mk({ phase: 'implement', signals: { claimedDone: true } }), { planText: PLAN }));
   note(run(mk({ phase: 'implement', signals: { claimedDone: true }, options: { testCmd: 'x' } }), { planText: PLAN_DONE }));
   note(run(mk({ phase: 'implement', signals: { claimedDone: true }, lastTest: { cmd: 'x', exitCode: 0, iteration: 0, fingerprint: 'a' } }), { planText: PLAN_DONE, fingerprint: 'b' }));
+  note(run(mk({ phase: 'implement', signals: { claimedDone: true }, lastTest: { cmd: 'x', exitCode: 0, iteration: 0, fingerprint: 'a' } }), { planText: PLAN_DONE, fingerprint: null }));
   note(run(mk({ phase: 'implement', signals: { claimedDone: true } }), { planText: PLAN_DONE }));
   note(run(mk({ phase: 'implement', signals: { claimedDone: true }, flags: { cleanedOnce: true } }), { planText: PLAN_DONE }));
   note(run(mk({ phase: 'cleanup' })));
