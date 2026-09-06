@@ -34,7 +34,7 @@ export function parseReviewVerdict(text) {
   if (p.error) return { ok: false, error: p.error };
   const v = p.value;
   if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, error: 'not an object' };
-  const blocking = Number(v.blocking);
+  const blocking = v.blocking;
   if (!Number.isInteger(blocking) || blocking < 0) return { ok: false, error: `blocking must be a non-negative integer (got ${JSON.stringify(v.blocking)})` };
   const f = validateFindings(v.findings);
   if (f.error) return { ok: false, error: f.error };

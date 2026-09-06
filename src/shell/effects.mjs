@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { appendJournal, readJournal, renderHistory } from './journal.mjs';
 import { notify } from './notify.mjs';
 import { gitFinish } from './git.mjs';
-import { archiveRun } from './archive.mjs';
+import { archiveRun, archiveFailureNote } from './archive.mjs';
 import { summarizeExternalOpinions, shortTs } from './util.mjs';
 import { countOpenSteps } from '../core/plan.mjs';
 import { finishProject } from '../core/machine.mjs';
@@ -71,6 +71,7 @@ export function executeEffects(effects, env) {
   const { paths, holder } = env;
   const processEnv = env.processEnv || process.env;
   let output = null;
+  let archiveResult = null;
   for (const e of effects) {
     switch (e.type) {
       case 'journal': appendJournal(paths.gateDir, e.entry); break;
@@ -80,7 +81,7 @@ export function executeEffects(effects, env) {
       case 'dropArtifact':
         try { rmSync(join(paths.gateDir, e.name), { force: true }); } catch { /* already gone */ }
         break;
-      case 'notify': notify(e.title, e.message, { env: processEnv }); break;
+      case 'notify': notify(e.title, [e.message, archiveResult && archiveFailureNote(archiveResult)].filter(Boolean).join(' · '), { env: processEnv }); break;
       case 'writeEscalation': writeEscalation(paths, holder.state, e.why); break;
       case 'gitFinish': {
         const s = holder.state;
@@ -95,11 +96,11 @@ export function executeEffects(effects, env) {
         break;
       }
       case 'archiveRun': {
-        const r = archiveRun(paths.gateDir, { projectName: paths.projectName, state: holder.state, outcome: e.outcome, env: processEnv });
-        if (!r.ok) appendJournal(paths.gateDir, { type: 'note', text: `archive failed: ${r.error}` });
+        archiveResult = archiveRun(paths.gateDir, { projectName: paths.projectName, state: holder.state, outcome: e.outcome, env: processEnv });
         break;
       }
       case 'disarm':
+        if (archiveResult && !archiveResult.ok) break;
         try { rmSync(paths.gateDir, { recursive: true, force: true }); } catch { /* best-effort */ }
         break;
       case 'allowStop': break;

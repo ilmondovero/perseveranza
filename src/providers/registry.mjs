@@ -9,7 +9,7 @@
 //   - cmdline(): fixed flags via shell (for npm .cmd shims on Windows), prompt on stdin;
 //   - argv():    argument array WITHOUT a shell (CLIs that reserve stdin and take the prompt
 //                as an argument: no quoting can break);
-//   - cwd():     isolated working directory for the child (headless auto-approval flags must
+//   - isolated:  a fresh temporary working directory for the child (headless auto-approval flags must
 //                apply to an empty temp dir, never to the repo; `claude -p` in the project dir
 //                would load OUR hook).
 //
@@ -24,6 +24,8 @@
 
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseTimeoutMs } from '../shell/util.mjs';
 
 // Model spec for the http transport: "glm-5.3#low,deepseek-v4-flash:0731#false".
@@ -78,20 +80,20 @@ export const PROVIDERS = {
     transport: 'cli',
     detect: ({ has }) => has('grok'),
     argv: (prompt) => ['grok', '-p', prompt, '--always-approve'],
-    cwd: () => tmpdir(),
+    isolated: true,
   },
   cursor: {
     transport: 'cli',
     detect: ({ has }) => has('cursor-agent'),
     argv: (prompt) => ['cursor-agent', '--print', '--force', '--trust', '--sandbox', 'disabled', prompt],
-    cwd: () => tmpdir(),
+    isolated: true,
   },
   claude: {
     transport: 'cli',
     // same vendor as the main session: a clean-context counter-check, not model diversity
     detect: ({ has }) => has('claude'),
     cmdline: () => 'claude -p',
-    cwd: () => tmpdir(),
+    isolated: true,
   },
   'ollama-cloud': {
     transport: 'http',
@@ -189,13 +191,26 @@ export async function askProvider(id, prompt, { env = {}, timeoutMs = null, mode
   const t = askTimeoutMs(env, timeoutMs);
   if (p.transport === 'http') return askHttpOllama(p, prompt, env, t, model);
   const opts = { encoding: 'utf8', timeout: t, env };
-  if (p.cwd) opts.cwd = p.cwd();
   let r;
-  if (p.argv) {
-    const [cmd, ...args] = p.argv(prompt);
-    r = spawn(cmd, args, opts);
-  } else {
-    r = spawn(p.cmdline(), { ...opts, shell: true, input: prompt });
+  let isolatedDir;
+  try {
+    if (p.isolated) {
+      isolatedDir = mkdtempSync(join(tmpdir(), `perseveranza-${id}-`));
+      opts.cwd = isolatedDir;
+    }
+    if (p.argv) {
+      const [cmd, ...args] = p.argv(prompt);
+      r = spawn(cmd, args, opts);
+    } else {
+      r = spawn(p.cmdline(), { ...opts, shell: true, input: prompt });
+    }
+  } catch (error) {
+    r = { error, status: null };
+  } finally {
+    if (isolatedDir) {
+      try { rmSync(isolatedDir, { recursive: true, force: true }); }
+      catch { /* a child may still hold files open: never mask its result */ }
+    }
   }
   if (r.error) {
     const hint = process.platform === 'win32' && p.argv && /EINVAL/i.test(String(r.error.code || r.error.message))

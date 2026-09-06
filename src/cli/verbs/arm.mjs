@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { gate, saveState, VerbError, positiveInt } from '../shared.mjs';
 import { defaultState, COMPLEXITIES } from '../../core/state.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
+import { RETAINED_STATE } from '../../shell/archive.mjs';
 import { baselineDirty } from '../../shell/git.mjs';
 import { detectAvailable, hasBinary, modelLabel, PROVIDERS } from '../../providers/registry.mjs';
 import { effectiveEnv, disabledProviders, detectLang } from '../../providers/config.mjs';
@@ -35,6 +36,9 @@ export function run({ argv, cwd, env }) {
   if (!task) throw new VerbError('Missing the task description: arm "<task>"');
   if (v.complexity && !COMPLEXITIES.includes(v.complexity)) throw new VerbError('Invalid --complexity: use low|medium|high');
   const paths = gate(cwd);
+  if (existsSync(join(paths.gateDir, RETAINED_STATE))) {
+    throw new VerbError('A previous run is retained in .omc-loop after an archive failure. Fix the archive destination and run `disarm` to archive it before arming a new task.');
+  }
   if (existsSync(paths.statePath) && !v.force) {
     throw new VerbError('perseveranza is ALREADY armed in this project. Use `status` to see it, `disarm` to stop it, or `arm --force` to overwrite it (the current loop is lost).');
   }

@@ -141,6 +141,15 @@ test('review: artifact wins over a stale verb report', () => {
   assert.equal(r.outcome, 'fail');
 });
 
+test('malformed verdict artifacts override a previous pass in both review phases', () => {
+  for (const [phase, name] of [['review', 'review'], ['final-verify', 'verify']]) {
+    const r = run(mk({ phase, signals: { lastReport: 'pass' } }), { artifacts: { [name]: '{broken' } });
+    assert.equal(r.outcome, 'missing', phase);
+    assert.equal(r.state.phase, phase);
+    assert.ok(!r.types.includes('gitFinish'));
+  }
+});
+
 // ---------------------------------------------------------------- claim-done
 test('claim-done refused with open steps', () => {
   const r = run(mk({ phase: 'implement', signals: { claimedDone: true } }), { planText: PLAN });
@@ -166,7 +175,7 @@ test('claim-done refused when the code changed after the green test (fingerprint
   assert.equal(r.outcome, 'claim-stale');
   assert.ok(r.reason.includes('stale'));
   assert.equal(run(s, { planText: PLAN_DONE, fingerprint: 'aaa' }).outcome, 'claim-first');
-  assert.equal(run(s, { planText: PLAN_DONE, fingerprint: null }).outcome, 'claim-first'); // not a git repo: skipped
+  assert.equal(run(s, { planText: PLAN_DONE, fingerprint: null }).outcome, 'claim-stale'); // previous proof cannot be verified
 });
 
 test('claim-done without a suite -> cleanup once, then final-verify', () => {

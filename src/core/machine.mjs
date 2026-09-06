@@ -144,7 +144,11 @@ export function step(input, event = {}, ctx = {}) {
       report = v.blocking === 0 ? 'pass' : 'fail';
       verdictSrc = 'review.json';
       J({ type: 'verdict', artifact: 'review.json', blocking: v.blocking, declaredBlocking: v.declaredBlocking, findings: v.findings.length, notes: v.notes });
-    } else J({ type: 'verdict', artifact: 'review.json', error: v.error, treatedAs: 'missing' });
+    } else {
+      report = 'none';
+      verdictSrc = 'review.json';
+      J({ type: 'verdict', artifact: 'review.json', error: v.error, treatedAs: 'missing' });
+    }
   } else if (phase === 'final-verify' && artifacts.verify != null) {
     effects.push({ type: 'dropArtifact', name: 'verify.json' });
     const v = parseVerifyVerdict(artifacts.verify);
@@ -152,7 +156,11 @@ export function step(input, event = {}, ctx = {}) {
       report = v.pass ? 'pass' : 'fail';
       verdictSrc = 'verify.json';
       J({ type: 'verdict', artifact: 'verify.json', pass: v.pass, declaredPass: v.declaredPass, findings: v.findings.length, notes: v.notes });
-    } else J({ type: 'verdict', artifact: 'verify.json', error: v.error, treatedAs: 'missing' });
+    } else {
+      report = 'none';
+      verdictSrc = 'verify.json';
+      J({ type: 'verdict', artifact: 'verify.json', error: v.error, treatedAs: 'missing' });
+    }
   }
 
   if (!COMPLEXITIES.includes(s.complexity)) s.complexity = 'medium';
@@ -207,7 +215,7 @@ export function step(input, event = {}, ctx = {}) {
     const t = s.lastTest;
     const testRequired = !!(s.options.testCmd || t);
     const freshGreen = !!t && Number(t.exitCode) === 0 && Number(t.iteration) === s.counters.iterations;
-    const stale = !!t && !!t.fingerprint && !!ctx.fingerprint && t.fingerprint !== ctx.fingerprint;
+    const stale = !!t && !!t.fingerprint && t.fingerprint !== ctx.fingerprint;
     if (openSteps > 0) return go('claim-open', { openSteps });
     if (testRequired && !freshGreen) return go('claim-no-test');
     if (stale) return go('claim-stale');
@@ -307,9 +315,9 @@ export function finishProject(input, gitResult = { ran: false }, ctx = {}) {
   let note = '';
   if (ctx.externalNote) J({ type: 'external-gate', note: ctx.externalNote });
   if (g.ran && !g.confirmed) {
-    const why = !g.committed ? 'commit did not happen (uncommitted changes remain)'
+    const why = g.error || (!g.committed ? 'commit did not happen (uncommitted changes remain)'
       : !g.hasUpstream ? 'push impossible: no upstream configured for the branch'
-        : `push not confirmed${g.pushErr ? ` (${g.pushErr})` : ''}`;
+        : `push not confirmed${g.pushErr ? ` (${g.pushErr})` : ''}`);
     s.phase = 'git-finish';
     s.signals.paused = true;
     J({ type: 'git', retry, confirmed: false, committed: !!g.committed, pushed: !!g.pushed, why });

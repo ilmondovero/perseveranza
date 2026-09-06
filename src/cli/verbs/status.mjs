@@ -1,9 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { gate, requireState } from '../shared.mjs';
 import { stepCounts } from '../../core/plan.mjs';
 import { iterationCap, tokensSpent } from '../../core/budget.mjs';
 import { outcomesFor } from '../../core/transitions.mjs';
 import { formatTokens } from '../../hud/render.mjs';
+import { RETAINED_STATE } from '../../shell/archive.mjs';
 
 export function summary(s, planText) {
   const c = stepCounts(planText);
@@ -35,7 +37,13 @@ export function summary(s, planText) {
 
 export function run({ argv, cwd }) {
   const paths = gate(cwd);
-  if (!existsSync(paths.statePath)) { console.log('perseveranza is NOT armed in this project.'); return 1; }
+  if (!existsSync(paths.statePath)) {
+    console.log('perseveranza is NOT armed in this project.');
+    if (existsSync(join(paths.gateDir, RETAINED_STATE))) {
+      console.log('Run artifacts retained in .omc-loop after an archive failure. Fix the archive destination and retry disarm.');
+    }
+    return 1;
+  }
   const s = requireState(paths);
   if (argv.includes('--json')) { console.log(JSON.stringify(s, null, 2)); return 0; }
   let planText = '';

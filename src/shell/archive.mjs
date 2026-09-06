@@ -1,13 +1,20 @@
 // The runs archive: ~/.perseveranza/runs/<project>/<timestamp>/ keeps a finished run's
 // .omc-loop/ (journal, plan, notes, external opinions, escalation) plus a summary.json.
-// Best-effort: a failure here never blocks the closure (the caller disarms anyway).
-import { existsSync, mkdirSync, renameSync, cpSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
+// On failure retain the gate locally and rename its state so the Stop hook is dormant.
+import { existsSync, mkdirSync, mkdtempSync, renameSync, cpSync, rmSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { runsDir } from './paths.mjs';
-import { readJournal } from './journal.mjs';
+import { readJournal, appendJournal } from './journal.mjs';
 import { tokensSpent } from '../core/budget.mjs';
 
 const safe = (s) => String(s).replace(/[^a-z0-9._-]/gi, '_').slice(0, 60) || 'project';
+export const RETAINED_STATE = 'state.disarmed.json';
+
+export function archiveFailureNote(result) {
+  if (result.ok) return '';
+  return `Archive failed: ${result.error}. Artifacts retained in ${result.retainedDir}. `
+    + `${result.disarmed ? 'Loop disarmed' : 'Could not disarm the loop'}; fix the archive destination and retry disarm.`;
+}
 
 export function buildSummary(state, journal, outcome) {
   const transitions = journal.filter((j) => j.type === 'transition');
@@ -35,22 +42,48 @@ export function buildSummary(state, journal, outcome) {
   };
 }
 
-// -> { ok: true, dir } | { ok: false, error }
+// -> { ok: true, dir } | { ok: false, error, retainedDir, disarmed }
 export function archiveRun(gateDir, { projectName, state, outcome, env = process.env } = {}) {
   try {
-    if (!existsSync(gateDir)) return { ok: false, error: 'gate missing' };
-    const summary = buildSummary(state, readJournal(gateDir), outcome);
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dir = join(runsDir(env), safe(projectName), stamp);
-    mkdirSync(dir, { recursive: true });
+    if (!existsSync(gateDir)) throw new Error('gate missing');
+    let summary = buildSummary(state, readJournal(gateDir), outcome);
+    // A retry keeps the original outcome (done/killed/budget), not "disarmed".
+    if (existsSync(join(gateDir, RETAINED_STATE))) {
+      try {
+        const saved = JSON.parse(readFileSync(join(gateDir, 'summary.json'), 'utf8'));
+        if (saved && typeof saved.outcome === 'string') summary = saved;
+      } catch { /* the original summary was unavailable */ }
+    }
     writeFileSync(join(gateDir, 'summary.json'), JSON.stringify(summary, null, 2));
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const projectDir = join(runsDir(env), safe(projectName));
+    mkdirSync(projectDir, { recursive: true });
+    const dir = mkdtempSync(join(projectDir, `${stamp}-`));
+    writeFileSync(join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
     const target = join(dir, 'omc-loop');
     try { renameSync(gateDir, target); }
-    catch { cpSync(gateDir, target, { recursive: true }); rmSync(gateDir, { recursive: true, force: true }); }
-    writeFileSync(join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
+    catch (e) {
+      if (e.code !== 'EXDEV') throw e;
+      // An interrupted copy must not appear as a completed run in runs list.
+      unlinkSync(join(dir, 'summary.json'));
+      cpSync(gateDir, target, { recursive: true, errorOnExist: true, force: false });
+      writeFileSync(join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
+      rmSync(gateDir, { recursive: true, force: true });
+    }
     return { ok: true, dir };
   } catch (e) {
-    return { ok: false, error: e.message };
+    const statePath = join(gateDir, 'state.json');
+    const retained = join(gateDir, RETAINED_STATE);
+    let error = e.message;
+    try {
+      if (existsSync(statePath)) {
+        if (existsSync(retained)) throw new Error(`${RETAINED_STATE} already exists`);
+        renameSync(statePath, retained);
+      }
+    } catch (failure) { error += `; retaining state: ${failure.message}`; }
+    const result = { ok: false, error, retainedDir: gateDir, disarmed: !existsSync(statePath) };
+    appendJournal(gateDir, { type: 'note', text: archiveFailureNote(result) });
+    return result;
   }
 }
 
@@ -66,6 +99,7 @@ export function listRuns(env = process.env) {
       if (!statSync(rd).isDirectory()) continue;
       let summary = null;
       try { summary = JSON.parse(readFileSync(join(rd, 'summary.json'), 'utf8')); } catch { /* no summary */ }
+      if (!summary || !existsSync(join(rd, 'omc-loop'))) continue;
       out.push({ id: `${proj}/${stamp}`, project: proj, stamp, dir: rd, summary });
     }
   }

@@ -29,6 +29,15 @@ test('normalizeState coerces bad numbers and unknown enums', () => {
   assert.equal(s.limits.maxRetries, 3);
 });
 
+test('normalizeState recovers malformed nested containers without crashing the hook', () => {
+  for (const key of ['counters', 'limits', 'usage', 'signals', 'flags', 'options', 'owner']) {
+    for (const value of [null, false, 42, 'broken', []]) {
+      const loaded = loadState({ schemaVersion: 2, phase: 'review', [key]: value });
+      assert.deepEqual(loaded.state[key], defaultState()[key], `${key}: ${JSON.stringify(value)}`);
+    }
+  }
+});
+
 test('isV1State detects the flat v1 layout', () => {
   assert.equal(isV1State({ phase: 'review', iterations: 3 }), true);
   assert.equal(isV1State({ schemaVersion: 2, phase: 'review' }), false);

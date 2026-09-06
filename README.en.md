@@ -125,6 +125,9 @@ verification adds a security lens.
 - **Nothing is lost.** At the end of a run `.omc-loop/` (journal, plan, notes, external
   opinions) is archived in `~/.perseveranza/runs/` with a `summary.json`: `runs list`,
   `runs show`.
+  If archival fails, files stay in `.omc-loop` and the loop is disarmed; `status` explains
+  recovery. Fix the destination and run `disarm` to retry archival. Until recovery,
+  `arm` refuses to overwrite the retained run.
 - **Caps and switches.** Adaptive iterations from the plan or `--max`, real tokens with
   `--budget-tokens`, fixes per step with `--max-retries`. Kill switch from any session:
   the `.omc-loop/STOP` file or `OMC_LOOP_KILL=1`.
@@ -179,7 +182,8 @@ The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/omc-lo
   locale does not count. For English: `--lang en` once, or `"lang": "en"` in the config.
 - **External models.** Auto-detected at arm: `codex`, `agy`, `grok`, `cursor`, `claude`
   itself as a clean-context counter-check, `ollama-cloud` via API. The prompt never goes
-  through a shell; auto-approving CLIs run in a temporary directory. A policy refusal or a
+  through a shell; auto-approving CLIs use a fresh empty temporary directory per invocation,
+  with cleanup at the end. A policy refusal or a
   timeout is not a finding: the binding verdict stays the verifier's.
 - **Per-model reasoning** (`ollama-cloud` only). Every entry of `model` can carry its own
   reasoning effort after a `#`: `glm-5.3#low`, `deepseek-v4-flash:0731#none`. Values:
@@ -191,7 +195,8 @@ The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/omc-lo
   defaults. A pack changes what is said, never the routing.
 - **Notifications.** BurntToast on Windows, `osascript` on macOS, `notify-send` on Linux;
   silent when absent. **HUD.** `hud on` adds the progress line to the statusline, composing
-  with the existing one.
+  with the existing one. `hud off` restores the original configuration only while the
+  current statusline still belongs to Perseveranza.
 
 Requirements: Claude Code and Node.js ≥ 20. Manual install as an alternative to the
 plugin: `node install.mjs` (never both). Caps and timeouts: [docs/loop-budget.md](docs/loop-budget.md).

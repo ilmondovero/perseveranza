@@ -31,7 +31,7 @@ test('review: the stricter reading wins when blocking under-counts critical find
 });
 
 test('review: malformed inputs are errors, never a pass', () => {
-  for (const bad of ['', '   ', 'not json', '[]', '{"blocking":"many"}', '{"blocking":-1}', '{"blocking":1.5}',
+  for (const bad of ['', '   ', 'not json', '[]', '{}', '{"blocking":null}', '{"blocking":false}', '{"blocking":""}', '{"blocking":[]}', '{"blocking":"0"}', '{"blocking":"many"}', '{"blocking":-1}', '{"blocking":1.5}',
     '{"blocking":0,"findings":"x"}', '{"blocking":0,"findings":[{"severity":"fatal"}]}', '{"blocking":0,"findings":[1]}']) {
     const r = parseReviewVerdict(bad);
     assert.equal(r.ok, false, `expected error for ${JSON.stringify(bad)}`);

@@ -60,6 +60,10 @@ const bool = (v, def) => (typeof v === 'boolean' ? v : def);
 // Fill defaults and coerce types on a v2 object. Never throws on odd input.
 export function normalizeState(raw) {
   const s = defaultState(raw && typeof raw === 'object' ? raw : {});
+  const defaults = defaultState();
+  for (const key of ['counters', 'limits', 'usage', 'signals', 'flags', 'options', 'owner']) {
+    if (!s[key] || typeof s[key] !== 'object' || Array.isArray(s[key])) s[key] = defaults[key];
+  }
   s.schemaVersion = SCHEMA_VERSION;
   s.task = String(s.task ?? '');
   if (!PHASES.includes(s.phase)) s.phase = 'plan';

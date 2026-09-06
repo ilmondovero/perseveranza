@@ -2,7 +2,7 @@
 // The Stop hook. Thin by design: read the event, gather facts, ask the core what to do,
 // execute the effects, print the decision. DORMANT until .omc-loop/state.json exists in
 // the cwd. Must never throw and must finish within the hook deadline.
-import { readFileSync, existsSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { gatePaths, ROOT, loopCommand } from './paths.mjs';
 import { loadState } from '../core/state.mjs';
@@ -10,7 +10,7 @@ import { step } from '../core/machine.mjs';
 import { executeEffects } from './effects.mjs';
 import { appendJournal } from './journal.mjs';
 import { notify } from './notify.mjs';
-import { archiveRun } from './archive.mjs';
+import { archiveRun, archiveFailureNote } from './archive.mjs';
 import { loadPromptLayers } from './packs.mjs';
 import { workTreeFingerprint } from './git.mjs';
 import { readTranscriptUsage } from './transcript.mjs';
@@ -42,9 +42,8 @@ function main() {
     appendJournal(paths.gateDir, { type: 'kill', via });
     let state = null;
     try { state = loadState(JSON.parse(readFileSync(paths.statePath, 'utf8'))).state; } catch { /* unreadable */ }
-    archiveRun(paths.gateDir, { projectName: paths.projectName, state, outcome: 'killed', env });
-    try { rmSync(paths.gateDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-    notify(TITLE, `Kill switch (${via}): loop disarmed - ${paths.projectName}`, { env });
+    const archived = archiveRun(paths.gateDir, { projectName: paths.projectName, state, outcome: 'killed', env });
+    notify(TITLE, archived.ok ? `Kill switch (${via}): loop disarmed - ${paths.projectName}` : archiveFailureNote(archived), { env });
     return null;
   }
 
@@ -54,9 +53,8 @@ function main() {
   const loaded = loadState(rawState);
   if (!loaded.state) {
     appendJournal(paths.gateDir, { type: 'note', text: `state.json unreadable (${loaded.error}): disarming` });
-    archiveRun(paths.gateDir, { projectName: paths.projectName, state: null, outcome: 'corrupt-state', env });
-    try { rmSync(paths.gateDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-    notify(TITLE, `state.json corrupt: loop disarmed - ${paths.projectName}`, { env });
+    const archived = archiveRun(paths.gateDir, { projectName: paths.projectName, state: null, outcome: 'corrupt-state', env });
+    notify(TITLE, archived.ok ? `state.json corrupt: loop disarmed - ${paths.projectName}` : archiveFailureNote(archived), { env });
     return null;
   }
   const holder = { state: loaded.state };
@@ -77,8 +75,8 @@ function main() {
   if (s.phase === 'final-verify') artifacts.verify = readArtifact('verify.json');
   const packs = loadPromptLayers({ gateDir: paths.gateDir, env, lang: s.options.lang, root: ROOT });
   for (const err of packs.errors) appendJournal(paths.gateDir, { type: 'prompt-pack', source: err.source, error: err.error });
-  // the fingerprint costs two git calls: only when a claim-done with a fingerprinted test is pending
-  const fingerprint = s.signals.claimedDone && s.lastTest && s.lastTest.fingerprint ? workTreeFingerprint(cwd) : null;
+  // Revalidate a pending claim within the hook's remaining time.
+  const fingerprint = s.signals.claimedDone && s.lastTest && s.lastTest.fingerprint ? workTreeFingerprint(cwd, { deadline: DEADLINE }) : null;
   const usage = evt && typeof evt.transcript_path === 'string' ? readTranscriptUsage(evt.transcript_path, s.armedAt) : null;
   maybeSpawnRefresh(env);
   const ctx = {

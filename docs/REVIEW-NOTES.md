@@ -36,12 +36,16 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
 
 - `claim-done` is accepted only with: plan fully ticked (`core/plan.mjs` is the ONLY
   checkbox counter, fence-aware), a green `test` run at the current iteration, and an
-  unchanged work-tree **fingerprint** since that run (`shell/git.mjs`, sha1 of the tracked
-  diff + untracked list; `null` outside git = check skipped).
+  unchanged work-tree **fingerprint** since that run (`shell/git.mjs`, SHA-256 of the
+  index, binary-safe working diff and untracked file contents, excluding `.omc-loop/`).
+  An existing fingerprint that cannot be revalidated is stale; a test recorded outside
+  git has no fingerprint. Snapshot work shares the Stop hook deadline.
 - Verdicts (`core/verdicts.mjs`) are schema-checked. Malformed → journaled and treated as
   **missing**; missing → asked once, then a **failure** (review and final gate alike; the
   v1 "advance anyway" path is gone). When the declared verdict and the findings disagree,
   the **stricter** reading wins (critical findings raise `blocking`, veto `pass`).
+  A malformed artifact also overrides a stale `report pass`; `blocking` must be a JSON
+  integer (no coercion of null, booleans, arrays or strings).
 - `maxRetries` means fixes **really granted**: with 3 the pause comes at the 4th failure.
 - Artifacts are consumed on read (`dropArtifact` effect): a verdict is never reused.
 
@@ -50,6 +54,9 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
 - Verified on **facts** (clean tree beyond `.omc-loop/`, HEAD not ahead of upstream), never
   on exit codes. `underLoop` matches by path **prefix** (a `src/omc-loop-helper.js` is real
   work) and handles renames on both sides.
+- Facts are usable only after successful Git queries. Timeouts, unavailable Git, failed
+  status reads and missing ahead counts cannot confirm closure. A push must succeed as
+  well as leave HEAD not ahead. Staging/exclusion failures stop before commit.
 - `--no-push`: confirmed by the local commit alone; HEAD staying ahead is the user's choice.
 - Baseline-dirty files and a missing successful external opinion go into the **commit
   body**: durable, unlike notifications.
@@ -57,9 +64,15 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
 ## Run archive and journal (`src/shell/archive.mjs`, `src/shell/journal.mjs`)
 
 - `.omc-loop/` is never just deleted at the end: `archiveRun` moves it to
-  `~/.perseveranza/runs/<project>/<stamp>/` with a `summary.json` first. Archive failure
-  never blocks the closure (`disarm` follows anyway). Journal entries are appended BEFORE
-  the archive effect: an entry written after would recreate the gate directory.
+  `~/.perseveranza/runs/<project>/<stamp>-<unique>/` with a `summary.json`.
+  On archive failure, keep every remaining artifact in place and rename `state.json`
+  to `state.disarmed.json` so the hook becomes dormant; never delete an unarchived gate.
+  `status` explains recovery, `disarm` retries the archive and `arm` (including `--force`)
+  refuses to overwrite a retained run. If even the state rename fails, report that the
+  loop could not be disarmed. The explicit `disarm --no-archive` still permits deletion.
+  Journal entries normally precede archival; failures are logged in the retained gate.
+  Across volumes, copy completely before publishing the summary and removing originals.
+  Incomplete archives are excluded from `runs list`.
 - `journal.jsonl` is append-only JSON lines; `readJournal` tolerates unparseable lines.
   `history` renders it; a new entry type needs a `formatEntry` case.
 - `PERSEVERANZA_HOME` overrides `~/.perseveranza` (tests use it: never touch the real home).
@@ -90,7 +103,9 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
 - Single source of truth: registry entry = detection + invocation + models. The prompt
   **never goes through a shell**: `cmdline()` (fixed flags, prompt on stdin) or `argv()`
   (pure argv, no shell). `claude`/`grok`/`cursor` run with an isolated `cwd` (a `claude -p`
-  in the project dir would load OUR hook).
+  in the project dir would load OUR hook). `isolated: true` allocates a fresh empty
+  directory with `mkdtempSync` per invocation; `finally` attempts cleanup on success,
+  nonzero exit, timeout and spawn exception. A dedicated cwd is not a sandbox.
 - Detecting ≠ working: `providers check` probes and writes the denylist with a reason;
   `providers enable` undoes. A refusal/timeout is never a finding.
 - `OLLAMA_API_KEY` lives only in env or `~/.perseveranza/config.json`; host validated
@@ -102,6 +117,9 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   `hud off`) and points `settings.json` at the stable wrapper in `~/.perseveranza/`; the
   resolver finds the newest installed `statusline.mjs` (plugin cache, marketplace clone,
   manual install).
+- Ownership matches our actual wrapper command, never a generic `statusline.mjs` name.
+  `hud off` preserves foreign settings byte for byte and is idempotent. The complete
+  original statusLine object is restored; malformed settings are never overwritten.
 - The statusline must stay fast: no synchronous network; the update check spawns detached
   with a `wx` lock.
 

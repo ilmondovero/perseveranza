@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, rmSyn
 import { join, dirname } from 'node:path';
 import { claudeDir, home, ROOT } from '../../shell/paths.mjs';
 import { loadConfig, saveConfig } from '../../providers/config.mjs';
+import { VerbError } from '../shared.mjs';
 
 // Enables/disables the perseveranza statusline by COMPOSING it with the existing one:
 // the base command is saved and restored, never replaced destructively.
@@ -15,15 +16,24 @@ export function run({ argv, env }) {
   const wrapper = join(home(env), 'statusline-hud.mjs');
   const resolverSrc = join(ROOT, 'src', 'hud', 'resolver.mjs');
   const ourCmd = `node "${wrapper.replace(/\\/g, '/')}"`;
-  const isOurs = (cmd) => typeof cmd === 'string' && /statusline(-hud)?\.mjs|hud\/(statusline|resolver)\.mjs/.test(cmd);
-  const readSettings = () => { try { return JSON.parse(readFileSync(settingsPath, 'utf8')) || {}; } catch { return {}; } };
+  const isOurs = (cmd) => typeof cmd === 'string' && cmd.replace(/\\/g, '/').trim() === ourCmd;
+  const readSettings = () => {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('expected a JSON object');
+      return settings;
+    } catch (e) {
+      if (e.code === 'ENOENT') return {};
+      throw new VerbError(`Cannot read ${settingsPath}: ${e.message}. Settings were not changed.`);
+    }
+  };
 
   if (sub === 'on') {
     const st = readSettings();
     const cur = st.statusLine && st.statusLine.command;
     if (!isOurs(cur)) {
       const cfg = loadConfig(env);
-      cfg.statusline = { ...(cfg.statusline || {}), base: cur || '' };
+      cfg.statusline = { ...(cfg.statusline || {}), base: cur || '', baseSettings: st.statusLine ?? null };
       saveConfig(cfg, env);
     }
     mkdirSync(dirname(wrapper), { recursive: true });
@@ -38,13 +48,24 @@ export function run({ argv, env }) {
   }
   if (sub === 'off') {
     const st = readSettings();
-    const base = loadConfig(env).statusline?.base || '';
-    if (base) st.statusLine = { type: 'command', command: base }; else delete st.statusLine;
+    if (!isOurs(st.statusLine?.command)) {
+      console.log('perseveranza HUD is already off. Current statusline preserved.');
+      return 0;
+    }
+    const cfg = loadConfig(env);
+    const base = cfg.statusline?.base || '';
+    if (cfg.statusline?.baseSettings) st.statusLine = cfg.statusline.baseSettings;
+    else if (base) st.statusLine = { type: 'command', command: base };
+    else delete st.statusLine;
     mkdirSync(cdir, { recursive: true });
     writeFileSync(settingsPath, JSON.stringify(st, null, 2));
     try { rmSync(wrapper, { force: true }); } catch { /* already gone */ }
-    const cfg = loadConfig(env);
-    if (cfg.statusline) { delete cfg.statusline.base; if (!Object.keys(cfg.statusline).length) delete cfg.statusline; saveConfig(cfg, env); }
+    if (cfg.statusline) {
+      delete cfg.statusline.base;
+      delete cfg.statusline.baseSettings;
+      if (!Object.keys(cfg.statusline).length) delete cfg.statusline;
+      saveConfig(cfg, env);
+    }
     console.log(`perseveranza HUD OFF. Statusline restored: ${base || '(none)'}`);
     return 0;
   }

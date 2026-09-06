@@ -133,7 +133,7 @@ test('test verb: fingerprint inside a git repo changes when the tree changes', (
   arm(p);
   cli(p, 'test', '--', 'node', '-e', '0');
   const a = readState(p).lastTest.fingerprint;
-  assert.ok(a && a.length === 40);
+  assert.match(a, /^[0-9a-f]{64}$/);
   writeFileSync(join(p.dir, 'new.txt'), 'x');
   cli(p, 'test', '--', 'node', '-e', '0');
   const b = readState(p).lastTest.fingerprint;

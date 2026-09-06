@@ -110,7 +110,7 @@ test('providers: registry, detection, models, timeouts', () => {
   const hostile = 'a" ; rm -rf / ; $(x) %PATH% `y`';
   assert.deepEqual(PROVIDERS.grok.argv(hostile)[2], hostile);
   assert.deepEqual(PROVIDERS.cursor.argv(hostile).at(-1), hostile);
-  for (const id of ['grok', 'cursor', 'claude']) assert.ok(PROVIDERS[id].cwd().length > 0);
+  for (const id of ['grok', 'cursor', 'claude']) assert.equal(PROVIDERS[id].isolated, true);
 });
 
 test('parseModels: reasoning effort per model, aliases, invalid value kept apart', () => {

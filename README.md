@@ -127,6 +127,9 @@ verifica aggiunge una lente security.
   commit.
 - **Niente si perde.** A fine run `.omc-loop/` (journal, piano, note, pareri esterni) viene
   archiviata in `~/.perseveranza/runs/` con un `summary.json`: `runs list`, `runs show`.
+  Se l'archiviazione fallisce, i file restano in `.omc-loop` e il loop viene disattivato;
+  `status` indica il recupero. Sistemata la destinazione, `disarm` ritenta l'archiviazione.
+  Fino al recupero, `arm` impedisce di sovrascrivere il run conservato.
 - **Tetti e interruttori.** Iterazioni adattive dal piano o `--max`, token reali con
   `--budget-tokens`, fix per step con `--max-retries`. Kill switch da qualunque sessione:
   il file `.omc-loop/STOP` o `OMC_LOOP_KILL=1`.
@@ -181,7 +184,8 @@ I verbi con cui Claude, e tu, parlate al loop (`node "<root>/src/cli/omc-loop.mj
   conta.
 - **Modelli esterni.** Auto-rilevati all'arm: `codex`, `agy`, `grok`, `cursor`, la stessa
   `claude` come controprova a contesto pulito, `ollama-cloud` via API. Il prompt non passa
-  mai da una shell; le CLI che auto-approvano girano in una directory temporanea. Un
+  mai da una shell; le CLI che auto-approvano girano in una directory temporanea vuota,
+  distinta per ogni invocazione, con pulizia alla fine. Un
   rifiuto di policy o un timeout non è un finding: il verdetto vincolante resta quello del
   verificatore.
 - **Reasoning per modello** (solo `ollama-cloud`). Ogni voce di `model` può portare il proprio
@@ -194,7 +198,8 @@ I verbi con cui Claude, e tu, parlate al loop (`node "<root>/src/cli/omc-loop.mj
   default. Un pack cambia cosa si dice, mai il routing.
 - **Notifiche.** BurntToast su Windows, `osascript` su macOS, `notify-send` su Linux;
   silenziose se assenti. **HUD.** `hud on` aggiunge la riga di avanzamento alla statusline,
-  componendola con quella esistente.
+  componendola con quella esistente. `hud off` ripristina la configurazione originale
+  solo se la statusline corrente è ancora quella di Perseveranza.
 
 Requisiti: Claude Code e Node.js ≥ 20. Installazione manuale in alternativa al plugin:
 `node install.mjs` (mai le due insieme). Tetti e timeout: [docs/loop-budget.md](docs/loop-budget.md).
