@@ -31,7 +31,9 @@ test('every default template uses only its declared placeholders', () => {
 test('the operative verbs are in the defaults (the pack may reword, the verbs must stay)', () => {
   assert.ok(DEFAULT_PROMPTS['plan-write'].includes('{{LOOP}} complexity low|medium|high'));
   assert.ok(DEFAULT_PROMPTS['review-advance'].includes('{{LOOP}} claim-done'));
-  assert.ok(DEFAULT_PROMPTS['review-advance'].includes('{{LOOP}} test --'));
+  assert.ok(DEFAULT_PROMPTS['review-advance'].includes('{{testRun}}'));
+  assert.ok(DEFAULT_PROMPTS['hint-test-green'].includes('{{testRun}}'));
+  assert.ok(DEFAULT_PROMPTS['hint-verdict-file'].includes('{{verdictFile}}'));
   assert.ok(DEFAULT_PROMPTS['review-delegate'].includes('.omc-loop/review.json'));
   assert.ok(DEFAULT_PROMPTS['final-verify'].includes('.omc-loop/verify.json'));
   assert.ok(DEFAULT_PROMPTS['review-missing-outcome'].includes('report pass'));

@@ -54,13 +54,21 @@ export function baselineDirty(cwd) {
   return porcelainPaths(r.stdout);
 }
 
+// Files whose content never reaches an interpreter, compiler or test runner: documentation,
+// licences, changelogs. Not *.txt: requirements.txt and CMakeLists.txt are code. A change
+// confined to these keeps the CODE fingerprint stable, so the loop can say "only
+// documentation changed since the last green suite" instead of demanding another full run.
+// Git pathspec globs: `*.md` matches at any depth.
+export const DOC_PATHSPECS = ['*.md', '*.markdown', '*.rst', '*.adoc', 'docs/', 'doc/', 'LICENSE*', 'LICENCE*', 'CHANGELOG*', 'AUTHORS*', 'CONTRIBUTORS*', 'NOTICE*'];
+
 // Hash the index, binary-safe working diff, and the contents of untracked files.
 // The index covers clean commits and unborn branches; NUL-delimited paths preserve
 // Unicode, whitespace and newlines. null means the snapshot could not be verified.
-export function workTreeFingerprint(cwd, { deadline = Date.now() + 60000 } = {}) {
+// `exclude`: extra pathspecs left out of the snapshot (see DOC_PATHSPECS).
+export function workTreeFingerprint(cwd, { deadline = Date.now() + 60000, exclude = [] } = {}) {
   try {
     const git = makeGit(cwd, deadline);
-    const paths = ['--', '.', `:(exclude)${GATE_DIRNAME}`];
+    const paths = ['--', '.', `:(exclude)${GATE_DIRNAME}`, ...exclude.map((e) => `:(exclude)${e}`)];
     const index = git(['ls-files', '--stage', '-z', ...paths], 20000);
     if (index.status !== 0) return null;
     const diff = git(['diff', '--binary', '--no-ext-diff', '--no-textconv', ...paths], 20000);
@@ -90,6 +98,14 @@ export function workTreeFingerprint(cwd, { deadline = Date.now() + 60000 } = {})
     }
     return hash.digest('hex');
   } catch { return null; }
+}
+
+// Both snapshots at once: `full` is the whole tree, `code` leaves DOC_PATHSPECS out.
+// -> { full, code } (each null when it could not be computed within the deadline)
+export function treeFingerprints(cwd, { deadline = Date.now() + 60000 } = {}) {
+  const full = workTreeFingerprint(cwd, { deadline });
+  const code = full == null ? null : workTreeFingerprint(cwd, { deadline, exclude: DOC_PATHSPECS });
+  return { full, code };
 }
 
 // Commit + push at the end of the project, verified on FACTS (clean tree, HEAD not ahead

@@ -232,3 +232,74 @@ test('the hook never crashes the stop: a thrown error is journaled and Claude ma
   const r = fire(p);
   assert.equal(typeof r.raw, 'string');
 });
+
+test('a consumed verdict is kept as review-<n>.json / verify-<n>.json and the fix instruction names it', () => {
+  const p = project();
+  arm(p);
+  writePlan(p, PLAN);
+  fire(p); // plan -> implement
+  fire(p); // implement -> review
+  const it = readState(p).counters.iterations;
+  writeArtifact(p, 'review.json', { blocking: 1, findings: [{ severity: 'critical', desc: 'wrong', file: 'a.js:1' }] });
+  let r = fire(p);
+  assert.equal(r.state.phase, 'implement');
+  assert.ok(!existsSync(gate(p, 'review.json')));
+  const kept = gate(p, `review-${it}.json`);
+  assert.ok(existsSync(kept), 'review-<n>.json kept');
+  assert.equal(JSON.parse(readFileSync(kept, 'utf8')).findings[0].desc, 'wrong');
+  assert.ok(r.reason.includes(`.omc-loop/review-${it}.json`), r.reason);
+  assert.ok(journal(p).some((j) => j.type === 'verdict' && j.savedAs === `review-${it}.json` && j.details[0].desc === 'wrong'));
+  // the history renders where it went
+  assert.ok(cli(p, 'history').out.includes(`-> review-${it}.json`));
+});
+
+test('implement: an unchanged tree after a stop is asked to implement once, through the real hook', () => {
+  const p = project({ git: true });
+  arm(p);
+  writePlan(p, PLAN);
+  let r = fire(p); // plan -> implement, tree recorded
+  assert.equal(r.state.phase, 'implement');
+  r = fire(p); // nothing changed: idle, still implement
+  assert.equal(r.state.phase, 'implement');
+  assert.ok(r.reason.includes('nothing changed'), r.reason);
+  assert.ok(journal(p).some((j) => j.type === 'transition' && j.outcome === 'idle'));
+  r = fire(p); // asked once: now review
+  assert.equal(r.state.phase, 'review');
+  // a real change is never mistaken for idle
+  writeArtifact(p, 'review.json', { blocking: 0 });
+  r = fire(p);
+  assert.equal(r.state.phase, 'implement');
+  writeFileSync(join(p.dir, 'work.js'), 'changed');
+  r = fire(p);
+  assert.equal(r.state.phase, 'review');
+  assert.equal(journal(p).filter((j) => j.type === 'transition' && j.outcome === 'idle').length, 1);
+});
+
+test('claim-done through the real hook: an older green on the same tree, or after docs-only edits, is accepted', () => {
+  const p = project({ git: true });
+  arm(p, 't', ['--test', 'node -e 0']);
+  writePlan(p, '- [x] one\n');
+  fire(p);
+  cli(p, 'test');
+  const testIt = readState(p).lastTest.iteration;
+  // burn iterations without touching the code
+  writeFileSync(join(p.dir, 'x.js'), 'a');
+  fire(p);
+  writeFileSync(join(p.dir, 'x.js'), 'b');
+  fire(p);
+  assert.ok(readState(p).counters.iterations > testIt);
+  // code changed since the test: stale
+  cli(p, 'claim-done');
+  let r = fire(p);
+  assert.ok(r.reason.includes('stale'), r.reason);
+  cli(p, 'test');
+  fire(p);
+  // documentation only since the green: accepted, journaled as docs-only
+  writeFileSync(join(p.dir, 'README.md'), 'hello\ndocs changed\n');
+  cli(p, 'claim-done');
+  r = fire(p);
+  assert.equal(r.state.phase, 'cleanup', r.reason);
+  assert.ok(journal(p).some((j) => j.type === 'transition' && j.testProof === 'docs-only'));
+  // the cleanup instruction says the suite is not rerun for documentation
+  assert.ok(r.reason.includes('test --if-needed -- node -e 0'), r.reason);
+});

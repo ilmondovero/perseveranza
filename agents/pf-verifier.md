@@ -15,8 +15,12 @@ to you in the prompt (full plan + total diff, or file list + excerpts).
 
 - Assume the work contains defects and try to demonstrate them.
 - Build edge cases and hostile inputs; look for unverified assumptions.
-- **Really run** the tests and the build with Bash, do not trust declarations: read real exit
-  codes and output. Check every claim against actual execution.
+- **Really run** the build and the tests that target the change with Bash, do not trust
+  declarations: read real exit codes and output. Check every claim against actual execution.
+  The one thing you may trust is the loop's own record: when the coordinator reports "Test
+  proof: the full suite is GREEN for the current work tree", that green was recorded by the
+  loop's `test` verb against a fingerprint of this exact tree, not declared by anyone. Do
+  not spend the gate rerunning that suite: spend it on the cases the suite does not cover.
 - Check that the plan was realised in full, not only in appearance.
 - Security lens: secrets, untrusted input, injection, path traversal, permissions.
 

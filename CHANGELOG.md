@@ -3,6 +3,57 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.1.0
+
+Nasce da un run reale di 14 ore su un progetto con una suite da 27 minuti: il lavoro era
+riuscito (tre difetti veri intercettati dalle review), ma il 40% del wall-clock era la
+stessa suite eseguita ~12 volte per lo stesso diff, dall'executor, dal reviewer, dal fix e
+dalla ri-review, mentre il verbo `test` ne aveva registrate 3. Il rigore del gate non
+cambia: cambia quante volte si paga la stessa prova.
+
+- **`test --if-needed`: la suite gira una volta per albero.** Se esiste un run verde con la
+  stessa impronta del working tree, il verbo non rilancia nulla, aggiorna la prova
+  all'iterazione corrente e lo dice (`green reused` nel journal). Il `claim-done` accetta
+  un verde di un'iterazione precedente quando l'impronta coincide ancora: l'impronta è
+  una prova più forte del numero di iterazione. Prima claim-done e cleanup pretendevano un
+  run nuovo anche a codice identico.
+- **La documentazione non fa scadere la prova.** Accanto all'impronta completa il verbo
+  registra un'impronta del solo codice (esclusi `*.md`, `docs/`, `LICENSE*`,
+  `CHANGELOG*`...). Se da un verde è cambiata solo la documentazione, `--if-needed` non
+  rilancia la suite e il claim è accettato con `test-proof=docs-only` nel journal. Nel run
+  di riferimento il cleanup aveva imposto una suite intera per due file markdown.
+- **Ogni fase riceve la "prova dei test".** Gli hint `hint-test-green` / `hint-test-none`
+  dicono a Claude se il verde registrato vale ancora per l'albero attuale, di non rilanciare
+  la suite e di dirlo ai subagent; i prompt di `pf-executor`, `pf-reviewer` e `pf-verifier`
+  chiedono test mirati e vietano la suite intera, perché un run fuori dal verbo non prova
+  nulla al loop. `{{testRun}}` usa `--if-needed` ovunque.
+- **Il verdetto consumato resta leggibile.** `review.json` / `verify.json` sono rinominati
+  in `review-<n>.json` / `verify-<n>.json` (effetto `keepArtifact`) invece di essere
+  cancellati; l'istruzione di fix indica il file (`hint-verdict-file`) e l'evento `verdict`
+  del journal porta i findings (`details`). Prima la fase di fix aveva solo i conteggi e
+  doveva risvegliare il reviewer per farsi rimandare l'elenco.
+- **Uno stop senza modifiche non avanza di fase.** L'hook calcola l'impronta a ogni fire e
+  la confronta con quella dello stop precedente (`state.tree`). In `implement`, albero
+  identico e nessun test registrato → esito `idle`, istruzione `implement-idle`, una volta
+  sola; poi la review procede comunque. Prima un turno chiuso con l'executor ancora in
+  esecuzione contava come "implementato" e la review era di niente.
+- **Test falliti registrati, rosso non riproducibile segnalato.** Il verbo `test` cattura
+  l'output (echo dal vivo), estrae i nomi dei test falliti (pytest, TAP, node:test/jest,
+  go, cargo) in `lastTest.failed`, e se sullo stesso albero un rosso diventa verde, o
+  falliscono test diversi, lo annota come `FLAKY` nel journal e a schermo. Nel run di
+  riferimento due suite intere sono andate a due test che contano battiti con la CPU al
+  100% per un client di sync.
+- **Provider: timeout spiegato e ritentato, raggiungibilità all'arm.** `ETIMEDOUT` di una
+  CLI diventa "timeout after Ns (raise it with OMC_ASK_TIMEOUT_MS or providers.timeouts.<id>)";
+  timeout ed errori di rete sono ritentati `OMC_ASK_RETRIES` volte (default 1, mai per un
+  exit code o un rifiuto). `providers check` e `arm --check` registrano l'esito in
+  `providers.lastCheck` e `arm` riporta chi ha risposto all'ultimo check, chi ha fallito e
+  chi non è mai stato provato: "rilevato" significava installato, e nel run di riferimento
+  dei 4 annunciati ne aveva risposto 1. Con `--check` i provider sono provati subito, in
+  parallelo, e quelli morti sono scartati per il run e disabilitati nel config.
+- Il bug di `ask ollama-cloud` con il modello passato come `glm-5.3#low` (HTTP 404) era
+  della 2.0.0 ed è già risolto dalla 2.0.1: il nome inviato è quello prima del `#`.
+
 ## 2.0.2
 
 Due passate di review sulla 2.0.1: una locale di Codex (`docs/CODE-REVIEW-2026-09-05.md`),

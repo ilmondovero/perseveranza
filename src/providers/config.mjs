@@ -2,7 +2,8 @@
 // {
 //   "ollama":    { "apiKey": "...", "model": "glm-5.3#low,deepseek-v4-flash:0731#none", "host": "https://ollama.com" },
 //   "providers": { "disabled": ["codex"], "disabledReasons": { "codex": {"at": "...", "reason": "..."} },
-//                  "timeouts": { "ollama-cloud": 300000 } },
+//                  "timeouts": { "ollama-cloud": 300000 },
+//                  "lastCheck": { "agy": {"ok": true, "at": "...", "ms": 1200}, "codex": {"ok": false, "at": "...", "error": "..."} } },
 //   "lang":      "it",
 //   "statusline": { "base": "<previous statusline command>" }
 // }
@@ -44,6 +45,32 @@ export function providerTimeoutOverride(id, env = process.env) {
   const t = ((loadConfig(env).providers || {}).timeouts || {})[id];
   const n = Number(t);
   return Number.isFinite(n) && n > 0 ? Math.max(1000, Math.trunc(n)) : null;
+}
+
+// The outcome of the last liveness probe per provider (`providers check`, `arm --check`):
+// what arm reports as "reachable" is this, not what happens to be installed.
+export function lastChecks(env = process.env) {
+  const l = (loadConfig(env).providers || {}).lastCheck;
+  return l && typeof l === 'object' && !Array.isArray(l) ? l : {};
+}
+
+export function recordCheck(id, { ok, ms, error = '' }, env = process.env) {
+  const cfg = loadConfig(env);
+  cfg.providers = cfg.providers || {};
+  cfg.providers.lastCheck = { ...(cfg.providers.lastCheck || {}), [id]: { ok: !!ok, at: new Date().toISOString(), ms: Number(ms) || 0, ...(ok ? {} : { error: String(error).slice(0, 300) }) } };
+  saveConfig(cfg, env);
+}
+
+// One line for arm/status: which detected providers answered the last probe, which never got one.
+export function reachabilitySummary(ids, checks) {
+  const ok = []; const failed = []; const never = [];
+  for (const id of ids) {
+    const c = checks && checks[id];
+    if (!c) never.push(id);
+    else if (c.ok) ok.push(`${id} (${String(c.at || '').slice(0, 10)})`);
+    else failed.push(`${id} (${c.error || 'probe failed'})`);
+  }
+  return { ok, failed, never };
 }
 
 // Record a provider as disabled with a reason (used by `providers check`).

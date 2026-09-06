@@ -1,5 +1,5 @@
 import { PROVIDERS, PROVIDER_IDS, detectAvailable, hasBinary, checkProvider, modelLabel } from '../../providers/registry.mjs';
-import { effectiveEnv, disabledProviders, disableProvider, enableProvider, loadConfig, providerTimeoutOverride } from '../../providers/config.mjs';
+import { effectiveEnv, disabledProviders, disableProvider, enableProvider, loadConfig, providerTimeoutOverride, lastChecks, recordCheck } from '../../providers/config.mjs';
 import { VerbError } from '../shared.mjs';
 
 // providers [list] | providers check [id...] [--keep] | providers enable <id>
@@ -8,6 +8,7 @@ export async function run({ argv, env }) {
   const provEnv = effectiveEnv(env);
   const disabled = disabledProviders(env);
   const reasons = (loadConfig(env).providers || {}).disabledReasons || {};
+  const checks = lastChecks(env);
   if (sub === 'list') {
     const available = detectAvailable({ has: hasBinary, env: provEnv, platform: process.platform, disabled: [] });
     for (const id of PROVIDER_IDS) {
@@ -18,9 +19,11 @@ export async function run({ argv, env }) {
       const t = providerTimeoutOverride(id, env);
       // For the http transport the configured models are the thing worth checking at a glance.
       const ms = p.transport === 'http' ? `  models: ${p.models(provEnv).map(modelLabel).join(', ')}` : '';
-      console.log(`  ${id.padEnd(13)} ${p.transport.padEnd(4)} ${dis ? 'DISABLED' : det ? 'detected' : 'absent'}${why}${t ? `  timeout ${t}ms` : ''}${ms}`);
+      const c = checks[id];
+      const probe = !det || dis ? '' : c ? `  last check: ${c.ok ? 'ok' : 'FAILED'} ${String(c.at).slice(0, 10)}` : '  never probed';
+      console.log(`  ${id.padEnd(13)} ${p.transport.padEnd(4)} ${dis ? 'DISABLED' : det ? 'detected' : 'absent'}${why}${probe}${t ? `  timeout ${t}ms` : ''}${ms}`);
     }
-    console.log('\nUse `providers check` to probe the detected ones; a dead provider is disabled in the config with the reason.');
+    console.log('\nUse `providers check` to probe the detected ones; a dead provider is disabled in the config with the reason. "detected" means installed, not reachable: only a check tells.');
     return 0;
   }
   if (sub === 'enable') {
@@ -41,6 +44,7 @@ export async function run({ argv, env }) {
       process.stdout.write(`  ${id.padEnd(13)} probing... `);
       const r = await checkProvider(id, { env: provEnv, timeoutMs: providerTimeoutOverride(id, env) || 60000 });
       console.log(r.ok ? `ok (${r.ms} ms)` : `ERROR (${r.ms} ms): ${r.output.split('\n')[0]}`);
+      recordCheck(id, { ok: r.ok, ms: r.ms, error: r.output.split('\n')[0] }, env);
       if (!r.ok) {
         failures++;
         if (!keep) { disableProvider(id, r.output.split('\n')[0] || 'probe failed', env); console.log(`    -> disabled in the config (providers enable ${id} to undo)`); }

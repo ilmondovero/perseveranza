@@ -238,3 +238,119 @@ test('hud on/off compose with the existing statusline and restore it', async () 
   assert.equal(JSON.parse(readFileSync(settings, 'utf8')).statusLine.command, 'echo base');
   assert.ok(!existsSync(join(p.home, 'statusline-hud.mjs')));
 });
+
+// ---------------------------------------------------------------- 2.1: test --if-needed, failures, flakiness
+test('test --if-needed reuses a green recorded for the same tree and refreshes its iteration', () => {
+  const p = project({ git: true });
+  arm(p);
+  patchState(p, (s) => { s.counters.iterations = 2; });
+  const first = cli(p, 'test', '--if-needed', '--', 'node', '-e', '0');
+  assert.equal(first.code, 0);
+  assert.ok(first.out.includes('No green run recorded for this tree: running the suite.'));
+  assert.ok(first.out.includes('TEST GREEN (exit 0)'));
+  patchState(p, (s) => { s.counters.iterations = 5; });
+  const again = cli(p, 'test', '--if-needed');
+  assert.equal(again.code, 0);
+  assert.ok(again.out.includes('already recorded for this exact tree'), again.out);
+  assert.ok(!again.out.includes('Running:'));
+  const s = readState(p);
+  assert.equal(s.lastTest.iteration, 5);
+  assert.equal(s.lastTest.exitCode, 0);
+  const j = journal(p).filter((e) => e.type === 'test');
+  assert.equal(j.length, 2);
+  assert.equal(j[1].reused, true);
+  assert.equal(j[1].docsOnly, false);
+  // a code change invalidates the reuse
+  writeFileSync(join(p.dir, 'code.js'), 'x');
+  const rerun = cli(p, 'test', '--if-needed');
+  assert.ok(rerun.out.includes('Running:'), rerun.out);
+  // a red run is never reused
+  cli(p, 'test', '--', 'node', '-e', '"process.exit(2)"');
+  assert.ok(cli(p, 'test', '--if-needed', '--', 'node', '-e', '0').out.includes('Running:'));
+});
+
+test('test --if-needed: only documentation changed -> suite not rerun, said and journaled', () => {
+  const p = project({ git: true });
+  arm(p);
+  cli(p, 'test', '--', 'node', '-e', '0');
+  const before = readState(p).lastTest;
+  assert.match(before.codeFingerprint, /^[0-9a-f]{64}$/);
+  assert.notEqual(before.codeFingerprint, before.fingerprint);
+  writeFileSync(join(p.dir, 'README.md'), 'hello\n\nmore docs\n');
+  writeFileSync(join(p.dir, 'CHANGELOG.md'), '# changes\n');
+  const r = cli(p, 'test', '--if-needed');
+  assert.equal(r.code, 0);
+  assert.ok(r.out.includes('only documentation changed since: suite NOT rerun'), r.out);
+  const after = readState(p).lastTest;
+  assert.equal(after.codeFingerprint, before.codeFingerprint);
+  assert.notEqual(after.fingerprint, before.fingerprint);
+  assert.ok(journal(p).some((e) => e.type === 'test' && e.reused && e.docsOnly));
+  // the refreshed full fingerprint now matches the tree: a plain --if-needed reuses again
+  assert.ok(cli(p, 'test', '--if-needed').out.includes('exact tree'));
+  // outside git nothing can be tied to a tree: the suite runs
+  const q = project();
+  arm(q);
+  cli(q, 'test', '--', 'node', '-e', '0');
+  assert.ok(cli(q, 'test', '--if-needed').out.includes('Cannot fingerprint the tree'));
+});
+
+test('test verb: failed test names are parsed from the output and a non-reproducible red is journaled', async () => {
+  const { parseFailedTests, flakinessNote } = await import('../../src/cli/verbs/test.mjs');
+  assert.deepEqual(parseFailedTests('FAILED tests/test_a.py::test_one - AssertionError\nFAILED tests/test_b.py::TestX::test_two\n'), ['tests/test_a.py::test_one', 'tests/test_b.py::TestX::test_two']);
+  assert.deepEqual(parseFailedTests('not ok 3 - counts beats # SKIP\nnot ok 4 - loop free\n'), ['counts beats', 'loop free']);
+  assert.deepEqual(parseFailedTests('  ✖ heartbeat (5.12ms)\n  ✕ jest style\n'), ['heartbeat', 'jest style']);
+  assert.deepEqual(parseFailedTests('--- FAIL: TestGo (0.00s)\ntest mod::t1 ... FAILED\n'), ['TestGo', 'mod::t1']);
+  assert.deepEqual(parseFailedTests('all green'), []);
+  assert.equal(flakinessNote(null, { exitCode: 1, failed: ['a'] }, true), '');
+  assert.equal(flakinessNote({ exitCode: 0 }, { exitCode: 1, failed: ['a'] }, true), '');
+  assert.equal(flakinessNote({ exitCode: 1, failed: ['a'] }, { exitCode: 1, failed: ['a'] }, true), '');
+  assert.equal(flakinessNote({ exitCode: 1, failed: ['a'] }, { exitCode: 0, failed: [] }, false), '');
+  assert.ok(flakinessNote({ exitCode: 1, failed: ['a'] }, { exitCode: 0, failed: [] }, true).includes('red not reproducible'));
+  assert.ok(flakinessNote({ exitCode: 1, failed: ['a', 'b'] }, { exitCode: 1, failed: ['b', 'c'] }, true).includes('a failed in the previous run'));
+
+  // through the real verb: a red with a parsed name, then green on the same tree
+  const p = project({ git: true });
+  arm(p);
+  const red = cli(p, 'test', '--', 'node', '-e', '"console.log(\'not ok 1 - heartbeat\'); process.exit(1)"');
+  assert.equal(red.code, 1);
+  assert.ok(red.out.includes('Failed: heartbeat'), red.out);
+  assert.deepEqual(readState(p).lastTest.failed, ['heartbeat']);
+  const green = cli(p, 'test', '--', 'node', '-e', '0');
+  assert.equal(green.code, 0);
+  assert.ok(green.out.includes('red not reproducible'), green.out);
+  const j = journal(p).filter((e) => e.type === 'test');
+  assert.deepEqual(j[0].failed, ['heartbeat']);
+  assert.ok(j[1].flaky.includes('heartbeat'));
+  assert.ok(cli(p, 'history').out.includes('FLAKY'));
+});
+
+test('arm reports reachability from the last provider check, and --check probes now', () => {
+  const p = project();
+  // only the http provider takes part: the CLIs installed on the developer's machine are disabled
+  const CLIS = ['codex', 'agy', 'grok', 'cursor', 'claude'];
+  writeFileSync(join(p.home, 'config.json'), JSON.stringify({ providers: { disabled: CLIS } }));
+  // a provider "detected" (its key is set) but never probed
+  p.env.OLLAMA_API_KEY = 'k';
+  const a = cli(p, 'arm', 'x', '--no-git-finish');
+  assert.equal(a.code, 0, a.out);
+  assert.ok(a.out.includes('External models for the second opinion: ollama-cloud'), a.out);
+  assert.ok(a.out.includes('never probed: ollama-cloud'), a.out);
+  cli(p, 'disarm', '--no-archive');
+  // a recorded failure is reported as such, not as "available"
+  writeFileSync(join(p.home, 'config.json'), JSON.stringify({ providers: { disabled: CLIS, lastCheck: { 'ollama-cloud': { ok: false, at: '2026-09-06T00:00:00.000Z', error: 'HTTP 404 model not found' } } } }));
+  const b = cli(p, 'arm', 'x', '--no-git-finish');
+  assert.ok(b.out.includes('FAILED the last check: ollama-cloud (HTTP 404 model not found)'), b.out);
+  cli(p, 'disarm', '--no-archive');
+  // --check probes now against an unreachable host: dropped for this run and disabled in the config
+  p.env.OLLAMA_HOST = 'http://127.0.0.1:9';
+  p.env.OMC_ASK_TIMEOUT_MS = '3000';
+  const c = cli(p, 'arm', 'x', '--no-git-finish', '--check');
+  assert.equal(c.code, 0, c.out);
+  assert.ok(c.out.includes('External models for the second opinion: none'), c.out);
+  assert.ok(c.out.includes('probed now: ollama-cloud: FAILED'), c.out);
+  assert.deepEqual(readState(p).options.externals, []);
+  const cfg = JSON.parse(readFileSync(join(p.home, 'config.json'), 'utf8'));
+  assert.deepEqual(cfg.providers.disabled, [...CLIS, 'ollama-cloud']);
+  assert.equal(cfg.providers.lastCheck['ollama-cloud'].ok, false);
+  assert.ok(cli(p, 'providers', 'list').out.includes('DISABLED'));
+});

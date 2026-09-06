@@ -18,7 +18,10 @@ NOT allowed to modify the source.
 - **Edge cases**: empty, boundary and null inputs, concurrency, unhandled errors.
 - **Regressions**: does the change break existing behaviour?
 - **Security**: secrets in code, untrusted input, injection, path traversal.
-- **Tests**: are there adequate tests for what was added or changed?
+- **Tests**: are there adequate tests for what was added or changed? Read them and run the
+  ones targeted at the change; do NOT rerun the whole suite. The coordinator tells you what
+  the loop has on record ("Test proof": the full suite green for this exact tree, recorded
+  by the loop itself, not self-declared): trust that record and spend the time on the diff.
 
 ## Rules
 

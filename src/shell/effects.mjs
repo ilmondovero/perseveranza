@@ -1,6 +1,6 @@
 // Executes the effects returned by the core, in order. The only place where the machine's
 // decisions touch the filesystem, git, the desktop and stdout.
-import { writeFileSync, rmSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { writeFileSync, rmSync, readFileSync, readdirSync, existsSync, renameSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendJournal, readJournal, renderHistory } from './journal.mjs';
 import { notify } from './notify.mjs';
@@ -81,6 +81,15 @@ export function executeEffects(effects, env) {
       case 'dropArtifact':
         try { rmSync(join(paths.gateDir, e.name), { force: true }); } catch { /* already gone */ }
         break;
+      case 'keepArtifact': {
+        // consumed, not lost: review.json -> review-<n>.json (copy+delete when rename is refused)
+        const from = join(paths.gateDir, e.name);
+        const to = join(paths.gateDir, e.as);
+        try { renameSync(from, to); } catch {
+          try { copyFileSync(from, to); rmSync(from, { force: true }); } catch { /* keep the original rather than lose it */ }
+        }
+        break;
+      }
       case 'notify': notify(e.title, [e.message, archiveResult && archiveFailureNote(archiveResult)].filter(Boolean).join(' · '), { env: processEnv }); break;
       case 'writeEscalation': writeEscalation(paths, holder.state, e.why); break;
       case 'gitFinish': {

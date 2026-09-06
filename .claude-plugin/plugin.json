@@ -1,7 +1,7 @@
 {
   "name": "perseveranza",
   "displayName": "Perseveranza",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "description": "Autonomous feedback loop for Claude Code: plan -> implement -> review -> adversarial final verification, with model routing by complexity",
   "author": {
     "name": "ilmondovero",

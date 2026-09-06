@@ -2,8 +2,8 @@
 // Pure: no filesystem access. The shell reads/writes the JSON; this module says what it means.
 //
 // Ownership (the contract the v1 comments described, now visible in the shape):
-//   phase, counters, flags, owner, usage  -> written only by the Stop hook
-//   signals, lastTest                     -> written only by the verbs
+//   phase, counters, flags, owner, usage, tree -> written only by the Stop hook
+//   signals, lastTest                          -> written only by the verbs
 //   options, limits                       -> written only by `arm` (and adaptive budget once)
 
 export const SCHEMA_VERSION = 2;
@@ -35,6 +35,8 @@ export function defaultState(overrides = {}) {
     lastTest: null,
     baselineDirty: [],
     owner: { sessionId: null, lastFireAt: 0 },
+    // the work tree as the hook last saw it: lets it notice a stop that changed nothing
+    tree: { fingerprint: null, iteration: 0 },
     armedAt: null,
     engineVersion: null,
   };
@@ -61,7 +63,7 @@ const bool = (v, def) => (typeof v === 'boolean' ? v : def);
 export function normalizeState(raw) {
   const s = defaultState(raw && typeof raw === 'object' ? raw : {});
   const defaults = defaultState();
-  for (const key of ['counters', 'limits', 'usage', 'signals', 'flags', 'options', 'owner']) {
+  for (const key of ['counters', 'limits', 'usage', 'signals', 'flags', 'options', 'owner', 'tree']) {
     if (!s[key] || typeof s[key] !== 'object' || Array.isArray(s[key])) s[key] = defaults[key];
   }
   s.schemaVersion = SCHEMA_VERSION;
@@ -99,8 +101,14 @@ export function normalizeState(raw) {
       iteration: num(s.lastTest.iteration, -1),
       at: s.lastTest.at ?? null,
       fingerprint: s.lastTest.fingerprint ?? null,
+      // the same snapshot without documentation files (null on states written before 2.1)
+      codeFingerprint: s.lastTest.codeFingerprint ?? null,
+      // names of the tests that failed, as far as the runner's output could be parsed
+      failed: Array.isArray(s.lastTest.failed) ? s.lastTest.failed.map(String) : [],
     };
   } else s.lastTest = null;
+  s.tree.fingerprint = typeof s.tree.fingerprint === 'string' && s.tree.fingerprint ? s.tree.fingerprint : null;
+  s.tree.iteration = Math.max(0, num(s.tree.iteration, 0));
   s.owner.sessionId = typeof s.owner.sessionId === 'string' && s.owner.sessionId ? s.owner.sessionId : null;
   s.owner.lastFireAt = Math.max(0, num(s.owner.lastFireAt, 0));
   return s;

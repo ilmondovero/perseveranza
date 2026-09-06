@@ -8,7 +8,9 @@
 //
 //   { type: 'journal', entry }               append to the run journal
 //   { type: 'saveState' }                    persist the returned state
-//   { type: 'dropArtifact', name }           delete .omc-loop/<name> (a verdict is consumed on read)
+//   { type: 'dropArtifact', name }           delete .omc-loop/<name> (a stale verdict, never read)
+//   { type: 'keepArtifact', name, as }        rename .omc-loop/<name> to <as> (a verdict consumed on
+//                                            read stays readable by the fix phase and the archive)
 //   { type: 'notify', title, message }       desktop notification (best-effort)
 //   { type: 'writeEscalation', why }         hand-off document for a human
 //   { type: 'gitFinish', retry }             commit+push (shell then calls finishProject)
@@ -51,11 +53,21 @@ function buildVars(s, ctx) {
   const extFraming = P('hint-ext-framing');
   const high = s.complexity === 'high';
   const implHint = high ? P('hint-impl-high', { executorRef: agentRef('pf-executor', 'a generic executor subagent') }) : '';
-  const testRun = s.options.testCmd ? `${LOOP} test -- ${s.options.testCmd}` : `${LOOP} test -- <test command>`;
+  const testRun = `${LOOP} test --if-needed -- ${s.options.testCmd || '<test command>'}`;
+  // What the recorded suite run proves about the CURRENT tree: the hint every phase gets so
+  // that neither Claude nor its subagents rerun a suite whose green is already on record.
+  const proof = testProof(s, ctx);
+  const testHint = !s.options.testCmd && !s.lastTest ? ''
+    : proof.green
+      ? P('hint-test-green', { testIteration: s.lastTest.iteration, docsOnlyNote: proof.docsOnly ? P('hint-test-docs-only') : '', testRun })
+      : P('hint-test-none', { testRun });
+  const verdictHint = ctx.verdictFile ? P('hint-verdict-file', { verdictFile: ctx.verdictFile }) : '';
   return {
     LOOP,
     P,
     implHint,
+    testHint,
+    verdictHint,
     extPlanHint: externals.length ? P('hint-ext-plan', { askHint: askHint('plan') }) : '',
     extFixHint: externals.length ? P('hint-ext-fix', { askHint: askHint('fix'), extFraming }) : '',
     extVerifyHint: externals.length ? P('hint-ext-verify', { askHint: askHint('verify'), extFraming }) : '',
@@ -72,6 +84,18 @@ function buildVars(s, ctx) {
   };
 }
 
+// Does the last recorded run prove the current tree green?
+//   green: exit 0 AND (same fingerprint, or same code with only documentation changed since)
+export function testProof(s, ctx) {
+  const t = s.lastTest;
+  if (!t || Number(t.exitCode) !== 0) return { green: false };
+  const full = !!t.fingerprint && ctx.fingerprint != null && t.fingerprint === ctx.fingerprint;
+  if (full) return { green: true, docsOnly: false };
+  const code = !!t.codeFingerprint && ctx.codeFingerprint != null && t.codeFingerprint === ctx.codeFingerprint;
+  if (code) return { green: true, docsOnly: true };
+  return { green: false };
+}
+
 function header(s, ctx, planText) {
   const next = clone(s);
   next.counters.iterations += 1; // the iteration about to start
@@ -80,7 +104,8 @@ function header(s, ctx, planText) {
   return `[perseveranza${ver} · ${renderProgress(next, planText)}${upd}] Task: ${s.task}.`;
 }
 
-export function step(input, event = {}, ctx = {}) {
+export function step(input, event = {}, ctx0 = {}) {
+  let ctx = ctx0;
   const s = clone(input);
   const effects = [];
   const J = (entry) => effects.push({ type: 'journal', entry });
@@ -114,6 +139,11 @@ export function step(input, event = {}, ctx = {}) {
     J({ type: 'usage', spent: tokensSpent(s.usage), delta: tokensSpent(s.usage) - before });
   }
 
+  // --- the tree as the hook sees it now, against the one at the previous stop ---
+  const treeBefore = s.tree && typeof s.tree === 'object' ? s.tree : { fingerprint: null, iteration: 0 };
+  s.tree = { fingerprint: ctx.fingerprint ?? null, iteration: s.counters.iterations };
+  const unchangedTree = ctx.fingerprint != null && treeBefore.fingerprint === ctx.fingerprint;
+
   // --- paused: a human is in the loop (or the loop gave up) ---
   if (s.signals.paused) return done('paused', [{ type: 'saveState' }, { type: 'allowStop' }]);
 
@@ -137,25 +167,30 @@ export function step(input, event = {}, ctx = {}) {
   s.signals.claimedDone = false;
   let verdictSrc = report === 'none' ? null : 'verb';
   const artifacts = ctx.artifacts || {};
+  // A verdict is consumed on read, but not thrown away: it is renamed after the iteration
+  // it judged, so the fix phase can reread the findings instead of asking the reviewer again.
+  const keptAs = (name) => name.replace(/\.json$/, `-${s.counters.iterations}.json`);
   if (phase === 'review' && artifacts.review != null) {
-    effects.push({ type: 'dropArtifact', name: 'review.json' });
+    ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs('review.json')}` };
+    effects.push({ type: 'keepArtifact', name: 'review.json', as: keptAs('review.json') });
     const v = parseReviewVerdict(artifacts.review);
     if (v.ok) {
       report = v.blocking === 0 ? 'pass' : 'fail';
       verdictSrc = 'review.json';
-      J({ type: 'verdict', artifact: 'review.json', blocking: v.blocking, declaredBlocking: v.declaredBlocking, findings: v.findings.length, notes: v.notes });
+      J({ type: 'verdict', artifact: 'review.json', blocking: v.blocking, declaredBlocking: v.declaredBlocking, findings: v.findings.length, notes: v.notes, savedAs: keptAs('review.json'), details: v.findings });
     } else {
       report = 'none';
       verdictSrc = 'review.json';
       J({ type: 'verdict', artifact: 'review.json', error: v.error, treatedAs: 'missing' });
     }
   } else if (phase === 'final-verify' && artifacts.verify != null) {
-    effects.push({ type: 'dropArtifact', name: 'verify.json' });
+    ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs('verify.json')}` };
+    effects.push({ type: 'keepArtifact', name: 'verify.json', as: keptAs('verify.json') });
     const v = parseVerifyVerdict(artifacts.verify);
     if (v.ok) {
       report = v.pass ? 'pass' : 'fail';
       verdictSrc = 'verify.json';
-      J({ type: 'verdict', artifact: 'verify.json', pass: v.pass, declaredPass: v.declaredPass, findings: v.findings.length, notes: v.notes });
+      J({ type: 'verdict', artifact: 'verify.json', pass: v.pass, declaredPass: v.declaredPass, findings: v.findings.length, notes: v.notes, savedAs: keptAs('verify.json'), details: v.findings });
     } else {
       report = 'none';
       verdictSrc = 'verify.json';
@@ -165,6 +200,7 @@ export function step(input, event = {}, ctx = {}) {
 
   if (!COMPLEXITIES.includes(s.complexity)) s.complexity = 'medium';
   const V = buildVars(s, ctx);
+  const proof = testProof(s, ctx);
   const H = () => header(s, ctx, planText);
   const say = (key, vars = {}) => `${H()} ${V.P(key, { ...V, ...vars })}`;
 
@@ -188,7 +224,7 @@ export function step(input, event = {}, ctx = {}) {
     s.phase = row.next;
     const reason = say(row.prompt, vars);
     s.counters.iterations += 1;
-    J({ type: 'transition', from: phase, to: s.phase, outcome, report, verdictSrc, claimed, prompt: row.prompt, iteration: s.counters.iterations });
+    J({ type: 'transition', from: phase, to: s.phase, outcome, report, verdictSrc, claimed, prompt: row.prompt, iteration: s.counters.iterations, ...(vars.testProof ? { testProof: vars.testProof } : {}) });
     return done(outcome, [...extraEffects, { type: 'saveState' }, { type: 'block', reason }]);
   };
 
@@ -214,22 +250,29 @@ export function step(input, event = {}, ctx = {}) {
     const openSteps = countOpenSteps(planText);
     const t = s.lastTest;
     const testRequired = !!(s.options.testCmd || t);
-    const freshGreen = !!t && Number(t.exitCode) === 0 && Number(t.iteration) === s.counters.iterations;
+    const green = !!t && Number(t.exitCode) === 0;
+    // Fresh = run in this very iteration, or run on this very tree: the fingerprint is the
+    // stronger evidence, so a green from an earlier iteration still counts when the code did
+    // not change since (documentation changes included: they run in no test).
+    const sameIteration = green && Number(t.iteration) === s.counters.iterations;
+    const fresh = sameIteration || proof.green;
     // A recorded snapshot must be revalidated: null means the shell could not recompute it
     // (deadline, unreadable tree), which is NOT a code change and gets its own instruction.
     const unverifiable = !!t && !!t.fingerprint && ctx.fingerprint == null;
-    const stale = !!t && !!t.fingerprint && !unverifiable && t.fingerprint !== ctx.fingerprint;
+    const stale = green && !!t.fingerprint && !unverifiable && !proof.green;
     if (openSteps > 0) return go('claim-open', { openSteps });
-    if (testRequired && !freshGreen) return go('claim-no-test');
+    if (testRequired && !green) return go('claim-no-test');
     if (unverifiable) return go('claim-unverifiable');
     if (stale) return go('claim-stale');
+    if (testRequired && !fresh) return go('claim-no-test');
     s.flags.repeated = false;
     s.counters.retries = 0;
+    const testProofKind = !t ? 'none' : sameIteration ? 'same-iteration' : proof.docsOnly ? 'docs-only' : 'same-tree';
     if (!s.flags.cleanedOnce) {
       s.flags.cleanedOnce = true;
-      return go('claim-first');
+      return go('claim-first', { testProof: testProofKind });
     }
-    return go('claim-again', {}, [{ type: 'dropArtifact', name: 'verify.json' }]);
+    return go('claim-again', { testProof: testProofKind }, [{ type: 'dropArtifact', name: 'verify.json' }]);
   }
 
   switch (phase) {
@@ -254,6 +297,14 @@ export function step(input, event = {}, ctx = {}) {
       return go('no-plan');
     }
     case 'implement': {
+      // The tree is byte-for-byte what it was at the previous stop and no test ran: the step
+      // was not implemented (a subagent still running when the turn ended, typically).
+      // Reviewing nothing would burn a review round and desynchronise the phases: ask once.
+      const ranTest = !!s.lastTest && Number(s.lastTest.iteration) === s.counters.iterations;
+      if (unchangedTree && !ranTest && !s.flags.repeated) {
+        s.flags.repeated = true;
+        return go('idle');
+      }
       s.flags.repeated = false;
       return go('always', {}, [{ type: 'dropArtifact', name: 'review.json' }]);
     }

@@ -17,7 +17,9 @@
 // see parseModels() below.
 //
 // Timeout per opinion: OMC_ASK_TIMEOUT_MS (default 180 s, floor 1 s), per-provider override
-// in config ("providers.timeouts").
+// in config ("providers.timeouts"). A timeout or a network error is retried OMC_ASK_RETRIES
+// times (default 1): a slow CLI or a dropped connection is not a verdict on the provider.
+// A non-zero exit, an HTTP error or a policy refusal is NOT retried: the answer is what it is.
 //
 // SECURITY: the ollama-cloud key lives only in OLLAMA_API_KEY / the local config file; it is
 // never written to disk by us, never in artifacts, never in the repo.
@@ -130,6 +132,18 @@ export function askTimeoutMs(env = {}, override = null) {
   return override ?? parseTimeoutMs(env.OMC_ASK_TIMEOUT_MS, 180000);
 }
 
+export function askRetries(env = {}, override = null) {
+  if (Number.isInteger(override) && override >= 0) return override;
+  const n = Math.trunc(Number(env.OMC_ASK_RETRIES));
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 5) : 1;
+}
+
+// How to raise the timeout, spelled out where the failure is reported: a bare ETIMEDOUT
+// sent a real run looking for a broken CLI when the provider was only slow.
+function timeoutHint(id, timeoutMs) {
+  return `timeout after ${Math.round(timeoutMs / 1000)}s (raise it with OMC_ASK_TIMEOUT_MS or "providers.timeouts.${id}" in the config)`;
+}
+
 // The model can arrive already parsed (from models()), as a spec string ("glm-5.3#low"), or
 // missing: then the first configured one.
 function normalizeModel(model, p, env) {
@@ -177,17 +191,32 @@ async function askHttpOllama(p, prompt, env, timeoutMs, model) {
     const output = msg.content?.trim() || msg.thinking?.trim() || JSON.stringify(data).slice(0, 2000);
     return { ok: true, model: label, output };
   } catch (e) {
-    const why = e?.name === 'AbortError' ? `timeout after ${Math.round(timeoutMs / 1000)}s` : (e?.message || String(e));
-    return { ok: false, model: label, output: `network error: ${why}` };
+    const timedOut = e?.name === 'AbortError';
+    const why = timedOut ? timeoutHint('ollama-cloud', timeoutMs) : (e?.message || String(e));
+    return { ok: false, model: label, output: timedOut ? why : `network error: ${why}`, transient: true };
   } finally {
     clearTimeout(t);
   }
 }
 
-// Ask one provider (one model). Always resolves to { ok, model, output, exitCode? }.
-export async function askProvider(id, prompt, { env = {}, timeoutMs = null, model = null, spawn = spawnSync } = {}) {
+// Ask one provider (one model). Always resolves to { ok, model, output, exitCode?, attempts }.
+// Transient failures (timeout, network, spawn error) are retried; see askRetries().
+export async function askProvider(id, prompt, { env = {}, timeoutMs = null, model = null, spawn = spawnSync, retries = null } = {}) {
   const p = PROVIDERS[id];
   if (!p) return { ok: false, model: id, output: `unknown provider: ${id}. Available: ${PROVIDER_IDS.join(', ')}` };
+  const max = askRetries(env, retries);
+  let r;
+  for (let attempt = 1; attempt <= max + 1; attempt++) {
+    r = await askOnce(p, id, prompt, { env, timeoutMs, model, spawn });
+    r.attempts = attempt;
+    if (r.ok || !r.transient || attempt > max) break;
+  }
+  if (r.attempts > 1) r.output = `${r.output}${r.ok ? '' : ` [after ${r.attempts} attempts]`}`;
+  delete r.transient;
+  return r;
+}
+
+async function askOnce(p, id, prompt, { env, timeoutMs, model, spawn }) {
   const t = askTimeoutMs(env, timeoutMs);
   if (p.transport === 'http') return askHttpOllama(p, prompt, env, t, model);
   const opts = { encoding: 'utf8', timeout: t, env };
@@ -213,9 +242,11 @@ export async function askProvider(id, prompt, { env = {}, timeoutMs = null, mode
     }
   }
   if (r.error) {
-    const hint = process.platform === 'win32' && p.argv && /EINVAL/i.test(String(r.error.code || r.error.message))
+    const code = String(r.error.code || r.error.message || '');
+    if (/ETIMEDOUT/i.test(code)) return { ok: false, model: id, output: `cannot run ${id}: ${timeoutHint(id, t)}`, exitCode: null, transient: true };
+    const hint = process.platform === 'win32' && p.argv && /EINVAL/i.test(code)
       ? ' (probably a .cmd shim: on Windows this CLI needs the native binary)' : '';
-    return { ok: false, model: id, output: `cannot run ${id}: ${r.error.message}${hint}`, exitCode: null };
+    return { ok: false, model: id, output: `cannot run ${id}: ${r.error.message}${hint}`, exitCode: null, transient: !/ENOENT|EINVAL|EACCES/i.test(code) };
   }
   const out = `${r.stdout || ''}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim();
   const ok = r.status === 0;
@@ -225,6 +256,6 @@ export async function askProvider(id, prompt, { env = {}, timeoutMs = null, mode
 // Liveness probe: a trivial prompt with a short timeout. -> { id, ok, ms, output }
 export async function checkProvider(id, { env = {}, timeoutMs = 60000, spawn = spawnSync } = {}) {
   const t0 = Date.now();
-  const r = await askProvider(id, 'Reply with the single word OK.', { env, timeoutMs, spawn });
+  const r = await askProvider(id, 'Reply with the single word OK.', { env, timeoutMs, spawn, retries: 0 });
   return { id, ok: r.ok, ms: Date.now() - t0, output: String(r.output).slice(0, 300) };
 }

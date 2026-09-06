@@ -1,6 +1,6 @@
 ---
 description: Arm the perseveranza feedback loop (plan -> implement -> review -> adversarial final verification) and start the task
-argument-hint: <task description> [--max N] [--commit] [--external off] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--lang en]
+argument-hint: <task description> [--max N] [--commit] [--external off] [--check] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--lang en]
 ---
 
 Enable "perseveranza" mode for the task below and start working on it.
@@ -11,8 +11,9 @@ $ARGUMENTS
 
 Steps to run NOW, in order:
 
-1. If the text above contains flags (`--max N`, `--commit`, `--external off`, `--test "cmd"`,
-   `--no-git-finish`, `--no-push`, `--approve-plan`, `--budget-tokens N`, `--lang xx`),
+1. If the text above contains flags (`--max N`, `--commit`, `--external off`, `--check`,
+   `--test "cmd"`, `--no-git-finish`, `--no-push`, `--approve-plan`, `--budget-tokens N`,
+   `--lang xx`),
    REMOVE them from the task description and pass them to the command; otherwise keep the
    defaults. Escape double quotes inside the task. If the project has a test suite and the
    user did not pass `--test`, find it yourself (package.json, Makefile, pytest...) and pass
@@ -25,6 +26,9 @@ Steps to run NOW, in order:
    (`--commit` = atomic commit after every validated step; `--external off` = no comparison
    with external models, which are otherwise auto-detected: codex, agy, grok, cursor, claude
    (clean context but same vendor: prefer the others when available), ollama-cloud;
+   `--check` = probe the detected providers now and keep only those that answer (arm
+   otherwise reports what the last `providers check` found: detected means installed, not
+   reachable);
    `--test` = the suite command, claim-done will require a fresh green run; `--no-git-finish`
    = no automatic commit+push at the end; `--no-push` = local commit only at the end;
    `--approve-plan` = after the plan phase the loop PAUSES presenting the plan to the user
@@ -70,19 +74,28 @@ How the loop works (feedback):
   that file routes the loop; only if it is missing, you record the outcome with
   `report pass|fail`. A missing outcome is asked for once, then counts as a failed review.
   - blocking > 0 -> back to fixing the SAME step, and the fix gets re-reviewed (after the
-    configured number of fixes, default 3, the loop pauses and notifies the user);
+    configured number of fixes, default 3, the loop pauses and notifies the user); the
+    consumed verdict is kept as `.omc-loop/review-<n>.json`: reread the findings there;
   - blocking = 0 -> tick the step in `plan.md` (`- [x]`) and move to the next.
 - To run the test suite ALWAYS use the dedicated verb (the script runs the command and
   records the real exit code: the proof is not self-declared):
-  node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" test -- <command>
+  node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" test --if-needed -- <command>
+  `--if-needed` skips the run when a green is already recorded for the current tree (or when
+  only documentation changed since): the suite runs ONCE per tree, not once per agent. Per
+  step run only the tests targeted at the change, and tell the subagents (executor,
+  reviewer, verifier) to do the same: the full suite is the gate at claim-done. Every phase
+  instruction carries the current "Test proof" so nobody reruns a suite that is already
+  green on record. The verb records which tests failed; a red that does not reproduce on the
+  same tree is journaled as non-reproducible (a flaky test: do not chase it as a bug).
 - With `--commit`, after every passed review you commit the validated step (atomic commit).
 - If a fix fails twice, the next phase includes an independent diagnosis from an external
   model (if detected).
 - When ALL steps are ticked and the project is complete: run the test verb and, in the same
   response,
   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" claim-done
-  The claim is ACCEPTED only with a fresh green test run (when a suite is known) and only if
-  the code did not change after that run. -> first a cleanup round (only at the first claim:
+  The claim is ACCEPTED only with a green test run for the current tree (when a suite is
+  known): run in this iteration, or earlier if the code did not change since (documentation
+  edits do not count as code). -> first a cleanup round (only at the first claim:
   dead code, duplication, docs), then the adversarial final verification (independent
   subagent + falsification by an external model if detected; security lens for high
   complexity): the verifier writes `.omc-loop/verify.json` (`{"pass": true|false,
@@ -94,6 +107,9 @@ How the loop works (feedback):
   (journal, plan, notes, opinions) is archived in `~/.perseveranza/runs/` (verb `runs`).
 - If you need input from the user: run `pause`, then ask; when the user answers, run
   `resume` and continue.
+- If you stop with a delegated subagent still running, the next Stop sees a work tree
+  identical to the previous one and asks you (once) to finish the step instead of
+  reviewing nothing: wait for the subagent and check its result on disk before stopping.
 - Budget: iterations (adaptive from the plan, or `--max`) and optionally tokens
   (`--budget-tokens`); at the cap the loop stops by itself.
 - Manual interruption at any time:

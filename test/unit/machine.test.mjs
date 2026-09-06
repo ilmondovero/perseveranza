@@ -75,8 +75,32 @@ test('review.json blocking=0 -> advance, retries reset, artifact consumed', () =
   assert.equal(r.state.phase, 'implement');
   assert.equal(r.state.counters.retries, 0);
   assert.ok(r.reason.includes('Review passed'));
-  assert.ok(r.effects.some((e) => e.type === 'dropArtifact' && e.name === 'review.json'));
-  assert.ok(journal(r).some((j) => j.type === 'verdict' && j.artifact === 'review.json'));
+  // consumed on read, kept for the fix phase and the archive: review.json -> review-<n>.json
+  assert.ok(r.effects.some((e) => e.type === 'keepArtifact' && e.name === 'review.json' && e.as === 'review-0.json'));
+  assert.ok(!r.effects.some((e) => e.type === 'dropArtifact' && e.name === 'review.json'));
+  const v = journal(r).find((j) => j.type === 'verdict' && j.artifact === 'review.json');
+  assert.equal(v.savedAs, 'review-0.json');
+  assert.deepEqual(v.details, []);
+});
+
+test('review.json blocking>0: the fix instruction points at the kept findings file', () => {
+  const r = run(mk({ phase: 'review', counters: { iterations: 4 } }), { artifacts: { review: '{"blocking":1,"findings":[{"severity":"critical","desc":"off by one","file":"a.js:3"}]}' } });
+  assert.equal(r.outcome, 'fail');
+  assert.ok(r.effects.some((e) => e.type === 'keepArtifact' && e.as === 'review-4.json'));
+  assert.ok(r.reason.includes('.omc-loop/review-4.json'), r.reason);
+  const v = journal(r).find((j) => j.type === 'verdict');
+  assert.deepEqual(v.details, [{ severity: 'critical', desc: 'off by one', file: 'a.js:3' }]);
+  // outcome recorded through the verb: no file to point at
+  const viaVerb = run(mk({ phase: 'review', signals: { lastReport: 'fail' } }));
+  assert.equal(viaVerb.outcome, 'fail');
+  assert.ok(!viaVerb.reason.includes('review-'));
+});
+
+test('verify.json is kept as verify-<n>.json and the post-fix instruction points at it', () => {
+  const r = run(mk({ phase: 'final-verify', counters: { iterations: 9 } }), { artifacts: { verify: '{"pass":false,"findings":[{"severity":"critical","desc":"x"}]}' } });
+  assert.equal(r.outcome, 'fail');
+  assert.ok(r.effects.some((e) => e.type === 'keepArtifact' && e.name === 'verify.json' && e.as === 'verify-9.json'));
+  assert.ok(r.reason.includes('.omc-loop/verify-9.json'));
 });
 
 test('review.json blocking>0 -> fix on the same step, retries++', () => {
@@ -133,7 +157,7 @@ test('review: malformed review.json is journaled and treated as missing', () => 
   const r = run(mk({ phase: 'review' }), { artifacts: { review: '{"blocking":"lots"}' } });
   assert.equal(r.outcome, 'missing');
   assert.ok(journal(r).some((j) => j.type === 'verdict' && j.error));
-  assert.ok(r.effects.some((e) => e.type === 'dropArtifact'));
+  assert.ok(r.effects.some((e) => e.type === 'keepArtifact'));
 });
 
 test('review: artifact wins over a stale verb report', () => {
@@ -162,9 +186,23 @@ test('claim-done refused without a fresh green test when a suite is known', () =
   const s = mk({ phase: 'implement', signals: { claimedDone: true }, options: { testCmd: 'npm test' }, counters: { iterations: 5 } });
   const r = run(s, { planText: PLAN_DONE });
   assert.equal(r.outcome, 'claim-no-test');
-  assert.ok(r.reason.includes('test -- npm test'));
+  assert.ok(r.reason.includes('test --if-needed -- npm test'));
+  // an older green without a fingerprint (no git at test time) cannot be tied to this tree
   const old = { ...s, lastTest: { cmd: 'npm test', exitCode: 0, iteration: 4, at: 'x', fingerprint: null } };
   assert.equal(run(old, { planText: PLAN_DONE }).outcome, 'claim-no-test');
+  // an older green WITH a fingerprint that still matches the tree is a valid proof
+  const sameTree = { ...s, lastTest: { cmd: 'npm test', exitCode: 0, iteration: 2, at: 'x', fingerprint: 'fp', codeFingerprint: 'cfp' } };
+  const ok = run(sameTree, { planText: PLAN_DONE, fingerprint: 'fp', codeFingerprint: 'cfp' });
+  assert.equal(ok.outcome, 'claim-first');
+  assert.equal(journal(ok).find((j) => j.type === 'transition').testProof, 'same-tree');
+  // only documentation changed since: the code fingerprint still matches
+  const docs = run(sameTree, { planText: PLAN_DONE, fingerprint: 'other', codeFingerprint: 'cfp' });
+  assert.equal(docs.outcome, 'claim-first');
+  assert.equal(journal(docs).find((j) => j.type === 'transition').testProof, 'docs-only');
+  // code changed: stale, whatever the iteration
+  assert.equal(run(sameTree, { planText: PLAN_DONE, fingerprint: 'other', codeFingerprint: 'other' }).outcome, 'claim-stale');
+  // older green, tree not computable: no proof for this tree
+  assert.equal(run(sameTree, { planText: PLAN_DONE, fingerprint: null, codeFingerprint: null }).outcome, 'claim-unverifiable');
   const red = { ...s, lastTest: { cmd: 'npm test', exitCode: 1, iteration: 5, at: 'x', fingerprint: null } };
   assert.equal(run(red, { planText: PLAN_DONE }).outcome, 'claim-no-test');
 });
@@ -343,6 +381,7 @@ test('every regular transition row is reachable through step()', () => {
   note(run(mk({ options: { approvePlan: true } }), { planExists: true, planText: PLAN }));
   note(run(mk(), { planExists: true, planText: PLAN }));
   note(run(mk({ phase: 'implement' })));
+  note(run(mk({ phase: 'implement', tree: { fingerprint: 'same', iteration: 0 } }), { fingerprint: 'same' }));
   note(run(mk({ phase: 'review' }), { artifacts: { review: '{"blocking":0}' } }));
   note(run(mk({ phase: 'review' }), { artifacts: { review: '{"blocking":1}' } }));
   note(run(mk({ phase: 'review', counters: { retries: 3 } }), { artifacts: { review: '{"blocking":1}' } }));
@@ -365,4 +404,50 @@ test('every regular transition row is reachable through step()', () => {
   note(run(mk({ phase: 'weird' })));
   const expected = TRANSITIONS.map((r) => r.outcome).filter((o) => o !== 'kill'); // kill lives in the shell
   for (const o of new Set(expected)) assert.ok(reached.has(o), `outcome "${o}" never produced by step()`);
+});
+
+// ---------------------------------------------------------------- 2.1: idle stop, test proof
+test('implement: a stop that changed nothing and ran no test is asked to implement, once', () => {
+  const s = mk({ phase: 'implement', tree: { fingerprint: 'same', iteration: 3 }, counters: { iterations: 3 } });
+  const r = run(s, { fingerprint: 'same', codeFingerprint: 'c' });
+  assert.equal(r.outcome, 'idle');
+  assert.equal(r.state.phase, 'implement');
+  assert.equal(r.state.flags.repeated, true);
+  assert.ok(r.reason.includes('nothing changed'), r.reason);
+  assert.ok(!r.effects.some((e) => e.type === 'dropArtifact'));
+  // asked once: the second identical stop goes to review anyway
+  const again = run({ ...r.state, signals: { ...r.state.signals } }, { fingerprint: 'same', codeFingerprint: 'c' });
+  assert.equal(again.outcome, 'always');
+  assert.equal(again.state.phase, 'review');
+  assert.equal(again.state.flags.repeated, false);
+  // the tree the hook saw is recorded for the next stop
+  assert.equal(again.state.tree.fingerprint, 'same');
+});
+
+test('implement: a changed tree, a test in this iteration, or an unknown tree never count as idle', () => {
+  const base = { phase: 'implement', tree: { fingerprint: 'same', iteration: 3 }, counters: { iterations: 3 } };
+  assert.equal(run(mk(base), { fingerprint: 'changed' }).outcome, 'always');
+  assert.equal(run(mk({ ...base, lastTest: { cmd: 'x', exitCode: 1, iteration: 3, fingerprint: 'same' } }), { fingerprint: 'same' }).outcome, 'always');
+  assert.equal(run(mk(base), { fingerprint: null }).outcome, 'always');
+  assert.equal(run(mk({ phase: 'implement' }), { fingerprint: 'first' }).outcome, 'always'); // nothing recorded yet
+});
+
+test('test proof hint: green for this tree, docs-only, or none, in every phase that runs tests', () => {
+  const green = { cmd: 'npm test', exitCode: 0, iteration: 2, at: 'x', fingerprint: 'fp', codeFingerprint: 'cfp' };
+  const s = mk({ phase: 'review', lastTest: green, options: { testCmd: 'npm test' } });
+  const r = run(s, { fingerprint: 'fp', codeFingerprint: 'cfp', artifacts: { review: '{"blocking":1,"findings":[]}' } });
+  assert.ok(r.reason.includes('Test proof: the full suite is GREEN'), r.reason);
+  assert.ok(r.reason.includes('test --if-needed -- npm test'));
+  assert.ok(!r.reason.includes('only documentation changed'));
+  const docs = run(s, { fingerprint: 'other', codeFingerprint: 'cfp', artifacts: { review: '{"blocking":1,"findings":[]}' } });
+  assert.ok(docs.reason.includes('(only documentation changed since)'), docs.reason);
+  const none = run(s, { fingerprint: 'other', codeFingerprint: 'other', artifacts: { review: '{"blocking":1,"findings":[]}' } });
+  assert.ok(none.reason.includes('Test proof: no green full-suite run'), none.reason);
+  // no suite known and never run: nothing to say
+  const quiet = run(mk({ phase: 'implement' }), { fingerprint: 'a' });
+  assert.ok(!quiet.reason.includes('Test proof'));
+  // the review delegation carries it too, so the reviewer is told not to rerun the suite
+  const delegate = run(mk({ phase: 'implement', lastTest: green, tree: { fingerprint: 'old', iteration: 1 } }), { fingerprint: 'fp', codeFingerprint: 'cfp' });
+  assert.equal(delegate.outcome, 'always');
+  assert.ok(delegate.reason.includes('Test proof: the full suite is GREEN'));
 });

@@ -16,7 +16,11 @@ context you need.
 2. Explore the relevant code (existing patterns, conventions, tests) before writing.
 3. Implement the change clearly and precisely, consistent with the repo's style.
 4. Handle errors and edge cases; add or update tests for what you introduce.
-5. Run the relevant tests with Bash and make sure they pass before finishing.
+5. Run the tests TARGETED at what you changed with Bash and make sure they pass before
+   finishing. Do NOT run the whole suite: the loop records the full-suite proof through its
+   own `test` verb, keyed to a fingerprint of the tree, and reuses it while the code does not
+   change; a suite run from here proves nothing to the loop and, on a large project, costs
+   the coordinator half an hour per step.
 
 ## Rules
 

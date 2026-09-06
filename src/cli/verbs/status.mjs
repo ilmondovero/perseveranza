@@ -19,7 +19,7 @@ export function summary(s, planText) {
   lines.push(`  tokens:      ${spent ? formatTokens(spent) : 'not measured'}${s.limits.maxTokens ? ` / ${formatTokens(s.limits.maxTokens)}` : ''}`);
   lines.push(`  retries:     ${s.counters.retries}/${s.limits.maxRetries} review fixes, ${s.counters.finalFails}/${s.limits.maxRetries} final rejections`);
   lines.push(`  signals:     report=${s.signals.lastReport}${s.signals.claimedDone ? ', claim-done pending' : ''}`);
-  lines.push(`  last test:   ${s.lastTest ? `${s.lastTest.cmd} -> exit ${s.lastTest.exitCode} (iteration ${s.lastTest.iteration})` : 'none'}`);
+  lines.push(`  last test:   ${s.lastTest ? `${s.lastTest.cmd} -> exit ${s.lastTest.exitCode} (iteration ${s.lastTest.iteration}${s.lastTest.fingerprint ? ', tree ' + s.lastTest.fingerprint.slice(0, 8) : ''})${s.lastTest.failed && s.lastTest.failed.length ? ` failed: ${s.lastTest.failed.slice(0, 5).join(', ')}${s.lastTest.failed.length > 5 ? ', ...' : ''}` : ''}` : 'none'}`);
   lines.push(`  options:     ${[
     s.options.commitSteps ? 'commit per step' : null,
     s.options.gitFinish ? (s.options.gitPush ? 'git finish: commit+push' : 'git finish: local commit') : 'no git finish',

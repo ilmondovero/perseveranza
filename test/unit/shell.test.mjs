@@ -213,3 +213,63 @@ test('update: cmpSemver is numeric', () => {
   assert.ok(cmpSemver('2.0.0', '1.19.0') > 0);
   assert.equal(cmpSemver('1.2.3', '1.2.3'), 0);
 });
+
+test('askProvider: a timeout says how to raise it and is retried once, a real answer is not', async () => {
+  const { askProvider, askRetries } = await import('../../src/providers/registry.mjs');
+  assert.equal(askRetries({}), 1);
+  assert.equal(askRetries({ OMC_ASK_RETRIES: '3' }), 3);
+  assert.equal(askRetries({ OMC_ASK_RETRIES: '99' }), 5);
+  assert.equal(askRetries({ OMC_ASK_RETRIES: 'x' }), 1);
+  assert.equal(askRetries({}, 0), 0);
+  let calls = 0;
+  const timedOut = () => { calls++; return { status: null, error: Object.assign(new Error('spawnSync C:\\Windows\\system32\\cmd.exe ETIMEDOUT'), { code: 'ETIMEDOUT' }) }; };
+  const r = await askProvider('codex', 'x', { spawn: timedOut, env: { OMC_ASK_TIMEOUT_MS: '5000' } });
+  assert.equal(r.ok, false);
+  assert.equal(calls, 2);
+  assert.equal(r.attempts, 2);
+  assert.ok(r.output.includes('timeout after 5s'), r.output);
+  assert.ok(r.output.includes('OMC_ASK_TIMEOUT_MS'));
+  assert.ok(r.output.includes('providers.timeouts.codex'));
+  assert.ok(r.output.includes('after 2 attempts'));
+  // retries off
+  calls = 0;
+  await askProvider('codex', 'x', { spawn: timedOut, env: { OMC_ASK_RETRIES: '0' } });
+  assert.equal(calls, 1);
+  // a missing binary is final, not transient
+  calls = 0;
+  const gone = await askProvider('codex', 'x', { spawn: () => { calls++; return { error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) }; }, env: {} });
+  assert.equal(gone.ok, false);
+  assert.equal(calls, 1);
+  // a non-zero exit is the provider's answer: one attempt
+  calls = 0;
+  const refused = await askProvider('codex', 'x', { spawn: () => { calls++; return { status: 1, stdout: '', stderr: 'policy' }; }, env: {} });
+  assert.equal(refused.ok, false);
+  assert.equal(calls, 1);
+  assert.equal(refused.attempts, 1);
+  // second attempt succeeds: ok, no suffix
+  calls = 0;
+  const flaky = await askProvider('codex', 'x', { spawn: () => (++calls === 1 ? timedOut() : { status: 0, stdout: 'fine', stderr: '' }), env: {} });
+  assert.equal(flaky.ok, true);
+  assert.equal(flaky.output, 'fine');
+  assert.equal(flaky.attempts, 2);
+});
+
+test('config: last provider checks are recorded and summarised', async () => {
+  const { recordCheck, lastChecks, reachabilitySummary } = await import('../../src/providers/config.mjs');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const env = { PERSEVERANZA_HOME: mkdtempSync(join(tmpdir(), 'prs-cfg-')) };
+  assert.deepEqual(lastChecks(env), {});
+  recordCheck('agy', { ok: true, ms: 1200 }, env);
+  recordCheck('codex', { ok: false, ms: 180000, error: 'timeout after 180s' }, env);
+  const c = lastChecks(env);
+  assert.equal(c.agy.ok, true);
+  assert.equal(c.codex.error, 'timeout after 180s');
+  assert.equal(c.agy.error, undefined);
+  const s = reachabilitySummary(['agy', 'codex', 'grok'], c);
+  assert.equal(s.ok.length, 1);
+  assert.ok(s.ok[0].startsWith('agy ('));
+  assert.deepEqual(s.failed, ['codex (timeout after 180s)']);
+  assert.deepEqual(s.never, ['grok']);
+});

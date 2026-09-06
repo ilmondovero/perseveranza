@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-2.0.2-blue)
+![version](https://img.shields.io/badge/version-2.1.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -114,8 +114,21 @@ verification adds a security lens.
 ## The guarantees
 
 - **The script runs the test.** The `test` verb launches the suite and records the real
-  exit code plus a fingerprint of the work tree. `claim-done` is accepted only with a fresh
-  green run and code untouched afterwards.
+  exit code plus a fingerprint of the work tree. `claim-done` is accepted only with a green
+  run for the current tree: in the same iteration, or from an earlier one when the code did
+  not change since (a change confined to documentation files does not count).
+- **The suite runs once per tree, not once per agent.** `test --if-needed` does not rerun a
+  suite whose green is already recorded for the same tree, and every phase receives the
+  current "test proof", so Claude and its subagents run targeted tests instead of repeating
+  the whole suite out of caution. The verb also records which tests failed and flags a red
+  that does not reproduce on the same tree (a flaky test, not a bug).
+- **A consumed verdict is not lost.** `review.json` and `verify.json` are renamed to
+  `review-<n>.json` / `verify-<n>.json` when the loop reads them: the fix phase rereads the
+  findings there instead of asking the reviewer again.
+- **A stop that changed nothing does not advance.** When the work tree is identical to the
+  one at the previous stop and no test was recorded (typically a subagent still running when
+  the turn ended), the loop asks once to finish the step instead of sending nothing to
+  review.
 - **Verdicts have a schema.** `review.json` and `verify.json` are validated; when the
   declared verdict and the findings disagree the stricter reading wins; a malformed or
   missing file counts as a rejection, in the review and at the final gate alike.
@@ -147,6 +160,7 @@ The options of `/perseveranza`:
 | `--test "cmd"` | the suite (if you do not pass it, Claude finds it) |
 | `--approve-plan` | pause after the plan: you approve with `resume` |
 | `--external off` | no comparison with external models |
+| `--check` | probe the detected providers now: start only with those that answer |
 | `--no-git-finish` / `--no-push` | no commit+push at the end / local commit only |
 | `--lang en` | instructions in English (default: Italian) |
 
@@ -155,7 +169,7 @@ The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/omc-lo
 | verb | what it does |
 |---|---|
 | `status` · `history` · `explain` | readable summary · the run journal · transition table and next outcomes |
-| `test -- <cmd>` | runs the suite and records the proof |
+| `test [--if-needed] -- <cmd>` | runs the suite and records the proof; `--if-needed` skips it when a green is already recorded for this tree |
 | `report` · `complexity` · `claim-done` | Claude's signals to the loop |
 | `pause` · `resume` | suspend / resume (resume resets the retries) |
 | `ask <provider> <slot> -- <prompt>` | opinion of an external model, saved as an artifact |
@@ -177,6 +191,9 @@ The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/omc-lo
 }
 ```
 
+(`providers.lastCheck` is written by `providers check` and `arm --check`: it is what `arm`
+reports as reachable, as opposed to "installed".)
+
 - **Language.** The injected instructions are in Italian by default (`packs/it.json`).
   Precedence: `--lang` > `PERSEVERANZA_LANG` > `lang` in the config > Italian. The shell
   locale does not count. For English: `--lang en` once, or `"lang": "en"` in the config.
@@ -184,7 +201,11 @@ The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/omc-lo
   itself as a clean-context counter-check, `ollama-cloud` via API. The prompt never goes
   through a shell; auto-approving CLIs use a fresh empty temporary directory per invocation,
   with cleanup at the end. A policy refusal or a
-  timeout is not a finding: the binding verdict stays the verifier's.
+  timeout is not a finding: the binding verdict stays the verifier's. A timeout or a network
+  error is retried once (`OMC_ASK_RETRIES`) and the message says how to raise the limit
+  (`OMC_ASK_TIMEOUT_MS` or `providers.timeouts.<id>`); "detected" at arm means installed,
+  not reachable: `arm` reports the outcome of the last `providers check` and with `--check`
+  probes the providers right away, dropping for the run those that do not answer.
 - **Per-model reasoning** (`ollama-cloud` only). Every entry of `model` can carry its own
   reasoning effort after a `#`: `glm-5.3#low`, `deepseek-v4-flash:0731#none`. Values:
   `high`, `medium`, `low`, `max`, `true`, `false` (aliases for `false`: `none`, `off`);
@@ -210,21 +231,22 @@ plugin: `node install.mjs` (never both). Caps and timeouts: [docs/loop-budget.md
 | plan | no-plan | plan | `plan-write`; asked once; a second miss still goes to implement |
 | plan | approval | plan | `plan-approval`; pause; --approve-plan, once |
 | plan | ready | implement | `implement-first`; adaptive budget set here when --max was not given |
+| implement | idle | implement | `implement-idle`; asked once: the tree did not change since the previous stop and no test ran |
 | implement | always | review | `review-delegate`; drops a stale review.json |
 | review | pass | implement | `review-advance`; retries reset |
-| review | fail | implement | `review-fix`; retries++; external diagnosis from the 2nd fix |
+| review | fail | implement | `review-fix`; retries++; findings kept in review-<n>.json; external diagnosis from the 2nd fix |
 | review | fail-limit | review | pause + escalation (fixes exhausted) |
 | review | missing | review | `review-missing-outcome`; asked once |
 | review | missing-twice | implement | `review-fix`; counts as a failed review |
 | any | claim-open | unchanged | `claim-open-steps`; claim-done refused: unchecked steps |
-| any | claim-no-test | unchanged | `claim-no-fresh-test`; claim-done refused: no fresh green test |
+| any | claim-no-test | unchanged | `claim-no-fresh-test`; claim-done refused: no green test for this iteration or this tree |
 | any | claim-stale | unchanged | `claim-stale-test`; claim-done refused: code changed after the test |
 | any | claim-unverifiable | unchanged | `claim-unverifiable-tree`; claim-done refused: the work tree could not be snapshotted within the hook deadline |
 | any | claim-first | cleanup | `cleanup`; once per run |
 | any | claim-again | final-verify | `final-verify`; drops a stale verify.json |
 | cleanup | always | final-verify | `final-verify` |
 | final-verify | pass | git-finish | commit+push within the deadline, archive, disarm, notify |
-| final-verify | fail | implement | `verify-postfix`; finalFails++ |
+| final-verify | fail | implement | `verify-postfix`; finalFails++; findings kept in verify-<n>.json |
 | final-verify | fail-limit | final-verify | pause + escalation |
 | final-verify | missing | final-verify | `verify-missing-outcome`; asked once |
 | final-verify | missing-twice | implement | `verify-postfix`; counts as a failed verification |

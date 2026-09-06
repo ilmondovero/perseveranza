@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-2.0.2-blue)
+![versione](https://img.shields.io/badge/versione-2.1.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -117,7 +117,20 @@ verifica aggiunge una lente security.
 
 - **Il test lo esegue lo script.** Il verbo `test` lancia la suite, registra l'exit code
   reale e un'impronta del working tree. Il `claim-done` è accettato solo con un run verde
-  fresco e con il codice non toccato dopo.
+  per l'albero attuale: nella stessa iterazione, o di un'iterazione precedente se il codice
+  non è cambiato da allora (una modifica ai soli file di documentazione non conta).
+- **La suite gira una volta per albero, non una per agente.** `test --if-needed` non
+  rilancia una suite il cui verde è già registrato per lo stesso albero, e ogni fase riceve
+  la "prova dei test" corrente, così Claude e i suoi subagent eseguono i test mirati invece
+  di ripetere la suite intera per prudenza. Il verbo annota anche quali test sono falliti
+  e segnala un rosso che sullo stesso albero non si ripete (un test instabile, non un bug).
+- **Un verdetto consumato non si perde.** `review.json` e `verify.json` sono rinominati in
+  `review-<n>.json` / `verify-<n>.json` quando il loop li legge: la fase di fix rilegge i
+  findings da lì invece di richiederli al reviewer.
+- **Uno stop senza modifiche non avanza.** Se il working tree è identico a quello dello
+  stop precedente e nessun test è stato registrato (tipico: un subagent ancora in
+  esecuzione quando il turno finisce), il loop chiede una volta di completare lo step
+  invece di mandare il nulla in review.
 - **I verdetti hanno uno schema.** `review.json` e `verify.json` sono validati; se il
   verdetto dichiarato e i findings non concordano vince la lettura più severa; un file
   malformato o mancante conta come bocciatura, in review come al gate finale.
@@ -149,6 +162,7 @@ Le opzioni di `/perseveranza`:
 | `--test "cmd"` | la suite (se non la passi, Claude la individua) |
 | `--approve-plan` | pausa dopo il piano: approvi tu con `resume` |
 | `--external off` | nessun confronto con modelli esterni |
+| `--check` | prova subito i provider rilevati: parte solo con quelli che rispondono |
 | `--no-git-finish` / `--no-push` | niente commit+push a fine progetto / solo commit locale |
 | `--lang en` | istruzioni in inglese (default: italiano) |
 
@@ -157,7 +171,7 @@ I verbi con cui Claude, e tu, parlate al loop (`node "<root>/src/cli/omc-loop.mj
 | verbo | cosa fa |
 |---|---|
 | `status` · `history` · `explain` | sintesi leggibile · il journal del run · tabella delle transizioni e prossimi esiti |
-| `test -- <cmd>` | esegue la suite e registra la prova |
+| `test [--if-needed] -- <cmd>` | esegue la suite e registra la prova; `--if-needed` la salta se un verde è già registrato per questo albero |
 | `report` · `complexity` · `claim-done` | segnali di Claude verso il loop |
 | `pause` · `resume` | sospende / riprende (resume azzera i retry) |
 | `ask <provider> <slot> -- <prompt>` | parere di un modello esterno, salvato come artefatto |
@@ -179,6 +193,9 @@ I verbi con cui Claude, e tu, parlate al loop (`node "<root>/src/cli/omc-loop.mj
 }
 ```
 
+(`providers.lastCheck` è scritto da `providers check` e da `arm --check`: è ciò che `arm`
+riporta come raggiungibile, distinto da "installato".)
+
 - **Lingua.** Le istruzioni iniettate sono in italiano (`packs/it.json`). Precedenza:
   `--lang` > `PERSEVERANZA_LANG` > `lang` nel config > italiano. La locale della shell non
   conta.
@@ -187,7 +204,11 @@ I verbi con cui Claude, e tu, parlate al loop (`node "<root>/src/cli/omc-loop.mj
   mai da una shell; le CLI che auto-approvano girano in una directory temporanea vuota,
   distinta per ogni invocazione, con pulizia alla fine. Un
   rifiuto di policy o un timeout non è un finding: il verdetto vincolante resta quello del
-  verificatore.
+  verificatore. Un timeout o un errore di rete viene ritentato una volta
+  (`OMC_ASK_RETRIES`) e il messaggio dice come alzare il limite (`OMC_ASK_TIMEOUT_MS` o
+  `providers.timeouts.<id>`); "rilevato" all'arm significa installato, non raggiungibile:
+  `arm` riporta l'esito dell'ultimo `providers check` e con `--check` prova i provider
+  subito, scartando per il run quelli che non rispondono.
 - **Reasoning per modello** (solo `ollama-cloud`). Ogni voce di `model` può portare il proprio
   sforzo di ragionamento dopo un `#`: `glm-5.3#low`, `deepseek-v4-flash:0731#none`. Valori:
   `high`, `medium`, `low`, `max`, `true`, `false` (alias di `false`: `none`, `off`); senza
@@ -213,21 +234,22 @@ Requisiti: Claude Code e Node.js ≥ 20. Installazione manuale in alternativa al
 | plan | no-plan | plan | `plan-write`; asked once; a second miss still goes to implement |
 | plan | approval | plan | `plan-approval`; pause; --approve-plan, once |
 | plan | ready | implement | `implement-first`; adaptive budget set here when --max was not given |
+| implement | idle | implement | `implement-idle`; asked once: the tree did not change since the previous stop and no test ran |
 | implement | always | review | `review-delegate`; drops a stale review.json |
 | review | pass | implement | `review-advance`; retries reset |
-| review | fail | implement | `review-fix`; retries++; external diagnosis from the 2nd fix |
+| review | fail | implement | `review-fix`; retries++; findings kept in review-<n>.json; external diagnosis from the 2nd fix |
 | review | fail-limit | review | pause + escalation (fixes exhausted) |
 | review | missing | review | `review-missing-outcome`; asked once |
 | review | missing-twice | implement | `review-fix`; counts as a failed review |
 | any | claim-open | unchanged | `claim-open-steps`; claim-done refused: unchecked steps |
-| any | claim-no-test | unchanged | `claim-no-fresh-test`; claim-done refused: no fresh green test |
+| any | claim-no-test | unchanged | `claim-no-fresh-test`; claim-done refused: no green test for this iteration or this tree |
 | any | claim-stale | unchanged | `claim-stale-test`; claim-done refused: code changed after the test |
 | any | claim-unverifiable | unchanged | `claim-unverifiable-tree`; claim-done refused: the work tree could not be snapshotted within the hook deadline |
 | any | claim-first | cleanup | `cleanup`; once per run |
 | any | claim-again | final-verify | `final-verify`; drops a stale verify.json |
 | cleanup | always | final-verify | `final-verify` |
 | final-verify | pass | git-finish | commit+push within the deadline, archive, disarm, notify |
-| final-verify | fail | implement | `verify-postfix`; finalFails++ |
+| final-verify | fail | implement | `verify-postfix`; finalFails++; findings kept in verify-<n>.json |
 | final-verify | fail-limit | final-verify | pause + escalation |
 | final-verify | missing | final-verify | `verify-missing-outcome`; asked once |
 | final-verify | missing-twice | implement | `verify-postfix`; counts as a failed verification |

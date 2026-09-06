@@ -12,7 +12,7 @@ import { appendJournal } from './journal.mjs';
 import { notify } from './notify.mjs';
 import { archiveRun, archiveFailureNote } from './archive.mjs';
 import { loadPromptLayers } from './packs.mjs';
-import { workTreeFingerprint } from './git.mjs';
+import { treeFingerprints } from './git.mjs';
 import { readTranscriptUsage } from './transcript.mjs';
 import { parseTimeoutMs, boolEnv } from './util.mjs';
 import { currentVersion, updateAvailable, maybeSpawnRefresh } from '../update.mjs';
@@ -75,8 +75,10 @@ function main() {
   if (s.phase === 'final-verify') artifacts.verify = readArtifact('verify.json');
   const packs = loadPromptLayers({ gateDir: paths.gateDir, env, lang: s.options.lang, root: ROOT });
   for (const err of packs.errors) appendJournal(paths.gateDir, { type: 'prompt-pack', source: err.source, error: err.error });
-  // Revalidate a pending claim within the hook's remaining time.
-  const fingerprint = s.signals.claimedDone && s.lastTest && s.lastTest.fingerprint ? workTreeFingerprint(cwd, { deadline: DEADLINE }) : null;
+  // The tree at every stop, within the hook's remaining time: it revalidates a pending claim,
+  // tells the phases whether the recorded green still holds, and shows a stop that changed
+  // nothing. null = could not be computed (not a repo, deadline): never read as "changed".
+  const fps = treeFingerprints(cwd, { deadline: DEADLINE });
   const usage = evt && typeof evt.transcript_path === 'string' ? readTranscriptUsage(evt.transcript_path, s.armedAt) : null;
   maybeSpawnRefresh(env);
   const ctx = {
@@ -86,7 +88,8 @@ function main() {
     planExists,
     artifacts,
     overrides: packs.layers,
-    fingerprint,
+    fingerprint: fps.full,
+    codeFingerprint: fps.code,
     usage,
     version: currentVersion(ROOT),
     updateAvailable: updateAvailable(ROOT, env),

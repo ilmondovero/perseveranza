@@ -35,9 +35,15 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
 ## Proofs, not words
 
 - `claim-done` is accepted only with: plan fully ticked (`core/plan.mjs` is the ONLY
-  checkbox counter, fence-aware), a green `test` run at the current iteration, and an
-  unchanged work-tree **fingerprint** since that run (`shell/git.mjs`, SHA-256 of the
-  index, binary-safe working diff and untracked file contents, excluding `.omc-loop/`).
+  checkbox counter, fence-aware) and a green `test` run that proves the CURRENT tree:
+  either recorded at the current iteration, or earlier with a still-matching work-tree
+  **fingerprint** (`shell/git.mjs`, SHA-256 of the index, binary-safe working diff and
+  untracked file contents, excluding `.omc-loop/`). The verb records two fingerprints:
+  the full one and a **code** one that leaves `DOC_PATHSPECS` out (`*.md`, `docs/`,
+  `LICENSE*`... never `*.txt`: `requirements.txt` is code); a green whose code fingerprint
+  still matches is accepted as `docs-only`. The fingerprint is the stronger evidence, so
+  it is the iteration rule that yields, never the fingerprint rule. `test --if-needed`
+  applies the same comparison before running anything.
   An existing fingerprint the hook cannot recompute (deadline, unreadable tree) is refused
   with its own outcome, `claim-unverifiable`: the instruction says it is NOT a code change
   and points at `.gitignore`, so Claude does not rerun the suite blindly. A test recorded
@@ -49,7 +55,14 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   A malformed artifact also overrides a stale `report pass`; `blocking` must be a JSON
   integer (no coercion of null, booleans, arrays or strings).
 - `maxRetries` means fixes **really granted**: with 3 the pause comes at the 4th failure.
-- Artifacts are consumed on read (`dropArtifact` effect): a verdict is never reused.
+- Artifacts are consumed on read: a verdict is never reused. Consumed is not deleted: the
+  `keepArtifact` effect renames it to `review-<n>.json` / `verify-<n>.json` (n = the
+  iteration that consumed it) so the fix phase can reread the findings and the archive
+  keeps them; `dropArtifact` only removes a STALE file at phase entry, before any read.
+- The hook fingerprints the tree at every stop (`state.tree`, hook-owned). In `implement`,
+  an identical tree with no test recorded in this iteration is `idle`: asked once through
+  `flags.repeated`, then review proceeds regardless. A null fingerprint (no git, deadline)
+  never counts as unchanged.
 
 ## Git closure (`src/shell/git.mjs`)
 

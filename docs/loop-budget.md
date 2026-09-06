@@ -16,7 +16,8 @@ readable), plus timeouts. This page gathers every cap and switch in one place.
 | Hook deadline | 120 s | `OMC_HOOK_TIMEOUT_MS` (keep `hooks.json` in sync) | git closure paused in `git-finish` by decision, never by kill |
 | Push cap inside the deadline | 45 s | fixed | closure not confirmed → pause, `resume` retries |
 | Test run timeout | 30 min | `OMC_TEST_TIMEOUT_MS` | test recorded red (exit 124) |
-| External opinion timeout | 3 min | `OMC_ASK_TIMEOUT_MS`, or `providers.timeouts.<id>` in the config | opinion recorded ERROR in `external-*.md` |
+| External opinion timeout | 3 min | `OMC_ASK_TIMEOUT_MS`, or `providers.timeouts.<id>` in the config | opinion recorded ERROR in `external-*.md`, with the hint on how to raise it |
+| External opinion retries | 1 (timeouts and network errors only) | `OMC_ASK_RETRIES` (0–5) | the error of the last attempt is recorded, with the attempt count |
 | Session takeover | 6 h | `OMC_SESSION_TAKEOVER_MS` | another session takes over from the current phase |
 
 An iteration is the unit of spend: every injected phase (plan, implement, review, fix,
