@@ -55,6 +55,22 @@ export const DEFAULT_PROMPTS = {
 
   // --- recovery from an inconsistent state ---
   'phase-recovered': `PHASE: plan (inconsistent state, restored). Check .omc-loop/plan.md: if missing write it as a '- [ ] step' checklist, then stop.`,
+
+  // --- SessionStart notices: a session learns about a loop it does not own (or lost track of) ---
+  'hint-paused': ` (PAUSED)`,
+  'hint-steps': `{{done}}/{{total}} steps done`,
+  'hint-no-plan': `no plan yet`,
+  'hint-last-fire': `last fire {{age}} ago ({{at}})`,
+  'hint-armed-at': `armed {{age}} ago ({{at}}), never fired`,
+  'hint-last-instruction': `, last instruction \`{{lastPrompt}}\``,
+  'hint-owner-session': `session {{id}}`,
+  'hint-owner-none': `no session (never claimed)`,
+  'session-abandoned': `perseveranza: a loop armed in this project belongs to {{owner}} and looks ABANDONED: phase \`{{phase}}\`, {{when}}, {{steps}}{{lastInstr}}. Task: {{task}}. Do NOT take it over silently and do NOT touch .omc-loop/ or continue its work. Ask the user whether to resume it from this session ({{LOOP}} resume --takeover, then continue the phase above and let the Stop hook drive) or stop it ({{LOOP}} disarm, which archives the run). Until they decide, do nothing else in this repository.`,
+  'session-live': `perseveranza: a loop in this project is driven by another session ({{owner}}, phase \`{{phase}}\`, {{when}}, {{steps}}). This session ({{sessionId}}) does not drive it: do not touch .omc-loop/ and do not work on its task. If the user says that session is gone, {{LOOP}} resume --takeover hands the loop to this one.`,
+  'session-released': `perseveranza: a loop in this project was released by session {{from}} ({{LOOP}} resume --takeover) and is waiting for a claim: phase \`{{phase}}\`, {{when}}, {{steps}}. Task: {{task}}. The next Stop of the session that continues the work takes it over: do that ONLY if the user asks this session to continue the task; otherwise do not touch .omc-loop/.`,
+  'session-fresh': `perseveranza: a loop was just armed in this project ({{when}}) and no session has fired yet: phase \`{{phase}}\`, {{steps}}. Task: {{task}}. It belongs to the session that armed it: do not touch .omc-loop/ and do not work on its task from here unless the user says so.`,
+  'session-waiting': `perseveranza: a loop in this project is PAUSED and waits for a human: owner {{owner}}, phase \`{{phase}}\`, {{when}}, {{steps}}. Task: {{task}}. It is not abandoned. Do not touch .omc-loop/ and do not work on its task. If the user wants to continue it from this session: read .omc-loop/ESCALATION.md if present, then {{LOOP}} resume --takeover and let the Stop hook drive.`,
+  'session-compact': `perseveranza: this session drives an armed loop (phase \`{{phase}}\`, {{steps}}). Task: {{task}}. If the context lost the phase instruction, run {{LOOP}} status and continue the current phase; the Stop hook injects the next instruction when the turn ends.`,
 };
 
 // Placeholders each key may use. `prompts validate` flags anything else.
@@ -88,6 +104,20 @@ export const PROMPT_VARS = {
   'verify-postfix': ['finalFails', 'maxRetries', 'verdictHint', 'implHint', 'testHint', 'testRun', 'LOOP'],
   'verify-missing-outcome': ['LOOP'],
   'phase-recovered': [],
+  'hint-paused': [],
+  'hint-steps': ['done', 'total'],
+  'hint-no-plan': [],
+  'hint-last-fire': ['age', 'at'],
+  'hint-armed-at': ['age', 'at'],
+  'hint-last-instruction': ['lastPrompt'],
+  'hint-owner-session': ['id'],
+  'hint-owner-none': [],
+  'session-abandoned': ['owner', 'phase', 'when', 'steps', 'lastInstr', 'task', 'LOOP'],
+  'session-live': ['owner', 'phase', 'when', 'steps', 'sessionId', 'LOOP'],
+  'session-released': ['from', 'phase', 'when', 'steps', 'task', 'LOOP'],
+  'session-fresh': ['when', 'phase', 'steps', 'task'],
+  'session-waiting': ['owner', 'phase', 'when', 'steps', 'task', 'LOOP'],
+  'session-compact': ['phase', 'steps', 'task', 'LOOP'],
 };
 
 export const PROMPT_KEYS = Object.keys(DEFAULT_PROMPTS);

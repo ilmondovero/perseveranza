@@ -1,5 +1,5 @@
 {
-  "description": "Dormant Stop hook of the perseveranza loop: active only when .omc-loop/state.json exists in the project",
+  "description": "Dormant hooks of the perseveranza loop, active only when .omc-loop/state.json exists in the project: Stop drives the phases, SessionStart tells a new session about a loop it does not own",
   "hooks": {
     "Stop": [
       {
@@ -9,6 +9,18 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/shell/stop.mjs\"",
             "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/src/shell/session-start.mjs\"",
+            "timeout": 15
           }
         ]
       }

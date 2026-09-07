@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { step, finishProject, DEFAULT_TAKEOVER_MS } from '../../src/core/machine.mjs';
+import { step, finishProject } from '../../src/core/machine.mjs';
+import { DEFAULT_STALE_MS } from '../../src/core/staleness.mjs';
 import { TRANSITIONS } from '../../src/core/transitions.mjs';
 import { mk, ctx, ev, run, journal } from '../helpers/core.mjs';
 
@@ -329,21 +330,66 @@ test('budget exhausted: archive, disarm, notify, allowStop; grace on the exit ra
   assert.ok(journal(tok).some((j) => j.type === 'budget' && j.reason === 'tokens'));
 });
 
-test('session scoping: first fire claims, foreign session is ignored, takeover after inactivity', () => {
+test('session scoping: first fire claims, a foreign session is ignored however long the owner is silent', () => {
   const r = run(mk(), {}, { sessionId: 'A' });
   assert.equal(r.state.owner.sessionId, 'A');
+  assert.ok(journal(r).some((j) => j.type === 'session' && j.event === 'claimed' && j.to === 'A'));
   const foreign = step(r.state, ev({ sessionId: 'B', now: r.state.owner.lastFireAt + 1000 }), ctx());
   assert.equal(foreign.outcome, 'foreign-session');
   assert.deepEqual(foreign.effects.map((e) => e.type), ['allowStop']);
   assert.equal(foreign.state, r.state); // untouched
-  const late = step(r.state, ev({ sessionId: 'B', now: r.state.owner.lastFireAt + DEFAULT_TAKEOVER_MS + 1 }), ctx());
-  assert.equal(late.state.owner.sessionId, 'B');
-  assert.ok(late.effects.some((e) => e.type === 'journal' && e.entry.type === 'session' && e.entry.event === 'takeover'));
+  // a night of silence changes nothing: no implicit takeover (the reported orphan-loop case)
+  const late = step(r.state, ev({ sessionId: 'B', now: r.state.owner.lastFireAt + 20 * 60 * 60 * 1000 }), ctx());
+  assert.equal(late.outcome, 'foreign-session');
+  assert.equal(late.state.owner.sessionId, 'A');
 });
 
-test('no session id in the payload: no scoping, same behaviour', () => {
+test('explicit takeover: a released owner is claimed by the next fire, journaled as takeover with the gap', () => {
+  const r = run(mk(), {}, { sessionId: 'A' });
+  const T = r.state.owner.lastFireAt + 20 * 60 * 60 * 1000; // released 20 h after the last fire
+  const released = { ...r.state, owner: { ...r.state.owner, sessionId: null, releasedFrom: 'A', releasedAt: T } };
+  // the window closed: nobody claims it by accident, the state is untouched
+  const late = step(released, ev({ sessionId: 'Z', now: T + DEFAULT_STALE_MS + 1 }), ctx());
+  assert.equal(late.outcome, 'foreign-session');
+  assert.equal(late.state, released);
+  const take = run(released, {}, { sessionId: 'B', now: T + 60 * 1000 });
+  assert.equal(take.state.owner.sessionId, 'B');
+  assert.equal(take.state.owner.releasedFrom, null);
+  assert.equal(take.state.owner.releasedAt, 0);
+  assert.ok(take.blocked, 'drives the loop from the current phase');
+  const sess = journal(take).find((j) => j.type === 'session');
+  assert.deepEqual({ event: sess.event, from: sess.from, to: sess.to }, { event: 'takeover', from: 'A', to: 'B' });
+  const gap = journal(take).find((j) => j.type === 'gap');
+  assert.ok(gap && gap.ms === 20 * 60 * 60 * 1000 + 60 * 1000 && gap.since === new Date(r.state.owner.lastFireAt).toISOString());
+});
+
+test('gap: journaled only when the silence exceeds the stale threshold (ctx.staleMs, default 1 h)', () => {
+  const r = run(mk(), {}, { sessionId: 'A' });
+  const soon = run(r.state, {}, { sessionId: 'A', now: r.state.owner.lastFireAt + DEFAULT_STALE_MS });
+  assert.ok(!journal(soon).some((j) => j.type === 'gap'));
+  const late = run(r.state, {}, { sessionId: 'A', now: r.state.owner.lastFireAt + DEFAULT_STALE_MS + 1 });
+  assert.ok(journal(late).some((j) => j.type === 'gap'));
+  const custom = run(r.state, { staleMs: 60_000 }, { sessionId: 'A', now: r.state.owner.lastFireAt + 61_000 });
+  assert.ok(journal(custom).some((j) => j.type === 'gap' && j.ms === 61_000));
+  const first = run(mk(), {}, { sessionId: 'A' });
+  assert.ok(!journal(first).some((j) => j.type === 'gap'), 'no gap before the first fire');
+  // a pause is a human's choice: marked, whether still paused or resumed since the last fire
+  const T = r.state.owner.lastFireAt;
+  const still = run({ ...r.state, signals: { ...r.state.signals, paused: true } }, {}, { sessionId: 'A', now: T + 3 * DEFAULT_STALE_MS });
+  assert.equal(journal(still).find((j) => j.type === 'gap').paused, true);
+  const resumed = run({ ...r.state, signals: { ...r.state.signals, resumedAt: T + 2 * DEFAULT_STALE_MS } }, {}, { sessionId: 'A', now: T + 3 * DEFAULT_STALE_MS });
+  assert.equal(journal(resumed).find((j) => j.type === 'gap').paused, true);
+  assert.equal(resumed.state.signals.resumedAt, 0, 'consumed');
+  const plain = run(r.state, {}, { sessionId: 'A', now: T + 3 * DEFAULT_STALE_MS });
+  assert.equal(journal(plain).find((j) => j.type === 'gap').paused, false);
+});
+
+test('no session id in the payload: no scoping, same behaviour, but the owner clock does not move', () => {
   const r = step(mk({ owner: { sessionId: 'A', lastFireAt: 1 } }), { now: 2, payloadKeys: [] }, ctx());
   assert.notEqual(r.outcome, 'foreign-session');
+  assert.equal(r.state.owner.lastFireAt, 1, 'a fire without a session id is not evidence the owner is alive');
+  const unclaimed = step(mk(), { now: 5, payloadKeys: [] }, ctx());
+  assert.equal(unclaimed.state.owner.lastFireAt, 5, 'nobody owns it: the clock starts anyway');
 });
 
 test('usage from the shell is merged and journaled', () => {

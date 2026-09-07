@@ -3,6 +3,57 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.2.0
+
+Nasce da un loop orfano (`docs/SEGNALAZIONE-2026-09-07-loop-orfano.md`): dopo 17 iterazioni
+buone la sessione proprietaria è sparita a metà review e il loop è rimasto "in corso" per 20
+ore senza che nulla lo dicesse. Il loop vive solo nello Stop hook di una sessione: se quella
+non chiude più un turno, il plugin non esegue più codice e il journal non distingue "sta
+lavorando" da "è morto". Il silenzio diventa un fatto di prima classe.
+
+- **Hook `SessionStart`: il loop orfano fa una domanda.** Una nuova sessione aperta in una
+  cartella con un loop di un'altra sessione riceve un contesto con proprietario, fase, età
+  dell'ultimo fire, passi fatti e ultima istruzione iniettata, con l'ordine di non toccare
+  `.omc-loop/` e di chiedere all'utente se riprendere (`resume --takeover`) o fermare
+  (`disarm`). Se il proprietario è vivo (fire recente) il messaggio è solo informativo.
+  Un loop appena armato e non ancora rivendicato, o appena rilasciato con `--takeover`,
+  riceve un avviso diverso (non è abbandonato). Dopo una compattazione la sessione
+  proprietaria riceve un promemoria della fase, perché l'istruzione iniettata può essere
+  andata persa. Gli avvisi sono chiavi del prompt pack (`session-*`, `hint-last-fire`...):
+  parlano la lingua del loop e si sovrascrivono come le altre. L'hook legge solo la coda
+  del journal. Dormiente senza `state.json`.
+- **Takeover esplicito, mai implicito.** Il ramo che dopo 6 ore (`OMC_SESSION_TAKEOVER_MS`)
+  faceva subentrare la prima sessione che passava di lì è rimosso: una sessione aperta per
+  tutt'altro si sarebbe ritrovata a guidare la review del passo 12 (peggio: in `implement`
+  con `--commit` e albero sporco). Ora `resume --takeover` libera il proprietario e il
+  prossimo Stop nel progetto, da qualunque sessione arrivi, rivendica il loop dalla fase
+  corrente (`session released` e `session takeover` nel journal). Il rilascio ha una
+  finestra (la stessa soglia di `OMC_LOOP_STALE_MS`): scaduta, nessuno lo rivendica per
+  sbaglio e serve un nuovo `--takeover`. Su un loop che non era in pausa il takeover è un
+  recupero, non la chiusura di una pausa: contatori di retry e `ESCALATION.md` restano.
+  Un `resume` semplice dice chi possiede il loop e da quanto tace.
+- **Un loop in pausa non è abbandonato.** Escalation, approvazione del piano e chiusura git
+  non confermata mettono il loop in pausa proprio perché un umano tornerà con calma: `status`
+  e HUD mostrano l'età ma mai `STALE`, e l'avviso di `SessionStart` (`session-waiting`) dice
+  di leggere `ESCALATION.md` e fare `resume`, non di prenderlo in mano.
+- **`status` mostra "da quanto".** Riga `last fire: 20h43m ago (2026-09-06 11:10 UTC)  STALE`
+  oltre la soglia (2 h, `OMC_LOOP_STALE_MS`: un passo `high` con subagent e una suite lunga
+  può tenere aperto un turno oltre l'ora, e un falso STALE è una domanda inutile all'utente),
+  con il suggerimento di cosa fare. La HUD aggiunge `⏱20h43m STALE` in rosso; sotto i dieci
+  minuti non mostra nulla, perché un loop vivo merita una statusline silenziosa. Un loop morto da una notte e uno che ha appena
+  delegato la review erano indistinguibili a colpo d'occhio.
+- **Il journal registra il buco.** Al primo fire dopo un silenzio oltre soglia l'hook scrive
+  `{type:'gap', since, ms, paused}`; `history` lo stampa (`GAP: no fire for 20h43m`, con
+  `while paused` se il silenzio era una pausa voluta) e `summary.json` lo conserva (`gaps`,
+  `lastFireAt`). Prima: 17 transizioni pulite seguite da
+  un disarm senza motivo.
+- **`disarm` risponde a "aveva finito?".** Prima di archiviare stampa task, fase, iterazioni,
+  passi fatti/aperti (con i titoli dei primi aperti) e l'età dell'ultimo fire.
+
+Non fatto, per scelta: la notifica desktop "il loop tace da N ore" e il controllo di
+`~/.perseveranza/` da altri progetti (proposta 5). Il caso coperto è quello in cui l'utente
+torna; un cron o un `status --all` restano possibili sopra `core/staleness.mjs`.
+
 ## 2.1.0
 
 Nasce da un run reale di 14 ore su un progetto con una suite da 27 minuti: il lavoro era

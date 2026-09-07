@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { loadConfig } from '../providers/config.mjs';
 import { renderProgress } from './render.mjs';
 import { loadState } from '../core/state.mjs';
+import { DEFAULT_STALE_MS } from '../core/staleness.mjs';
 import { gatePaths, ROOT } from '../shell/paths.mjs';
 import { maybeSpawnRefresh, updateAvailable, currentVersion } from '../update.mjs';
 import { parseTimeoutMs } from '../shell/util.mjs';
@@ -34,7 +35,7 @@ if (existsSync(paths.statePath)) {
     const s = loadState(JSON.parse(readFileSync(paths.statePath, 'utf8'))).state;
     if (s) {
       const planText = existsSync(paths.planPath) ? readFileSync(paths.planPath, 'utf8') : '';
-      seg = renderProgress(s, planText, { color: true, marker: true, version: currentVersion(ROOT) });
+      seg = renderProgress(s, planText, { color: true, marker: true, version: currentVersion(ROOT), now: Date.now(), staleMs: parseTimeoutMs(process.env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS) });
       maybeSpawnRefresh(process.env);
       const upd = updateAvailable(ROOT, process.env);
       if (upd) seg += ` \x1b[1;33m⬆v${upd}\x1b[0m`;

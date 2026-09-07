@@ -1,7 +1,8 @@
 // The run journal: .omc-loop/journal.jsonl, one JSON object per line, append-only.
 // Never throws: a journal that cannot be written must not break the hook.
-import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
+import { formatAge } from '../core/time.mjs';
 
 export const JOURNAL_FILE = 'journal.jsonl';
 
@@ -26,6 +27,30 @@ export function readJournal(gateDir) {
   return out;
 }
 
+// The last entries only, reading the tail of the file: a run's journal carries the findings
+// of every verdict and can reach megabytes, which a hook that runs at every session start
+// should not parse whole. The first (possibly partial) line of the window is dropped.
+export function readJournalTail(gateDir, bytes = 64 * 1024) {
+  const p = join(gateDir, JOURNAL_FILE);
+  let fd = null;
+  try {
+    const size = statSync(p).size;
+    const len = Math.min(size, bytes);
+    fd = openSync(p, 'r');
+    const buf = Buffer.alloc(len);
+    const n = readSync(fd, buf, 0, len, size - len);
+    let text = buf.subarray(0, n).toString('utf8');
+    if (len < size) text = text.slice(text.indexOf('\n') + 1);
+    const out = [];
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try { out.push(JSON.parse(line)); } catch { /* a torn line at the window edge */ }
+    }
+    return out;
+  } catch { return []; }
+  finally { if (fd != null) { try { closeSync(fd); } catch { /* nothing */ } } }
+}
+
 // One human-readable line per entry (the `history` verb).
 export function formatEntry(e) {
   const ts = e.ts ? e.ts.replace('T', ' ').slice(0, 19) : '????-??-?? ??:??:??';
@@ -38,7 +63,8 @@ export function formatEntry(e) {
     case 'ask': return `${ts} | ask ${e.provider}${e.model ? `/${e.model}` : ''} slot=${e.slot} ${e.ok ? 'ok' : 'ERROR'}`;
     case 'usage': return `${ts} | usage ${e.spent} tokens (+${e.delta})`;
     case 'budget': return e.adaptive ? `${ts} | budget adaptive: ${e.steps} steps -> max ${e.maxIterations}` : `${ts} | budget ${e.reason}: ${e.detail}`;
-    case 'session': return `${ts} | session ${e.event} ${e.from ? `${e.from} -> ` : ''}${e.to}`;
+    case 'session': return `${ts} | session ${e.event} ${e.from ? `${e.from} -> ` : ''}${e.to || ''}${e.ageMs != null ? ` (silent for ${formatAge(e.ageMs)})` : ''}`.trimEnd();
+    case 'gap': return `${ts} | GAP: no fire for ${formatAge(e.ms)} (since ${String(e.since || '').replace('T', ' ').slice(0, 19)})${e.paused ? ' while paused' : ''}`;
     case 'git': return `${ts} | git ${e.ran === false ? 'skipped (not a repo)' : e.confirmed ? `confirmed${e.pushSkipped ? ' (local commit, --no-push)' : ''}` : `NOT confirmed: ${e.why}`}`;
     case 'external-gate': return `${ts} | external gate: ${e.note}`;
     case 'baseline-dirty': return `${ts} | baseline dirty: ${e.count} file(s) ${(e.files || []).join(', ')}`;

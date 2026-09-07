@@ -42,6 +42,7 @@ export function buildSummary(state, journal, outcome) {
   const tests = journal.filter((j) => j.type === 'test');
   const verdicts = journal.filter((j) => j.type === 'verdict');
   const asks = journal.filter((j) => j.type === 'ask');
+  const gaps = journal.filter((j) => j.type === 'gap');
   return {
     task: state?.task ?? '',
     outcome,
@@ -56,6 +57,9 @@ export function buildSummary(state, journal, outcome) {
     tests: tests.map((t) => ({ exitCode: t.exitCode, iteration: t.iteration, ts: t.ts })),
     verdicts: verdicts.map((v) => ({ artifact: v.artifact, blocking: v.blocking, pass: v.pass, error: v.error || null, ts: v.ts })),
     externalOpinions: asks.map((a) => ({ provider: a.provider, model: a.model || null, slot: a.slot, ok: a.ok })),
+    // silences longer than the stale threshold between two fires (the loop looked alive, was not)
+    gaps: gaps.map((g) => ({ since: g.since, ms: g.ms, paused: g.paused === true, ts: g.ts })),
+    lastFireAt: state?.owner?.lastFireAt ? new Date(state.owner.lastFireAt).toISOString() : null,
     externals: state?.options?.externals ?? [],
     armedAt: state?.armedAt ?? null,
     finishedAt: new Date().toISOString(),

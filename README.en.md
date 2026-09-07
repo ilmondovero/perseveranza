@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-2.1.0-blue)
+![version](https://img.shields.io/badge/version-2.2.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -144,8 +144,16 @@ verification adds a security lens.
 - **Caps and switches.** Adaptive iterations from the plan or `--max`, real tokens with
   `--budget-tokens`, fixes per step with `--max-retries`. Kill switch from any session:
   the `.omc-loop/STOP` file or `OMC_LOOP_KILL=1`.
-- **One loop, one session.** The first session that fires claims the loop; the others do
-  not touch it. N `git worktree`s = N parallel loops.
+- **One loop, one session.** The first session that fires claims the loop; the others never
+  touch it, not even after a night of silence: the hand-over is explicit
+  (`resume --takeover`). N `git worktree`s = N parallel loops.
+- **An orphaned loop does not stay invisible.** The loop lives in the Stop hook of the owner
+  session: when that session dies (terminal closed, Esc mid-turn, crash) the state says
+  "phase review" forever. So the `SessionStart` hook tells every new session opened in the
+  folder that a loop of another session exists, how long it has been silent and in which
+  phase it was, and asks the user whether to resume it (`resume --takeover`) or stop it
+  (`disarm`). `status`, the HUD and the `disarm` recap show the age of the last fire (`STALE`
+  past two hours, `OMC_LOOP_STALE_MS`); the journal records the hole (`gap`).
 
 ## Commands
 
@@ -171,7 +179,7 @@ The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/omc-lo
 | `status` · `history` · `explain` | readable summary · the run journal · transition table and next outcomes |
 | `test [--if-needed] -- <cmd>` | runs the suite and records the proof; `--if-needed` skips it when a green is already recorded for this tree |
 | `report` · `complexity` · `claim-done` | Claude's signals to the loop |
-| `pause` · `resume` | suspend / resume (resume resets the retries) |
+| `pause` · `resume [--takeover]` | suspend / resume (resume resets the retries; `--takeover` releases the owner session: the next Stop of whoever runs it takes the loop from the current phase) |
 | `ask <provider> <slot> -- <prompt>` | opinion of an external model, saved as an artifact |
 | `providers [list\|check\|enable]` | external providers; `check` probes liveness and disables the dead ones |
 | `runs [list\|show <id>]` | the archive of runs |

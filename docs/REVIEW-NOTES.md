@@ -29,8 +29,20 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   stop-reason guards either: the payload **keys** are journaled at every fire (`fire`
   entry) so any new guard is written on evidence.
 - Per-session scoping: the first session to fire **claims** the loop; others let Claude
-  stop without touching the state; takeover after inactivity (`OMC_SESSION_TAKEOVER_MS`).
+  stop without touching the state, however long the owner has been silent. The takeover is
+  explicit only: `resume --takeover` releases the owner (`owner.releasedFrom`,
+  `owner.releasedAt`), and within the stale window the next fire of any session claims it
+  (journal `session takeover`); past the window the release is closed and the fire is a
+  foreign session again. A paused loop is never stale (`signals.paused`). The implicit 6 h takeover of
+  1.12–2.1 was removed after a real orphaned loop: a session opened for something else
+  would have found itself driving the review of a half-done step.
   The scoping check runs before pause/budget so a foreign session never disarms anything.
+- Silence is a first-class fact (`core/staleness.mjs`, pure): `owner.lastFireAt` is
+  compared with the clock by `status`, the HUD, the `disarm` recap and the `SessionStart`
+  hook (`shell/session-start.mjs`, the only code path that runs outside a Stop of the
+  owner). Past `OMC_LOOP_STALE_MS` (2 h) the loop is `STALE`, the next fire journals a
+  `gap` (kept in `summary.json`), and a new session is told to ask the user rather than
+  act. The notice never touches the state.
 
 ## Proofs, not words
 

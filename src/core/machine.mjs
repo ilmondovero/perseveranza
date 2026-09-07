@@ -27,9 +27,9 @@ import { lookup } from './transitions.mjs';
 import { canContinue, adaptiveMax, tokensSpent } from './budget.mjs';
 import { renderPrompt } from './prompts.mjs';
 import { PHASES, COMPLEXITIES } from './state.mjs';
+import { DEFAULT_STALE_MS, releaseOpen } from './staleness.mjs';
 import { renderProgress } from '../hud/render.mjs';
 
-export const DEFAULT_TAKEOVER_MS = 6 * 60 * 60 * 1000;
 export const MODEL_ROUTING = {
   review: { low: 'haiku', medium: 'sonnet', high: 'opus' },
   verify: { low: 'sonnet', medium: 'opus', high: 'opus' },
@@ -119,17 +119,38 @@ export function step(input, event = {}, ctx0 = {}) {
   J({ type: 'fire', session: short(event.sessionId), payloadKeys: Array.isArray(event.payloadKeys) ? event.payloadKeys : [], stopHookActive: event.stopHookActive === true });
 
   // --- per-session scoping: the loop belongs to ONE session (claim on first fire) ---
+  // Another session NEVER takes the loop over on its own, however long the owner has been
+  // silent: a session opened to do something else would otherwise find itself driving a
+  // half-done step. The hand-over is explicit (`resume --takeover` releases the owner) and
+  // the SessionStart hook is what tells a new session that an abandoned loop exists.
+  const staleMs = Number(ctx.staleMs) > 0 ? Number(ctx.staleMs) : DEFAULT_STALE_MS;
   if (event.sessionId) {
     const owner = s.owner.sessionId;
-    const takeoverMs = Number(ctx.takeoverMs) > 0 ? Number(ctx.takeoverMs) : DEFAULT_TAKEOVER_MS;
-    const stale = !!owner && s.owner.lastFireAt > 0 && (now - s.owner.lastFireAt) > takeoverMs;
-    if (owner && owner !== event.sessionId && !stale) {
+    if (owner && owner !== event.sessionId) {
       // another session drives this loop: let this one stop, touch nothing
       return { state: input, effects: [{ type: 'allowStop' }], outcome: 'foreign-session' };
     }
-    if (owner !== event.sessionId) J({ type: 'session', event: owner ? 'takeover' : 'claimed', from: short(owner), to: short(event.sessionId) });
+    // released, but the window closed: nobody claims it by accident (resume --takeover again)
+    if (!owner && s.owner.releasedFrom && !releaseOpen(s, now, staleMs)) {
+      return { state: input, effects: [{ type: 'allowStop' }], outcome: 'foreign-session' };
+    }
+    if (!owner) J({ type: 'session', event: s.owner.releasedFrom ? 'takeover' : 'claimed', from: short(s.owner.releasedFrom), to: short(event.sessionId) });
     s.owner.sessionId = event.sessionId;
+    s.owner.releasedFrom = null;
+    s.owner.releasedAt = 0;
+  }
+  // --- the silence before this fire: recorded so the run's history shows the hole ---
+  // Only a fire that carries a session id moves the owner's clock: it is the one signal
+  // the staleness of the loop is read from.
+  if (event.sessionId || !s.owner.sessionId) {
+    if (s.owner.lastFireAt > 0 && now - s.owner.lastFireAt > staleMs) {
+      // paused: the silence was a human's choice (escalation, plan approval), not a dead
+      // session. Still paused now, or resumed by the verb since the last fire: both count.
+      const paused = s.signals.paused === true || s.signals.resumedAt > s.owner.lastFireAt;
+      J({ type: 'gap', since: new Date(s.owner.lastFireAt).toISOString(), ms: now - s.owner.lastFireAt, paused });
+    }
     s.owner.lastFireAt = now;
+    s.signals.resumedAt = 0;
   }
 
   // --- token usage from the transcript (best-effort, measured by the shell) ---

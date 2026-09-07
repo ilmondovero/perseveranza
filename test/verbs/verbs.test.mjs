@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { project, cli, arm, readState, writePlan, gate, journal, patchState } from '../helpers/cli.mjs';
+import { project, cli, arm, fire, readState, writePlan, gate, journal, patchState, spawnSync, CLI } from '../helpers/cli.mjs';
 
 test('arm creates a v2 state in phase plan and journals it', () => {
   const p = project();
@@ -149,6 +149,7 @@ test('status, history, explain, prompts, config, providers produce output', () =
   assert.ok(st.out.includes('ARMED — the task'));
   assert.ok(st.out.includes('steps:       1/2 done'));
   assert.ok(st.out.includes('next outcomes'));
+  assert.ok(st.out.includes('last fire:   never'));
   assert.ok(JSON.parse(cli(p, 'status', '--json').out).schemaVersion === 2);
   const h = cli(p, 'history');
   assert.ok(h.out.includes('armed: the task'));
@@ -199,11 +200,96 @@ test('prompts layers shows the active override sources', () => {
   assert.equal(cli(p, 'prompts', 'layers').code, 1);
 });
 
+test('status shows the age of the last fire and flags a stale loop', () => {
+  const p = project();
+  arm(p, 'quiet task');
+  fire(p, { session_id: 'A' });
+  const fresh = cli(p, 'status').out;
+  assert.ok(/last fire: {3}\d+s ago \(\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)\n/.test(fresh), fresh);
+  assert.ok(!fresh.includes('STALE'));
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - (20 * 3600 + 43 * 60) * 1000; });
+  const stale = cli(p, 'status').out;
+  assert.ok(stale.includes('last fire:   20h43m ago'), stale);
+  assert.ok(stale.includes('STALE'));
+  assert.ok(stale.includes('resume --takeover'));
+  const wide = spawnSync(process.execPath, [CLI, 'status'], { cwd: p.dir, encoding: 'utf8', env: { ...p.env, OMC_LOOP_STALE_MS: String(30 * 3600 * 1000) } });
+  assert.ok(!wide.stdout.includes('STALE'), 'threshold from the environment');
+});
+
+test('resume --takeover releases the owner; plain resume only reports it', () => {
+  const p = project();
+  arm(p);
+  fire(p, { session_id: 'A' });
+  const plain = cli(p, 'resume');
+  assert.ok(plain.out.includes('owner session A'));
+  assert.ok(plain.out.includes('resume --takeover'));
+  assert.equal(readState(p).owner.sessionId, 'A');
+  const take = cli(p, 'resume', '--takeover');
+  assert.equal(take.code, 0);
+  assert.ok(take.out.includes('owner released'));
+  assert.equal(readState(p).owner.sessionId, null);
+  assert.equal(readState(p).owner.releasedFrom, 'A');
+  assert.ok(cli(p, 'status').out.includes('released by A, next fire claims'));
+  assert.ok(journal(p).some((e) => e.type === 'signal' && e.verb === 'resume' && e.value === '--takeover'));
+  assert.ok(readState(p).owner.releasedAt > 0);
+  // idempotent when nobody owns it
+  assert.equal(cli(p, 'resume', '--takeover').code, 0);
+});
+
+test('resume --takeover on a loop that was not paused keeps the retry budget and ESCALATION.md', () => {
+  const p = project();
+  arm(p);
+  fire(p, { session_id: 'A' });
+  patchState(p, (s) => { s.counters.retries = 2; s.counters.finalFails = 2; });
+  writeFileSync(gate(p, 'ESCALATION.md'), 'why it stopped\n');
+  const r = cli(p, 'resume', '--takeover');
+  assert.ok(r.out.includes('ESCALATION.md kept'), r.out);
+  assert.ok(r.out.includes('from whichever session runs it'));
+  const s = readState(p);
+  assert.equal(s.counters.retries, 2);
+  assert.equal(s.counters.finalFails, 2);
+  assert.ok(existsSync(gate(p, 'ESCALATION.md')));
+  // paused: the takeover also closes the pause, with the usual resume semantics
+  patchState(p, (st) => { st.signals.paused = true; st.owner.sessionId = 'A'; st.owner.releasedFrom = null; });
+  const r2 = cli(p, 'resume', '--takeover');
+  assert.ok(r2.out.includes('retry counters reset'));
+  assert.equal(readState(p).counters.retries, 0);
+  assert.ok(!existsSync(gate(p, 'ESCALATION.md')));
+  // a paused loop in status: not STALE, the hint points at resume
+  patchState(p, (st) => { st.signals.paused = true; st.owner.sessionId = 'A'; st.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  const st = cli(p, 'status').out;
+  assert.ok(st.includes('20h00m ago') && st.includes('(paused)') && !st.includes('STALE'), st);
+  assert.ok(st.includes('a human is expected'));
+});
+
+test('disarm prints a recap (phase, steps, open ones, last fire) and the summary keeps the gaps', () => {
+  const p = project();
+  arm(p, 'recap task');
+  writePlan(p, '- [x] one\n- [x] two\n- [ ] three\n- [ ] four is a rather long step title that goes on and on and on for a while\n');
+  fire(p, { session_id: 'A' }); fire(p, { session_id: 'A' });
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  fire(p, { session_id: 'A' }); // records the gap
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  const r = cli(p, 'disarm');
+  assert.equal(r.code, 0);
+  assert.ok(r.out.includes('task:        recap task'));
+  assert.ok(r.out.includes('phase:       review  after 3 iterations'), r.out);
+  assert.ok(r.out.includes('steps:       2/4 done — 2 still open: "three", "four is a rather long step title that goes on and on and..."'), r.out);
+  assert.ok(r.out.includes('session:     A, last fire 20h00m ago'));
+  assert.ok(r.out.includes('STALE'));
+  const id = cli(p, 'runs').out.trim().split('\n')[0].trim().split(/\s+/)[0];
+  const summary = JSON.parse(readFileSync(join(p.home, 'runs', ...id.split('/'), 'summary.json'), 'utf8'));
+  assert.equal(summary.gaps.length, 1);
+  assert.ok(summary.gaps[0].ms > 19 * 3600 * 1000);
+  assert.ok(summary.lastFireAt);
+});
+
 test('disarm archives the run by default, --no-archive just removes it', () => {
   const p = project();
   arm(p, 'archived task');
   const r = cli(p, 'disarm');
   assert.equal(r.code, 0);
+  assert.ok(r.out.includes('steps:       no plan'));
   assert.ok(!existsSync(gate(p, 'state.json')));
   const runs = cli(p, 'runs');
   assert.ok(runs.out.includes('disarmed'));

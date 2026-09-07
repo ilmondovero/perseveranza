@@ -9,7 +9,7 @@
 //   complexity low|medium|high task complexity (routes the models)
 //   claim-done                 declare the project complete -> triggers the final verification
 //   ask <provider> <slot> -- <prompt>   ask an external model, save the opinion
-//   pause | resume             suspend / resume the loop
+//   pause | resume [--takeover] suspend / resume the loop (--takeover: release the owner session)
 //   status                     human-readable summary
 //   history [--tail N] [--json] the run journal
 //   explain [--markdown]       the transition table and the next possible outcomes

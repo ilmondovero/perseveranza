@@ -18,7 +18,7 @@ readable), plus timeouts. This page gathers every cap and switch in one place.
 | Test run timeout | 30 min | `OMC_TEST_TIMEOUT_MS` | test recorded red (exit 124) |
 | External opinion timeout | 3 min | `OMC_ASK_TIMEOUT_MS`, or `providers.timeouts.<id>` in the config | opinion recorded ERROR in `external-*.md`, with the hint on how to raise it |
 | External opinion retries | 1 (timeouts and network errors only) | `OMC_ASK_RETRIES` (0–5) | the error of the last attempt is recorded, with the attempt count |
-| Session takeover | 6 h | `OMC_SESSION_TAKEOVER_MS` | another session takes over from the current phase |
+| Stale loop | 2 h without a Stop of the owner | `OMC_LOOP_STALE_MS` | `status`/HUD flag it `STALE`, the journal records a `gap`, the `SessionStart` hook asks a new session whether to take over (`resume --takeover`, valid for the same window) or disarm; nothing happens by itself. A paused loop is never stale |
 
 An iteration is the unit of spend: every injected phase (plan, implement, review, fix,
 verification...) consumes one. Token usage is read from the transcript path that Claude
@@ -52,5 +52,8 @@ fixing by hand, `resume` continues (and removes the stale hand-off); `disarm` gi
 
 - **Cost under control** → adaptive iterations, `--max`, `--budget-tokens`, `--max-retries`.
 - **Fast stop** → `.omc-loop/STOP` or `OMC_LOOP_KILL=1`.
+- **The owner session is gone** (`status` says `STALE`, or a new session got the
+  SessionStart notice) → `resume --takeover` from the session that will continue, or
+  `disarm` (its recap says which steps were left open).
 - **It got stuck** → read `.omc-loop/ESCALATION.md`, fix, `resume`.
 - **What happened** → `history`, and after the end `runs show <id>`.

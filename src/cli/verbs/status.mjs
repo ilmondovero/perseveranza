@@ -6,8 +6,10 @@ import { iterationCap, tokensSpent } from '../../core/budget.mjs';
 import { outcomesFor } from '../../core/transitions.mjs';
 import { formatTokens } from '../../hud/render.mjs';
 import { RETAINED_STATE } from '../../shell/archive.mjs';
+import { staleness, releaseOpen, describeLastFire, formatAge, DEFAULT_STALE_MS } from '../../core/staleness.mjs';
+import { parseTimeoutMs } from '../../shell/util.mjs';
 
-export function summary(s, planText) {
+export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE_MS } = {}) {
   const c = stepCounts(planText);
   const lines = [];
   lines.push(`perseveranza ARMED — ${s.task}`);
@@ -28,14 +30,19 @@ export function summary(s, planText) {
     `lang: ${s.options.lang}`,
   ].filter(Boolean).join(', ')}`);
   lines.push(`  externals:   ${s.options.externals.length ? s.options.externals.join(', ') : 'none'}`);
-  lines.push(`  session:     ${s.owner.sessionId ? s.owner.sessionId.slice(0, 8) : 'not claimed yet'}`);
+  const released = s.owner.releasedFrom ? (releaseOpen(s, now, staleMs) ? `released by ${s.owner.releasedFrom.slice(0, 8)}, next fire claims` : `released by ${s.owner.releasedFrom.slice(0, 8)}, window closed (resume --takeover again)`) : 'not claimed yet';
+  lines.push(`  session:     ${s.owner.sessionId ? s.owner.sessionId.slice(0, 8) : released}`);
+  const st = staleness(s, now, staleMs);
+  const hint = st.stale ? `  <- no Stop for over ${formatAge(staleMs)}: the owner session is probably gone (resume --takeover to drive it from here, disarm to stop it)`
+    : st.paused && st.ageMs != null && st.ageMs > staleMs ? '  <- paused, a human is expected: read .omc-loop/ESCALATION.md if present, then resume' : '';
+  lines.push(`  last fire:   ${describeLastFire(s, now, staleMs)}${hint}`);
   lines.push(`  armed at:    ${s.armedAt || '?'}  (engine v${s.engineVersion || '?'})`);
   const next = outcomesFor(s.phase).map((r) => r.outcome).join(', ');
   lines.push(`  next outcomes: ${next}`);
   return lines.join('\n');
 }
 
-export function run({ argv, cwd }) {
+export function run({ argv, cwd, env = process.env }) {
   const paths = gate(cwd);
   if (!existsSync(paths.statePath)) {
     console.log('perseveranza is NOT armed in this project.');
@@ -48,6 +55,6 @@ export function run({ argv, cwd }) {
   if (argv.includes('--json')) { console.log(JSON.stringify(s, null, 2)); return 0; }
   let planText = '';
   try { planText = readFileSync(paths.planPath, 'utf8'); } catch { /* no plan */ }
-  console.log(summary(s, planText));
+  console.log(summary(s, planText, { now: Date.now(), staleMs: parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS) }));
   return 0;
 }

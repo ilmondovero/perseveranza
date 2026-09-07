@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { gatePaths, ROOT, loopCommand } from './paths.mjs';
 import { loadState } from '../core/state.mjs';
 import { step } from '../core/machine.mjs';
+import { DEFAULT_STALE_MS } from '../core/staleness.mjs';
 import { executeEffects } from './effects.mjs';
 import { appendJournal } from './journal.mjs';
 import { notify } from './notify.mjs';
@@ -93,7 +94,7 @@ function main() {
     usage,
     version: currentVersion(ROOT),
     updateAvailable: updateAvailable(ROOT, env),
-    takeoverMs: parseTimeoutMs(env.OMC_SESSION_TAKEOVER_MS, 6 * 60 * 60 * 1000),
+    staleMs: parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS),
   };
   const event = {
     sessionId: evt && typeof evt.session_id === 'string' ? evt.session_id : '',

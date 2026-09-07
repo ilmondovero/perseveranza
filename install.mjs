@@ -6,7 +6,7 @@
 //
 //   1. copies the files listed in manifest.mjs into <claude-dir>/perseveranza/
 //   2. installs the command and the agents into <claude-dir>/commands and <claude-dir>/agents
-//   3. registers the Stop hook in <claude-dir>/settings.json (idempotent, with backup),
+//   3. registers the Stop and SessionStart hooks in <claude-dir>/settings.json (idempotent, with backup),
 //      replacing entries of previous versions (v1 scripts/loop-drive.mjs and .ps1 included)
 // Usage:  node install.mjs [--claude-dir <dir>]
 //         node install.mjs --uninstall
@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, rmSyn
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, HOOK_ENTRY, CLI_ENTRY } from './manifest.mjs';
+import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, HOOK_ENTRY, SESSION_HOOK_ENTRY, CLI_ENTRY } from './manifest.mjs';
 
 const src = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -30,20 +30,30 @@ const settingsPath = join(claudeDir, 'settings.json');
 // forward slashes in the registered commands: Node accepts them on Windows too, and they
 // survive JSON/settings editing without escaping surprises
 const hookPath = join(installDir, HOOK_ENTRY).replaceAll('\\', '/');
+const sessionHookPath = join(installDir, SESSION_HOOK_ENTRY).replaceAll('\\', '/');
 const cliPath = join(installDir, CLI_ENTRY).replaceAll('\\', '/');
-const HOOK_RE = /loop-drive\.(ps1|mjs)|perseveranza[\\/]src[\\/]shell[\\/]stop\.mjs/;
+const HOOK_RE = /loop-drive\.(ps1|mjs)|perseveranza[\\/]src[\\/]shell[\\/](stop|session-start)\.mjs/;
+const HOOK_EVENTS = ['Stop', 'SessionStart'];
+const hookEntries = (settings) => JSON.stringify(HOOK_EVENTS.map((ev) => settings.hooks?.[ev] ?? []));
 
 function loadSettings() {
   if (!existsSync(settingsPath)) return {};
   try { return JSON.parse(readFileSync(settingsPath, 'utf8')) ?? {}; }
   catch (e) { console.error(`ERROR: ${settingsPath} is not valid JSON (${e.message}): fix it and retry.`); process.exit(1); }
 }
-function stripLoopEntries(settings) {
+// Remove our entries. With `create`, every event list exists afterwards (install adds to it);
+// without it, a list that ends empty and was not there before is dropped (uninstall leaves
+// no trace of an event the user never configured).
+function stripLoopEntries(settings, { create = true } = {}) {
   settings.hooks ??= {};
-  settings.hooks.Stop ??= [];
-  settings.hooks.Stop = settings.hooks.Stop
-    .map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((h) => !HOOK_RE.test(h.command ?? '')) }))
-    .filter((entry) => (entry.hooks ?? []).length > 0);
+  for (const ev of HOOK_EVENTS) {
+    const had = Array.isArray(settings.hooks[ev]);
+    const list = (had ? settings.hooks[ev] : [])
+      .map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((h) => !HOOK_RE.test(h.command ?? '')) }))
+      .filter((entry) => (entry.hooks ?? []).length > 0);
+    if (create || had) settings.hooks[ev] = list;
+    if (!create && !had && list.length === 0) delete settings.hooks[ev];
+  }
 }
 function saveSettings(settings) {
   if (existsSync(settingsPath)) {
@@ -65,9 +75,9 @@ if (uninstall) {
     if (existsSync(p)) { rmSync(p); console.log(`Removed v1 file: ${p}`); }
   }
   const settings = loadSettings();
-  const before = JSON.stringify(settings.hooks?.Stop ?? []);
-  stripLoopEntries(settings);
-  if (JSON.stringify(settings.hooks.Stop) !== before) { saveSettings(settings); console.log('Stop hook entry removed from settings.json.'); }
+  const before = hookEntries(settings);
+  stripLoopEntries(settings, { create: false });
+  if (hookEntries(settings) !== before) { saveSettings(settings); console.log('Hook entries removed from settings.json.'); }
   console.log('Uninstalled. Restart Claude Code.');
   process.exit(0);
 }
@@ -89,13 +99,14 @@ for (const old of ['omc-loop.mjs', 'loop-drive.mjs', 'providers.mjs', 'hud.mjs',
   if (existsSync(p)) { rmSync(p); console.log(`Removed v1 file: hooks/${old}`); }
 }
 
-// --- 3. Stop hook ---
+// --- 3. Stop + SessionStart hooks ---
 const settings = loadSettings();
-const before = JSON.stringify(settings.hooks?.Stop ?? []);
+const before = hookEntries(settings);
 stripLoopEntries(settings);
 settings.hooks.Stop.push({ matcher: '', hooks: [{ type: 'command', command: `node "${hookPath}"`, timeout: 120 }] });
-if (JSON.stringify(settings.hooks.Stop) === before) console.log('Stop hook already registered in settings.json: no change.');
-else { saveSettings(settings); console.log('Stop hook registered in settings.json.'); }
+settings.hooks.SessionStart.push({ matcher: '', hooks: [{ type: 'command', command: `node "${sessionHookPath}"`, timeout: 15 }] });
+if (hookEntries(settings) === before) console.log('Hooks already registered in settings.json: no change.');
+else { saveSettings(settings); console.log('Stop and SessionStart hooks registered in settings.json.'); }
 
 console.log('');
 console.log(`Installed. Restart Claude Code and use: /perseveranza <task>   (verbs: node "${cliPath}" ...)`);

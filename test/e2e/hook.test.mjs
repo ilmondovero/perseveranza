@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { project, cli, arm, fire, readState, writeState, patchState, writePlan, writeArtifact, gate, journal } from '../helpers/cli.mjs';
+import { project, cli, arm, fire, sessionStart, readState, writeState, patchState, writePlan, writeArtifact, gate, journal } from '../helpers/cli.mjs';
 
 const PLAN = '- [ ] one\n- [ ] two\n';
 
@@ -170,10 +170,140 @@ test('session scoping through the real hook', () => {
   assert.equal(b.blocked, false);
   assert.equal(b.state.owner.sessionId, 'A');
   assert.equal(b.state.counters.iterations, 1);
+  // the owner silent for ages: still nothing implicit
   patchState(p, (s) => { s.owner.lastFireAt = 1; });
+  const still = fire(p, { session_id: 'B' });
+  assert.equal(still.blocked, false);
+  assert.equal(still.state.owner.sessionId, 'A');
+  // explicit hand-over: resume --takeover releases A, the next Stop of B claims the loop
+  const rel = cli(p, 'resume', '--takeover');
+  assert.equal(rel.code, 0);
+  assert.ok(rel.out.includes('owner released'));
+  assert.equal(readState(p).owner.sessionId, null);
+  assert.equal(readState(p).owner.releasedFrom, 'A');
+  // the release has a window: past it, the same Stop is a foreign session again
+  patchState(p, (s) => { s.owner.releasedAt = Date.now() - 3 * 3600 * 1000; });
+  const expired = fire(p, { session_id: 'B' });
+  assert.equal(expired.blocked, false);
+  assert.equal(expired.state.owner.sessionId, null);
+  assert.ok(cli(p, 'status').out.includes('window closed (resume --takeover again)'));
+  cli(p, 'resume', '--takeover'); // reopens it
   const take = fire(p, { session_id: 'B' });
   assert.equal(take.blocked, true);
   assert.equal(take.state.owner.sessionId, 'B');
+  assert.equal(take.state.counters.iterations, 2);
+  const j = journal(p);
+  assert.ok(j.some((e) => e.type === 'session' && e.event === 'released' && e.from === 'A'));
+  assert.ok(j.some((e) => e.type === 'session' && e.event === 'takeover' && e.from === 'A' && e.to === 'B'));
+  assert.ok(j.some((e) => e.type === 'gap' && e.ms > 1000), 'the silence is on record');
+  const hist = cli(p, 'history').out;
+  assert.ok(hist.includes('GAP: no fire for'));
+  assert.ok(hist.includes('session takeover A -> B'));
+});
+
+test('SessionStart hook: dormant, silent for the owner, a notice for a foreign session (stale or not), compact reminder', () => {
+  const p = project();
+  assert.equal(sessionStart(p, { session_id: 'A' }).text, null, 'dormant without state.json');
+  arm(p, 'orphan task');
+  writePlan(p, '- [x] one\n- [ ] two\n- [ ] three\n');
+  // armed a moment ago, nobody fired yet: the arming session has simply not stopped
+  const fresh = sessionStart(p, { session_id: 'B' }).text;
+  assert.ok(fresh.includes('just armed in this project'), fresh);
+  assert.ok(!fresh.includes('ABANDONED'));
+  fire(p, { session_id: 'A' }); fire(p, { session_id: 'A' }); // A owns it, phase review (review-delegate injected)
+  assert.equal(sessionStart(p, { session_id: 'A', source: 'startup' }).text, null, 'the owner needs no notice');
+  const compact = sessionStart(p, { session_id: 'A', source: 'compact' }).text;
+  assert.ok(compact.includes('this session drives an armed loop'));
+  assert.ok(compact.includes('phase `review`'));
+  // another session, owner fired a moment ago: informed, not asked to take over
+  const live = sessionStart(p, { session_id: 'B', source: 'startup' }).text;
+  assert.ok(live.includes('driven by another session (session A'));
+  assert.ok(live.includes('do not touch .omc-loop/'));
+  assert.ok(!live.includes('ABANDONED'));
+  // the owner silent for 20 h: the abandoned-loop question
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  const stale = sessionStart(p, { session_id: 'B', source: 'startup' });
+  assert.ok(stale.text.includes('ABANDONED'));
+  assert.ok(stale.text.includes('last fire 20h00m ago'));
+  assert.ok(stale.text.includes('1/3 steps done'));
+  assert.ok(stale.text.includes('last instruction `review-delegate`'), stale.text);
+  assert.ok(stale.text.includes('resume --takeover'));
+  assert.ok(stale.text.includes('disarm'));
+  assert.ok(stale.text.includes('Task: orphan task'));
+  assert.equal(stale.out.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.ok(journal(p).some((e) => e.type === 'session' && e.event === 'seen' && e.to === 'B' && e.stale === true && e.kind === 'abandoned'));
+  // custom threshold: 30 h makes the same loop look alive
+  assert.ok(!sessionStart(p, { session_id: 'B' }, { OMC_LOOP_STALE_MS: String(30 * 3600 * 1000) }).text.includes('ABANDONED'));
+  // the state is never touched by the notice
+  assert.equal(readState(p).owner.sessionId, 'A');
+  // paused for 20 h: a human is expected, not an orphan
+  cli(p, 'pause');
+  const waiting = sessionStart(p, { session_id: 'B' }).text;
+  assert.ok(waiting.includes('is PAUSED and waits for a human'), waiting);
+  assert.ok(!waiting.includes('ABANDONED'));
+  assert.ok(journal(p).some((e) => e.type === 'session' && e.event === 'seen' && e.kind === 'waiting'));
+  patchState(p, (s) => { s.signals.paused = false; });
+  // released by resume --takeover: waiting for a claim, not abandoned
+  cli(p, 'resume', '--takeover');
+  const rel = sessionStart(p, { session_id: 'C' }).text;
+  assert.ok(rel.includes('released by session A'), rel);
+  assert.ok(rel.includes('waiting for a claim'));
+  assert.ok(!rel.includes('ABANDONED'));
+  assert.equal(readState(p).owner.sessionId, null, 'still unclaimed: the notice claims nothing');
+});
+
+test('SessionStart hook speaks the language of the loop and reads only the tail of a huge journal', () => {
+  const p = project();
+  delete p.env.PERSEVERANZA_LANG; // the Italian default
+  arm(p, 'compito orfano');
+  writePlan(p, '- [x] uno\n- [ ] due\n');
+  fire(p, { session_id: 'A' }); fire(p, { session_id: 'A' });
+  // bury the last transition under megabytes of later noise: the tail must still find it
+  const noise = JSON.stringify({ ts: new Date().toISOString(), type: 'note', text: 'x'.repeat(200) });
+  writeFileSync(gate(p, 'journal.jsonl'), `${readFileSync(gate(p, 'journal.jsonl'), 'utf8')}${(noise + '\n').repeat(2000)}`);
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  const t0 = Date.now();
+  const r = sessionStart(p, { session_id: 'B' });
+  assert.ok(Date.now() - t0 < 5000);
+  assert.ok(r.text.includes('sembra ABBANDONATO'), r.text);
+  assert.ok(r.text.includes('fase `review`'));
+  assert.ok(r.text.includes('ultimo fire 20h00m fa'));
+  assert.ok(r.text.includes('1/2 passi fatti'));
+  assert.ok(!r.text.includes('ultima istruzione'), 'the transition is beyond the tail window: the hint is simply omitted');
+  assert.ok(r.text.includes('resume --takeover'));
+  // a project override of the notice wins over the language pack
+  writeFileSync(gate(p, 'prompts.json'), JSON.stringify({ prompts: { 'session-abandoned': 'CUSTOM {{owner}} {{steps}}' } }));
+  assert.equal(sessionStart(p, { session_id: 'B' }).text, 'CUSTOM sessione A 1/2 passi fatti');
+});
+
+test('a gap while paused is marked as such in the journal and the summary', () => {
+  const p = project();
+  arm(p, 'paused task');
+  writePlan(p, PLAN);
+  fire(p, { session_id: 'A' });
+  cli(p, 'pause');
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  fire(p, { session_id: 'A' }); // paused: silent, but the silence is on record
+  const gap = journal(p).find((e) => e.type === 'gap');
+  assert.ok(gap && gap.paused === true);
+  assert.ok(cli(p, 'history').out.includes('while paused'));
+  // the usual shape: the human comes back, runs resume, then the turn ends
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  cli(p, 'resume');
+  assert.ok(readState(p).signals.resumedAt > 0);
+  fire(p, { session_id: 'A' });
+  const gaps = journal(p).filter((e) => e.type === 'gap');
+  assert.equal(gaps.length, 2);
+  assert.equal(gaps[1].paused, true, 'resumed since the last fire: a pause, not a dead session');
+  assert.equal(readState(p).signals.resumedAt, 0, 'consumed by the fire');
+  // a plain silence after that is what it looks like
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  fire(p, { session_id: 'A' });
+  assert.equal(journal(p).filter((e) => e.type === 'gap').pop().paused, false);
+  cli(p, 'disarm');
+  const id = cli(p, 'runs').out.trim().split('\n')[0].trim().split(/\s+/)[0];
+  const summary = JSON.parse(readFileSync(join(p.home, 'runs', ...id.split('/'), 'summary.json'), 'utf8'));
+  assert.equal(summary.gaps[0].paused, true);
 });
 
 test('prompt pack: project override and language pack change the wording, header and routing stay', () => {

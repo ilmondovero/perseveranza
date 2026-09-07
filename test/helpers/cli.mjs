@@ -8,6 +8,7 @@ import { after } from 'node:test';
 import { ROOT } from '../../src/shell/paths.mjs';
 
 export const HOOK = join(ROOT, 'src', 'shell', 'stop.mjs');
+export const SESSION_HOOK = join(ROOT, 'src', 'shell', 'session-start.mjs');
 export const CLI = join(ROOT, 'src', 'cli', 'omc-loop.mjs');
 export const NODE = process.execPath;
 
@@ -28,7 +29,7 @@ export function freshDir(prefix = 'prs-') {
 export const OWN_ENV_VARS = [
   'OLLAMA_API_KEY', 'OLLAMA_HOST', 'OLLAMA_MODEL',
   'OMC_ASK_TIMEOUT_MS', 'OMC_ASK_RETRIES', 'OMC_HOOK_TIMEOUT_MS', 'OMC_LOOP_KILL', 'OMC_LOOP_NO_NOTIFY',
-  'OMC_NO_UPDATE_CHECK', 'OMC_PROMPT_PACK', 'OMC_SESSION_TAKEOVER_MS',
+  'OMC_NO_UPDATE_CHECK', 'OMC_PROMPT_PACK', 'OMC_LOOP_STALE_MS',
   'OMC_STATUSLINE_BASE_TIMEOUT_MS', 'OMC_TEST_TIMEOUT_MS',
   'PERSEVERANZA_HOME', 'PERSEVERANZA_LANG', 'CLAUDE_CONFIG_DIR',
 ];
@@ -85,6 +86,16 @@ export function fire(p, evt = {}, envExtra = {}) {
   const trimmed = (r.stdout || '').trim();
   if (trimmed) { try { out = JSON.parse(trimmed); } catch { /* non-JSON */ } }
   return { blocked: !!(out && out.decision === 'block'), reason: (out && out.reason) || '', state: readState(p), raw: r.stdout || '', stderr: r.stderr || '' };
+}
+
+// Fire a SessionStart event at the hook -> { text (additionalContext or null), out, raw }
+export function sessionStart(p, evt = {}, envExtra = {}) {
+  const payload = JSON.stringify({ cwd: p.dir, session_id: 't-sess', hook_event_name: 'SessionStart', source: 'startup', ...evt });
+  const r = spawnSync(NODE, [SESSION_HOOK], { input: payload, encoding: 'utf8', env: { ...p.env, ...envExtra } });
+  let out = null;
+  const trimmed = (r.stdout || '').trim();
+  if (trimmed) { try { out = JSON.parse(trimmed); } catch { /* non-JSON */ } }
+  return { text: out ? out.hookSpecificOutput.additionalContext : null, out, raw: r.stdout || '', stderr: r.stderr || '', code: r.status };
 }
 
 export function journal(p) {

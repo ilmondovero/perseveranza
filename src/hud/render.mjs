@@ -3,6 +3,7 @@
 
 import { stepCounts } from '../core/plan.mjs';
 import { tokensSpent, iterationCap } from '../core/budget.mjs';
+import { staleness, formatAge, HUD_AGE_MIN_MS } from '../core/staleness.mjs';
 
 const PHASE_LABEL = {
   plan: 'plan', implement: 'impl', review: 'rev',
@@ -50,6 +51,14 @@ export function renderProgress(state, planText = '', opts = {}) {
   const maxRetries = Number(state.limits?.maxRetries) || 3;
   if (retries > 0) parts.push(paint(33, `↻${retries}/${maxRetries}`));
   if (finalFails > 0) parts.push(paint(31, `✗${finalFails}/${maxRetries}`));
+  // the age of the last fire, only when the caller has a clock and the silence is worth a
+  // glance (ten minutes): a loop silent beyond the threshold is flagged STALE in red, since
+  // nothing else distinguishes it from a live one
+  if (Number.isFinite(opts.now)) {
+    const st = staleness(state, opts.now, opts.staleMs);
+    if (st.stale) parts.push(paint('1;31', `⏱${formatAge(st.ageMs)} STALE`));
+    else if (st.ageMs != null && st.ageMs >= HUD_AGE_MIN_MS) parts.push(`⏱${formatAge(st.ageMs)}`);
+  }
   const body = parts.join(' · ');
   const marker = opts.version ? `⟳ PRS v${opts.version}` : '⟳ PRS';
   return opts.marker ? `${paint('1;35', marker)} ${body}` : body;

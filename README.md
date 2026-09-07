@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-2.1.0-blue)
+![versione](https://img.shields.io/badge/versione-2.2.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -147,7 +147,15 @@ verifica aggiunge una lente security.
   `--budget-tokens`, fix per step con `--max-retries`. Kill switch da qualunque sessione:
   il file `.omc-loop/STOP` o `OMC_LOOP_KILL=1`.
 - **Un loop, una sessione.** La prima sessione che fa fire rivendica il loop; le altre non
-  lo toccano. N `git worktree` = N loop paralleli.
+  lo toccano, mai, nemmeno dopo una notte di silenzio: il passaggio di mano è esplicito
+  (`resume --takeover`). N `git worktree` = N loop paralleli.
+- **Un loop orfano non resta invisibile.** Il loop vive nello Stop hook della sessione
+  proprietaria: se quella muore (terminale chiuso, Esc a metà turno, crash) lo stato dice
+  "fase review" per sempre. Perciò l'hook `SessionStart` avvisa ogni nuova sessione aperta
+  nella cartella che esiste un loop di un'altra sessione, da quanto tace e in che fase era,
+  e chiede all'utente se riprenderlo (`resume --takeover`) o fermarlo (`disarm`). `status`,
+  la HUD e il riepilogo di `disarm` mostrano l'età dell'ultimo fire (`STALE` oltre due ore,
+  `OMC_LOOP_STALE_MS`); il journal registra il buco (`gap`).
 
 ## Comandi
 
@@ -173,7 +181,7 @@ I verbi con cui Claude, e tu, parlate al loop (`node "<root>/src/cli/omc-loop.mj
 | `status` · `history` · `explain` | sintesi leggibile · il journal del run · tabella delle transizioni e prossimi esiti |
 | `test [--if-needed] -- <cmd>` | esegue la suite e registra la prova; `--if-needed` la salta se un verde è già registrato per questo albero |
 | `report` · `complexity` · `claim-done` | segnali di Claude verso il loop |
-| `pause` · `resume` | sospende / riprende (resume azzera i retry) |
+| `pause` · `resume [--takeover]` | sospende / riprende (resume azzera i retry; `--takeover` libera la sessione proprietaria: il prossimo Stop di chi lo esegue prende il loop dalla fase corrente) |
 | `ask <provider> <slot> -- <prompt>` | parere di un modello esterno, salvato come artefatto |
 | `providers [list\|check\|enable]` | provider esterni; `check` prova la vita e spegne i morti |
 | `runs [list\|show <id>]` | l'archivio dei run |

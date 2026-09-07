@@ -30,11 +30,14 @@ export function defaultState(overrides = {}) {
     counters: { iterations: 0, retries: 0, finalFails: 0 },
     limits: { maxIterations: DEFAULT_MAX_ITERATIONS, maxIterationsExplicit: false, maxRetries: DEFAULT_MAX_RETRIES, maxTokens: null },
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, source: null },
-    signals: { lastReport: 'none', claimedDone: false, paused: false },
+    // resumedAt: when `resume` closed a pause (ms); consumed by the next fire so the gap
+    // it journals is marked as a human's pause, not a dead session
+    signals: { lastReport: 'none', claimedDone: false, paused: false, resumedAt: 0 },
     flags: { repeated: false, cleanedOnce: false, planPresented: false },
     lastTest: null,
     baselineDirty: [],
-    owner: { sessionId: null, lastFireAt: 0 },
+    // releasedFrom: the previous owner after `resume --takeover`, until the next fire claims
+    owner: { sessionId: null, lastFireAt: 0, releasedFrom: null, releasedAt: 0 },
     // the work tree as the hook last saw it: lets it notice a stop that changed nothing
     tree: { fingerprint: null, iteration: 0 },
     armedAt: null,
@@ -83,6 +86,7 @@ export function normalizeState(raw) {
   s.signals.lastReport = ['pass', 'fail'].includes(s.signals.lastReport) ? s.signals.lastReport : 'none';
   s.signals.claimedDone = bool(s.signals.claimedDone, false);
   s.signals.paused = bool(s.signals.paused, false);
+  s.signals.resumedAt = Math.max(0, num(s.signals.resumedAt, 0));
   s.flags.repeated = bool(s.flags.repeated, false);
   s.flags.cleanedOnce = bool(s.flags.cleanedOnce, false);
   s.flags.planPresented = bool(s.flags.planPresented, false);
@@ -111,6 +115,8 @@ export function normalizeState(raw) {
   s.tree.iteration = Math.max(0, num(s.tree.iteration, 0));
   s.owner.sessionId = typeof s.owner.sessionId === 'string' && s.owner.sessionId ? s.owner.sessionId : null;
   s.owner.lastFireAt = Math.max(0, num(s.owner.lastFireAt, 0));
+  s.owner.releasedFrom = typeof s.owner.releasedFrom === 'string' && s.owner.releasedFrom ? s.owner.releasedFrom : null;
+  s.owner.releasedAt = Math.max(0, num(s.owner.releasedAt, 0));
   return s;
 }
 

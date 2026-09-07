@@ -12,7 +12,10 @@ export const RUNTIME_FILES = [
   'src/core/plan.mjs',
   'src/core/prompts.mjs',
   'src/core/budget.mjs',
+  'src/core/staleness.mjs',
+  'src/core/time.mjs',
   'src/shell/stop.mjs',
+  'src/shell/session-start.mjs',
   'src/shell/effects.mjs',
   'src/shell/git.mjs',
   'src/shell/journal.mjs',
@@ -62,6 +65,8 @@ export const PLUGIN_FILES = ['.claude-plugin/plugin.json', 'hooks/hooks.json'];
 
 // The Stop hook entry point, relative to the repository root.
 export const HOOK_ENTRY = 'src/shell/stop.mjs';
+// The SessionStart hook entry point (a new session learns about a loop it does not own).
+export const SESSION_HOOK_ENTRY = 'src/shell/session-start.mjs';
 // The CLI entry point (the "verbs"), relative to the repository root.
 export const CLI_ENTRY = 'src/cli/omc-loop.mjs';
 
