@@ -15,8 +15,9 @@ import { archiveRun, archiveFailureNote } from './archive.mjs';
 import { loadPromptLayers } from './packs.mjs';
 import { treeFingerprints } from './git.mjs';
 import { readTranscriptUsage } from './transcript.mjs';
-import { readActivity } from './activity.mjs';
+import { readLife } from './life.mjs';
 import { spawnWatchdog } from './watchdog.mjs';
+import { findClaudeProcess } from './restore.mjs';
 import { parseTimeoutMs, boolEnv } from './util.mjs';
 import { currentVersion, updateAvailable, maybeSpawnRefresh } from '../update.mjs';
 
@@ -97,13 +98,17 @@ function main() {
     version: currentVersion(ROOT),
     updateAvailable: updateAvailable(ROOT, env),
     staleMs: parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS),
-    activityAt: (() => { const a = readActivity(paths.gateDir); return a && (!a.session || !s.owner.sessionId || a.session === s.owner.sessionId) ? a.at : 0; })(),
+    activityAt: (() => { const life = readLife(paths.gateDir, s); const a = life.activity; return Math.max(a && (!a.session || !s.owner.sessionId || a.session === s.owner.sessionId) ? a.at : 0, life.transcriptAt); })(),
   };
   const event = {
     sessionId: evt && typeof evt.session_id === 'string' ? evt.session_id : '',
     now: Date.now(),
     payloadKeys: evt && typeof evt === 'object' ? Object.keys(evt) : [],
     stopHookActive: !!(evt && evt.stop_hook_active === true),
+    transcriptPath: evt && typeof evt.transcript_path === 'string' ? evt.transcript_path : '',
+    // the Claude Code process above this hook: only when the watchdog may restore it (a
+    // process-tree walk costs a shell call at every Stop)
+    claude: boolEnv(env.OMC_LOOP_RESTORE) ? findClaudeProcess() : null,
   };
 
   const r = step(s, event, ctx);

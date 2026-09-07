@@ -64,6 +64,8 @@ export const DEFAULT_PROMPTS = {
   'hint-armed-at': `armed {{age}} ago ({{at}}), never fired`,
   'hint-last-instruction': `, last instruction \`{{lastPrompt}}\``,
   'hint-last-activity': `last activity {{age}} ago ({{at}}: {{what}})`,
+  'hint-last-transcript': `last output {{age}} ago ({{at}})`,
+  'hint-restore-pending': ` A delegation was pending and never returned ({{agents}}): check its result on disk before delegating again.`,
   'hint-act-tool': `tool {{tool}}`,
   'hint-act-delegate': `delegated to {{agent}}, not back yet`,
   'hint-act-subagent-stop': `subagent {{agent}} finished`,
@@ -75,6 +77,7 @@ export const DEFAULT_PROMPTS = {
   'session-released': `perseveranza: a loop in this project was released by session {{from}} ({{LOOP}} resume --takeover) and is waiting for a claim: phase \`{{phase}}\`, {{when}}, {{steps}}. Task: {{task}}. The next Stop of the session that continues the work takes it over: do that ONLY if the user asks this session to continue the task; otherwise do not touch .omc-loop/.`,
   'session-fresh': `perseveranza: a loop was just armed in this project ({{when}}) and no session has fired yet: phase \`{{phase}}\`, {{steps}}. Task: {{task}}. It belongs to the session that armed it: do not touch .omc-loop/ and do not work on its task from here unless the user says so.`,
   'session-waiting': `perseveranza: a loop in this project is PAUSED and waits for a human: owner {{owner}}, phase \`{{phase}}\`, {{when}}, {{steps}}. Task: {{task}}. It is not abandoned. Do not touch .omc-loop/ and do not work on its task. If the user wants to continue it from this session: read .omc-loop/ESCALATION.md if present, then {{LOOP}} resume --takeover and let the Stop hook drive.`,
+  'session-restore': `perseveranza: the previous turn of this session was interrupted by the watchdog after {{silence}} without a sign of life, and the session was restored. Task: {{task}}. Phase \`{{phase}}\`.{{what}} Run {{LOOP}} status, then continue the current phase from what is on disk (plan, notes, artifacts); do not blindly repeat the interrupted command. The Stop hook drives from here.`,
   'session-compact': `perseveranza: this session drives an armed loop (phase \`{{phase}}\`, {{steps}}). Task: {{task}}. If the context lost the phase instruction, run {{LOOP}} status and continue the current phase; the Stop hook injects the next instruction when the turn ends.`,
 };
 
@@ -116,6 +119,9 @@ export const PROMPT_VARS = {
   'hint-armed-at': ['age', 'at'],
   'hint-last-instruction': ['lastPrompt'],
   'hint-last-activity': ['age', 'at', 'what'],
+  'hint-last-transcript': ['age', 'at'],
+  'hint-restore-pending': ['agents'],
+  'session-restore': ['silence', 'task', 'phase', 'what', 'LOOP'],
   'hint-act-tool': ['tool'],
   'hint-act-delegate': ['agent'],
   'hint-act-subagent-stop': ['agent'],

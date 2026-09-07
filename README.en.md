@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-2.3.0-blue)
+![version](https://img.shields.io/badge/version-2.4.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -153,7 +153,7 @@ verification adds a security lens.
   folder that a loop of another session exists, how long it has been silent and in which
   phase it was, and asks the user whether to resume it (`resume --takeover`) or stop it
   (`disarm`). `status`, the HUD and the `disarm` recap show the age of the last fire (`STALE`
-  past two hours, `OMC_LOOP_STALE_MS`); the journal records the hole (`gap`).
+  past thirty minutes, `OMC_LOOP_STALE_MS`); the journal records the hole (`gap`).
 - **The loop has a heartbeat inside the turn too.** The `PreToolUse` (Agent), `PostToolUse`
   (working tools) and `SubagentStop` hooks write `.omc-loop/activity.json`: the silence is
   measured from the last sign of life, not the last Stop, and a subagent delegated and never
@@ -163,6 +163,18 @@ verification adds a security lens.
   process that sleeps until the threshold, re-sleeps as long as the loop shows life and, when
   the silence is real, sends the desktop notification and writes `watchdog` to the journal
   and to `summary.json`. No cron, no session to keep open; `OMC_LOOP_NO_WATCHDOG=1` disables it.
+- **With `OMC_LOOP_RESTORE=1` the watchdog unblocks.** Claude Code has no interface to
+  interrupt a running tool: the only interrupt is Esc. The watchdog does what Esc would: it
+  terminates the Claude Code process that drove the loop (recorded at the Stop) and reopens
+  the same session, same id, in a new console with a restore prompt. A hung turn costs the
+  threshold, not a night. Three signs of life (Stop, tool activity, transcript writes) and
+  the `test` verb's heartbeat during the suite make thirty silent minutes a dead turn, not a
+  slow one. Two stages: alert at thirty minutes, kill and restore at sixty
+  (`OMC_LOOP_RESTORE_AFTER_MS`), because a session waiting on a question to the user writes
+  nothing either and the alert is its chance. At most three restores per run; no relaunch
+  without a recorded process. Off by default; verified by hand on Windows before it was
+  written. `OMC_LOOP_CLAUDE_BIN` names the `claude` binary when it is not on `PATH`;
+  `OMC_ACTIVITY_HEARTBEAT_MS` tunes the `test` verb's heartbeat.
 
 ## Commands
 

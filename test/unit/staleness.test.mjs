@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatAge, formatAt, staleness, lastSeen, normalizeActivity, describeActivity, releaseOpen, describeLastFire, openStepTitles, noticeKind, sessionNotice, compactNotice, DEFAULT_STALE_MS, HUD_AGE_MIN_MS } from '../../src/core/staleness.mjs';
+import { formatAge, formatAt, staleness, lastSeen, normalizeActivity, describeActivity, releaseOpen, describeLastFire, openStepTitles, noticeKind, sessionNotice, compactNotice, restorePrompt, DEFAULT_STALE_MS, HUD_AGE_MIN_MS } from '../../src/core/staleness.mjs';
 import { validatePack } from '../../src/core/prompts.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,8 +11,8 @@ const H = 3600 * 1000;
 const T0 = Date.UTC(2026, 8, 6, 11, 10, 25); // 2026-09-06 11:10:25 UTC, the reported last fire
 const IT = validatePack(JSON.parse(readFileSync(join(ROOT, 'packs', 'it.json'), 'utf8'))).overrides;
 
-test('thresholds: two hours stale, ten minutes before the HUD shows an age', () => {
-  assert.equal(DEFAULT_STALE_MS, 2 * H);
+test('thresholds: thirty minutes stale, ten minutes before the HUD shows an age', () => {
+  assert.equal(DEFAULT_STALE_MS, 30 * 60 * 1000);
   assert.equal(HUD_AGE_MIN_MS, 10 * 60 * 1000);
 });
 
@@ -53,6 +53,15 @@ test('activity: the heartbeat of a turn moves the last sign of life, a foreign s
   assert.deepEqual(lastSeen(s, { at: T0 - H, session: 'A' }), { at: T0, via: 'fire' }, 'older than the fire: the fire wins');
   assert.deepEqual(lastSeen(s, { at: T0 + H, session: 'B' }), { at: T0, via: 'fire' }, 'another session\'s tools are not this loop\'s life');
   assert.deepEqual(lastSeen(mk(), { at: T0 + H, session: 'B' }), { at: T0 + H, via: 'activity' }, 'unclaimed: any activity counts');
+  // the transcript: written at every message, the third sign of life, strongest when latest
+  assert.deepEqual(lastSeen(s, null, T0 + 2 * H), { at: T0 + 2 * H, via: 'transcript' });
+  assert.deepEqual(lastSeen(s, { at: T0 + 3 * H, session: 'A' }, T0 + 2 * H), { at: T0 + 3 * H, via: 'activity' });
+  assert.deepEqual(lastSeen(s, { at: T0 + 3 * H, session: 'B' }, T0 + 2 * H), { at: T0 + 2 * H, via: 'transcript' }, 'foreign activity ignored, transcript still counts');
+  assert.deepEqual(lastSeen(s, null, T0 - H), { at: T0, via: 'fire' });
+  const gen = staleness(s, T0 + 20 * H, DEFAULT_STALE_MS, null, T0 + 20 * H - 5000);
+  assert.equal(gen.stale, false); assert.equal(gen.via, 'transcript'); assert.equal(gen.ageMs, 5000);
+  assert.equal(noticeKind(s, T0 + 20 * H, DEFAULT_STALE_MS, null, T0 + 20 * H - 5000), 'live');
+  assert.ok(sessionNotice(s, { now: T0 + 20 * H, transcriptAt: T0 + 20 * H - 5000 }).includes('last output 5s ago'));
   assert.equal(normalizeActivity({ at: 'x' }), null);
   assert.equal(normalizeActivity(null), null);
   assert.deepEqual(normalizeActivity({ at: 5, delegate: { at: 0 } }).pending, []);
@@ -202,6 +211,23 @@ test('sessionNotice and compactNotice speak the language of the pack', () => {
   const c = compactNotice(mk({ task: 'spedire', phase: 'implement' }), { planText: '- [x] a\n- [ ] b\n', LOOP: 'LOOP', layers: [IT] });
   assert.ok(c.includes('questa sessione guida un loop armato (fase `implement`, 1/2 passi fatti)'));
   assert.ok(c.includes('LOOP status'));
+});
+
+test('restorePrompt: what a restored session is told, in the language of the pack', () => {
+  const s = mk({ task: 'ship it', phase: 'review' });
+  const en = restorePrompt(s, { silentMs: 31 * 60 * 1000, LOOP: 'LOOP', activity: { at: 1, pending: [{ at: 1, agent: 'pf-reviewer' }] } });
+  assert.ok(en.includes('interrupted by the watchdog after 31m without a sign of life'), en);
+  assert.ok(en.includes('Task: ship it. Phase `review`.'));
+  assert.ok(en.includes('A delegation was pending and never returned (pf-reviewer)'));
+  assert.ok(en.includes('LOOP status'));
+  assert.ok(en.includes('do not blindly repeat'));
+  assert.ok(!en.includes('{{'));
+  const plain = restorePrompt(s, { silentMs: 60_000 });
+  assert.ok(!plain.includes('delegation'));
+  const it = restorePrompt(s, { silentMs: 31 * 60 * 1000, LOOP: 'LOOP', layers: [IT], activity: { at: 1, pending: [{ at: 1, agent: 'a' }, { at: 2, agent: 'b' }] } });
+  assert.ok(it.includes('interrotto dalla sentinella dopo 31m'), it);
+  assert.ok(it.includes('non e\' mai tornata (a, b)'));
+  assert.ok(it.includes('LOOP status'));
 });
 
 test('compactNotice reminds the owner of the phase and the status verb', () => {

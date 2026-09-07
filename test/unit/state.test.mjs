@@ -92,3 +92,15 @@ test('loadState: v1 -> migrated, v2 -> normalised, garbage -> error', () => {
 test('PHASES lists the six phases', () => {
   assert.deepEqual(PHASES, ['plan', 'implement', 'review', 'cleanup', 'final-verify', 'git-finish']);
 });
+
+test('owner: transcript path and Claude Code process are normalised (2.4.0 fields)', () => {
+  const s = normalizeState({ phase: 'plan', owner: { sessionId: 'A', transcriptPath: '/t/a.jsonl', claudePid: '185148', claudeStartedAt: '2026-09-07T10:00:00.000Z' } });
+  assert.equal(s.owner.transcriptPath, '/t/a.jsonl');
+  assert.equal(s.owner.claudePid, 185148);
+  assert.equal(s.owner.claudeStartedAt, '2026-09-07T10:00:00.000Z');
+  const junk = normalizeState({ phase: 'plan', owner: { transcriptPath: 7, claudePid: -3, claudeStartedAt: 12 } });
+  assert.equal(junk.owner.transcriptPath, null);
+  assert.equal(junk.owner.claudePid, 0);
+  assert.equal(junk.owner.claudeStartedAt, null);
+  assert.equal(normalizeState({ phase: 'plan' }).owner.claudePid, 0);
+});

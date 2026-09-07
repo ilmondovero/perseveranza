@@ -138,13 +138,20 @@ export function step(input, event = {}, ctx0 = {}) {
     s.owner.sessionId = event.sessionId;
     s.owner.releasedFrom = null;
     s.owner.releasedAt = 0;
+    // what the shell knows about the driving session: its transcript (a sign of life) and
+    // its Claude Code process (what the watchdog restores)
+    if (typeof event.transcriptPath === 'string' && event.transcriptPath) s.owner.transcriptPath = event.transcriptPath;
+    if (event.claude && Number(event.claude.pid) > 0) {
+      s.owner.claudePid = Number(event.claude.pid);
+      s.owner.claudeStartedAt = typeof event.claude.startedAt === 'string' ? event.claude.startedAt : null;
+    }
   }
   // --- the silence before this fire: recorded so the run's history shows the hole ---
   // Only a fire that carries a session id moves the owner's clock: it is the one signal
   // the staleness of the loop is read from.
   if (event.sessionId || !s.owner.sessionId) {
-    // ctx.activityAt: the last tool activity of the turn (activity hook); a long turn that
-    // kept working is not a hole in the run
+    // ctx.activityAt: the last sign of life inside the turn (tool activity, transcript); a
+    // long turn that kept working is not a hole in the run
     const seen = Math.max(s.owner.lastFireAt, Number(ctx.activityAt) || 0);
     if (s.owner.lastFireAt > 0 && now - seen > staleMs) {
       // paused: the silence was a human's choice (escalation, plan approval), not a dead

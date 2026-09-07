@@ -43,7 +43,8 @@ async function armed(evt, gateDir) {
   // pending: the subagents launched and not back yet, oldest first (parallel delegations
   // are the house pattern: one slot would lose all but the last)
   const pending = prev ? prev.pending.slice() : [];
-  const base = { at: now, session, event: 'tool', tool, agent: '', pending };
+  const transcript = evt && typeof evt.transcript_path === 'string' ? evt.transcript_path : (prev ? prev.transcript : '');
+  const base = { at: now, session, event: 'tool', tool, agent: '', pending, transcript };
   // the one that came back: by name if known, else the oldest
   const settle = (agent) => {
     const i = agent ? pending.findIndex((d) => d.agent === agent) : -1;

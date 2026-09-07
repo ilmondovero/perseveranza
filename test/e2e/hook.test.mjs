@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { project, cli, arm, fire, sessionStart, activity, readActivity, watchdog, readState, writeState, patchState, writePlan, writeArtifact, gate, journal, spawnSync, CLI, WATCHDOG } from '../helpers/cli.mjs';
+import { project, cli, arm, fire, sessionStart, activity, readActivity, watchdog, readState, writeState, patchState, writePlan, writeArtifact, gate, journal, spawnSync, CLI, WATCHDOG, freshDir } from '../helpers/cli.mjs';
+import { spawn } from 'node:child_process';
+import { ROOT } from '../../src/shell/paths.mjs';
 
 const PLAN = '- [ ] one\n- [ ] two\n';
 
@@ -611,4 +613,213 @@ test('the Stop hook and arm spawn ONE live watchdog per loop unless OMC_LOOP_NO_
   const paused = fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
   assert.equal(paused.state.signals.paused, true);
   assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, wd2.pid, 'no watchdog for a paused loop');
+});
+
+test('the test verb beats while the suite runs, so a long suite is not a silent loop', () => {
+  const p = project();
+  arm(p, 'slow suite');
+  fire(p, { session_id: 'A' });
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  assert.ok(cli(p, 'status').out.includes('STALE'));
+  const t0 = Date.now();
+  const r = spawnSync(process.execPath, [CLI, 'test', '--', 'node -e "setTimeout(()=>{}, 3500)"'], { cwd: p.dir, encoding: 'utf8', env: { ...p.env, OMC_ACTIVITY_HEARTBEAT_MS: '1000' } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const a = readActivity(p);
+  assert.ok(a && a.tool.startsWith('test verb: node -e'), JSON.stringify(a));
+  assert.ok(a.at >= t0 + 1500, 'the record was refreshed DURING the run, not only at its start');
+  assert.equal(a.session, 'A', 'the beat is the owner\'s, never an anonymous one that would keep a foreign loop alive');
+  assert.ok(!cli(p, 'status').out.includes('STALE'));
+});
+
+test('the transcript is the third sign of life: recorded by the Stop hook, read by status, HUD and SessionStart', () => {
+  const p = project();
+  arm(p, 'typing');
+  writePlan(p, PLAN);
+  const tdir = freshDir('prs-tr-');
+  const transcript = join(tdir, 'sess-A.jsonl');
+  writeFileSync(transcript, '{"type":"user"}\n');
+  fire(p, { session_id: 'A', transcript_path: transcript });
+  assert.equal(readState(p).owner.transcriptPath, transcript);
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  // the file is old (older than the fire? no: written a moment ago): the loop is alive
+  let st = cli(p, 'status').out;
+  assert.ok(!st.includes('STALE') && /transcript: {2}written \d+s ago/.test(st), st);
+  // the transcript falls silent: stale
+  const old = new Date(Date.now() - 20 * 3600 * 1000);
+  spawnSync(process.execPath, ['-e', `require('fs').utimesSync(process.argv[1], ${old.getTime() / 1000}, ${old.getTime() / 1000})`, transcript]);
+  st = cli(p, 'status').out;
+  assert.ok(st.includes('STALE'), st);
+  // a subagent transcript still being written counts too
+  const sub = join(tdir, 'sess-A', 'subagents');
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, 'agent-1.jsonl'), '{"type":"assistant"}\n');
+  st = cli(p, 'status').out;
+  assert.ok(!st.includes('STALE'), st);
+  const notice = sessionStart(p, { session_id: 'B' }).text;
+  assert.ok(notice.includes('driven by another session') && notice.includes('last output'), notice);
+  // the gap starts at the last sign of life: none here, the turn was writing
+  fire(p, { session_id: 'A', transcript_path: transcript });
+  assert.ok(!journal(p).some((e) => e.type === 'gap'));
+  // OMC_LOOP_RESTORE on: the hook looks for the Claude Code process above it. Under a plain
+  // test runner there is none (0); under a Claude Code session running the suite it finds
+  // that very session, with its start time: the walk works end to end either way.
+  fire(p, { session_id: 'A', transcript_path: transcript }, { OMC_LOOP_RESTORE: '1' });
+  const o = readState(p).owner;
+  assert.ok(o.claudePid === 0 || (o.claudePid > 0 && typeof o.claudeStartedAt === 'string'), JSON.stringify(o));
+});
+
+test('restore.mjs: what Claude Code looks like, the walk starts above the hook, kill fails closed, the env is scrubbed', async () => {
+  const { findClaudeProcess, looksLikeClaude, processInfo, sameProcess, killTree, cleanEnv } = await import('../../src/shell/restore.mjs');
+  // the native binary, or node running the npm package; never our own hooks, however
+  // "claude" their path (the shipped plugin lives under ~/.claude/plugins/...)
+  assert.equal(looksLikeClaude('claude.exe', '"C:\\Users\\x\\.local\\bin\\claude.exe" --dangerously-skip-permissions'), true);
+  assert.equal(looksLikeClaude('claude', '/usr/local/bin/claude'), true);
+  assert.equal(looksLikeClaude('node', 'node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'), true);
+  assert.equal(looksLikeClaude('node.exe', 'node "C:\\Users\\x\\.claude\\plugins\\cache\\perseveranza\\perseveranza\\2.4.0\\src\\shell\\stop.mjs"'), false, 'the Stop hook of the installed plugin');
+  assert.equal(looksLikeClaude('node.exe', 'node C:\\x\\.claude\\plugins\\p\\src\\shell\\watchdog.mjs C:\\proj\\.omc-loop'), false, 'the watchdog');
+  assert.equal(looksLikeClaude('node', 'node /home/x/.claude/mcp/some-server.js'), false, 'an MCP server under ~/.claude');
+  assert.equal(looksLikeClaude('bash.exe', 'bash -c claude'), false);
+  // a dummy that looks like the npm package
+  const dummy = spawn(process.execPath, ['-e', '/* @anthropic-ai/claude-code/cli.js dummy */ setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
+  // and a child under it, standing in for the hook: the walk must answer with the dummy, not the child
+  await new Promise((r) => setTimeout(r, 800));
+  const info = processInfo(dummy.pid);
+  assert.equal(info.alive, true);
+  assert.ok(looksLikeClaude(info.name, info.cmd), JSON.stringify(info));
+  assert.equal(sameProcess(info, null), false, 'no recorded start time: not proven, a kill primitive fails closed');
+  assert.equal(sameProcess({ ...info, startedAt: null }, info.startedAt), false);
+  assert.equal(sameProcess(info, info.startedAt), true);
+  assert.equal(sameProcess(info, new Date(Date.parse(info.startedAt) - 60_000).toISOString()), false, 'a different start: a reused pid');
+  assert.equal(findClaudeProcess(dummy.pid), null, 'the starting process is never a candidate');
+  const child = spawn(process.execPath, ['-e', `require('child_process').spawnSync(process.execPath, ['-e', 'setTimeout(()=>{}, 4000)'], { stdio: 'ignore' })`], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 1200));
+  const grandchild = spawnSync('powershell', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${child.pid} }).ProcessId`], { encoding: 'utf8' }).stdout.trim();
+  if (process.platform === 'win32' && grandchild) {
+    assert.equal(findClaudeProcess(Number(grandchild)), null, 'plain node parents: nothing found');
+  }
+  assert.equal(processInfo(process.pid).alive, true);
+  assert.equal(killTree(dummy.pid), true);
+  assert.equal(processInfo(dummy.pid).alive, false);
+  assert.equal(processInfo(0).alive, false);
+  child.kill();
+  // re-arm: a live incumbent is kept unless `replace` is asked (the watchdog re-arming
+  // after a restore is itself the incumbent)
+  const { spawnWatchdog, alive } = await import('../../src/shell/watchdog.mjs');
+  const emptyGate = join(freshDir('prs-gate-'), '.omc-loop');
+  mkdirSync(emptyGate, { recursive: true });
+  const envOn = { ...process.env, OMC_LOOP_NO_WATCHDOG: '' };
+  const incumbent = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 500));
+  writeFileSync(join(emptyGate, 'watchdog.json'), JSON.stringify({ pid: incumbent.pid, spawnedAt: new Date().toISOString() }));
+  assert.equal(spawnWatchdog(emptyGate, envOn), incumbent.pid, 'alive incumbent: kept');
+  const fresh = spawnWatchdog(emptyGate, envOn, { replace: true });
+  assert.ok(fresh > 0 && fresh !== incumbent.pid, 'replace: a new one');
+  assert.equal(JSON.parse(readFileSync(join(emptyGate, 'watchdog.json'), 'utf8')).pid, fresh);
+  incumbent.kill();
+  await new Promise((r) => setTimeout(r, 1500)); // no state.json in that gate: the new one exits at once
+  assert.equal(alive(fresh), false, 'a watchdog on an unarmed gate leaves');
+  assert.equal(spawnWatchdog(emptyGate, { OMC_LOOP_NO_WATCHDOG: '1' }), 0);
+  const env = cleanEnv({ PATH: 'x', CLAUDE_CONFIG_DIR: 'keep', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_MESSAGING_SOCKET: 's', CLAUDE_CODE_BRIDGE_SESSION_ID: 'b', CLAUDE_CODE_SESSION_ID: 'i', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'gone' });
+  assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CONFIG_DIR', 'PATH'], 'everything Claude Code sets about its own session is stripped; the user config dir is not');
+});
+
+test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens the session with the restore prompt, guards pid reuse and the restore limit', async () => {
+  const p = project();
+  arm(p, 'hung review');
+  writePlan(p, '- [x] one\n- [ ] two\n');
+  fire(p, { session_id: 'sess-A-full' });
+  activity(p, { session_id: 'sess-A-full', hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'pf-reviewer' } });
+  // a fake claude that records how it was called
+  const out = join(freshDir('prs-fake-'), 'call.json');
+  const fake = join(freshDir('prs-fake-'), 'claude.mjs');
+  writeFileSync(fake, `import { writeFileSync } from 'node:fs'; writeFileSync(process.env.OMC_FAKE_OUT, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null, sock: process.env.CLAUDE_CODE_MESSAGING_SOCKET ?? null }));`);
+  const env = { OMC_LOOP_RESTORE: '1', OMC_LOOP_RESTORE_AFTER_MS: '1000', OMC_LOOP_CLAUDE_BIN: fake, OMC_FAKE_OUT: out, OMC_LOOP_STALE_MS: '1000', CLAUDE_CODE_CHILD_SESSION: 'inherited', CLAUDE_CODE_MESSAGING_SOCKET: 'inherited' };
+  // the hung "Claude Code": a dummy whose command line looks like the npm package
+  const dummy = spawn(process.execPath, ['-e', '/* @anthropic-ai/claude-code/cli.js dummy */ setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 800));
+  const { processInfo } = await import('../../src/shell/restore.mjs');
+  const info = processInfo(dummy.pid);
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = dummy.pid; s.owner.claudeStartedAt = info.startedAt; });
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ ...readActivity(p), at: Date.now() - 20 * 3600 * 1000, pending: [{ at: Date.now() - 20 * 3600 * 1000, agent: 'pf-reviewer' }] }));
+  const r = watchdog(p, env);
+  assert.equal(r.code, 0, r.stderr);
+  // two stages: the alert first (the human's chance), the restore after the second threshold
+  const ws = journal(p).filter((e) => e.type === 'watchdog');
+  assert.deepEqual(ws.map((e) => e.action), ['alerted', 'restored'], JSON.stringify(ws.map((e) => e.text)));
+  assert.ok(ws[0].text.includes('will be terminated and restored in'), ws[0].text);
+  const w = ws[1];
+  assert.equal(w.restore.killed, true); assert.equal(w.restore.wasAlive, true); assert.equal(w.restore.how, 'direct');
+  assert.equal(processInfo(dummy.pid).alive, false, 'the hung process tree is gone');
+  assert.ok(w.text.includes('Terminated the hung session; reopened it'), w.text);
+  assert.equal(w.restore.watchdog, 0, 'the re-arm ran (OMC_LOOP_NO_WATCHDOG=1 in the tests makes it a no-op: see the spawnWatchdog test)');
+  const until = Date.now() + 10000;
+  while (Date.now() < until && !existsSync(out)) await new Promise((res) => setTimeout(res, 100));
+  assert.ok(existsSync(out), 'the fake claude was launched');
+  const call = JSON.parse(readFileSync(out, 'utf8'));
+  assert.deepEqual(call.argv.slice(0, 2), ['-r', 'sess-A-full'], 'same session id: it keeps owning the loop');
+  assert.ok(call.argv[2].includes('interrupted by the watchdog after 20h00m'), call.argv[2]);
+  assert.ok(call.argv[2].includes('pending and never returned (pf-reviewer)'));
+  assert.ok(call.argv[2].includes('Phase `implement`'));
+  assert.equal(call.cwd.replace(/\\/g, '/'), p.dir.replace(/\\/g, '/'), 'launched from the project');
+  assert.equal(call.child, null, 'the inherited child marker is stripped, so the restored session saves its transcript');
+  assert.equal(call.sock, null);
+  assert.ok(cli(p, 'history').out.includes('WATCHDOG (killed and restored)'));
+  // the recorded process is gone (client died): nothing to kill, still restored
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  writeFileSync(gate(p, 'watchdog.json'), '');
+  watchdog(p, env);
+  const w2 = journal(p).filter((e) => e.type === 'watchdog').pop();
+  assert.equal(w2.action, 'restored'); assert.equal(w2.restore.wasAlive, false); assert.equal(w2.restore.killed, false);
+  assert.ok(w2.text.includes('Its process was already gone; reopened it'));
+  // never recorded (flag turned on mid-run, walk failed): a blind relaunch beside a possibly
+  // live session is refused
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = 0; });
+  writeFileSync(gate(p, 'watchdog.json'), '');
+  watchdog(p, env);
+  const w2b = journal(p).filter((e) => e.type === 'watchdog').pop();
+  assert.equal(w2b.action, 'alerted');
+  assert.ok(w2b.restore.why.includes('refusing a blind relaunch'), w2b.restore.why);
+  patchState(p, (s) => { s.owner.claudePid = dummy.pid; s.owner.claudeStartedAt = info.startedAt; });
+  // pid reuse: a live process that is not Claude Code is never killed, and neither is one
+  // that looks like it but whose start time is unknown
+  const other = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 800));
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = other.pid; s.owner.claudeStartedAt = processInfo(other.pid).startedAt; });
+  watchdog(p, env);
+  const w3 = journal(p).filter((e) => e.type === 'watchdog').pop();
+  assert.equal(w3.action, 'alerted');
+  assert.ok(w3.restore.why.includes('not the recorded Claude Code process'), w3.restore.why);
+  assert.equal(processInfo(other.pid).alive, true, 'untouched');
+  other.kill();
+  // the restore limit: a session that dies at every restore is a problem for a human. The
+  // count is taken from the WHOLE journal: an overnight run outgrows the tail window
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = dummy.pid; s.owner.claudeStartedAt = info.startedAt; });
+  writeFileSync(gate(p, 'watchdog.json'), '');
+  watchdog(p, env); // third restore
+  assert.equal(journal(p).filter((e) => e.type === 'watchdog' && e.action === 'restored').length, 3);
+  const pad = JSON.stringify({ ts: new Date().toISOString(), type: 'note', text: 'x'.repeat(200) });
+  writeFileSync(gate(p, 'journal.jsonl'), `${readFileSync(gate(p, 'journal.jsonl'), 'utf8')}${(pad + '\n').repeat(600)}`);
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  writeFileSync(gate(p, 'watchdog.json'), '');
+  watchdog(p, env);
+  const w5 = journal(p).filter((e) => e.type === 'watchdog').pop();
+  assert.equal(w5.action, 'alerted');
+  assert.ok(w5.restore.why.includes('restore limit (3)'), w5.restore.why);
+  // without the flag: alert only, nothing killed, nothing launched
+  const alive2 = spawn(process.execPath, ['-e', '/* @anthropic-ai/claude-code/cli.js dummy */ setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 800));
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = alive2.pid; s.owner.claudeStartedAt = processInfo(alive2.pid).startedAt; });
+  writeFileSync(gate(p, 'watchdog.json'), '');
+  const before = existsSync(out) ? readFileSync(out, 'utf8') : '';
+  watchdog(p, { OMC_LOOP_STALE_MS: '1000', OMC_LOOP_CLAUDE_BIN: fake, OMC_FAKE_OUT: out });
+  const w6 = journal(p).filter((e) => e.type === 'watchdog').pop();
+  assert.equal(w6.action, 'alerted'); assert.equal(w6.restore, null);
+  assert.ok(w6.text.includes('Check the session'));
+  assert.equal(processInfo(alive2.pid).alive, true, 'nothing killed');
+  assert.equal(existsSync(out) ? readFileSync(out, 'utf8') : '', before, 'nothing launched');
+  alive2.kill();
+  cli(p, 'disarm');
+  const id = cli(p, 'runs').out.trim().split('\n')[0].trim().split(/\s+/)[0];
+  const summary = JSON.parse(readFileSync(join(p.home, 'runs', ...id.split('/'), 'summary.json'), 'utf8'));
+  assert.equal(summary.watchdogAlerts.filter((a) => a.action === 'restored').length, 3);
 });

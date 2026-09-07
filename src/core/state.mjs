@@ -37,7 +37,9 @@ export function defaultState(overrides = {}) {
     lastTest: null,
     baselineDirty: [],
     // releasedFrom: the previous owner after `resume --takeover`, until the next fire claims
-    owner: { sessionId: null, lastFireAt: 0, releasedFrom: null, releasedAt: 0 },
+    // transcriptPath: the session transcript (a sign of life); claudePid/claudeStartedAt: the
+    // Claude Code process driving the loop, for the watchdog's kill-and-restore
+    owner: { sessionId: null, lastFireAt: 0, releasedFrom: null, releasedAt: 0, transcriptPath: null, claudePid: 0, claudeStartedAt: null },
     // the work tree as the hook last saw it: lets it notice a stop that changed nothing
     tree: { fingerprint: null, iteration: 0 },
     armedAt: null,
@@ -117,6 +119,9 @@ export function normalizeState(raw) {
   s.owner.lastFireAt = Math.max(0, num(s.owner.lastFireAt, 0));
   s.owner.releasedFrom = typeof s.owner.releasedFrom === 'string' && s.owner.releasedFrom ? s.owner.releasedFrom : null;
   s.owner.releasedAt = Math.max(0, num(s.owner.releasedAt, 0));
+  s.owner.transcriptPath = typeof s.owner.transcriptPath === 'string' && s.owner.transcriptPath ? s.owner.transcriptPath : null;
+  s.owner.claudePid = Math.max(0, num(s.owner.claudePid, 0));
+  s.owner.claudeStartedAt = typeof s.owner.claudeStartedAt === 'string' && s.owner.claudeStartedAt ? s.owner.claudeStartedAt : null;
   return s;
 }
 

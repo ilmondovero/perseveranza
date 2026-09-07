@@ -3,6 +3,42 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.4.0
+
+La sentinella della 2.3.0 avvisava e basta: non esiste un'interfaccia per interrompere un
+tool in corso in Claude Code, l'unico interrupt è Esc. Questa versione fa premere Esc alla
+sentinella. Tutto è stato provato a mano prima di scriverlo (`docs/REVIEW-NOTES.md`): una
+sessione reale uccisa a metà comando, ripristinata con `--resume`, stesso id, prompt
+eseguito sette secondi dopo.
+
+- **Kill e ripristino (`OMC_LOOP_RESTORE=1`, disattivo di default).** Lo Stop hook registra
+  il processo Claude Code che lo ha lanciato (pid e istante di avvio, risalendo l'albero) e
+  il percorso della trascrizione. A silenzio accertato la sentinella termina l'albero di
+  processi e riapre la stessa sessione in una nuova console, dalla cartella del progetto,
+  con il prompt `session-restore` (nel pack: fase, task, deleghe mai tornate, "non ripetere
+  ciecamente"). Due stadi: avviso alla soglia, kill dopo una seconda soglia
+  (`OMC_LOOP_RESTORE_AFTER_MS`, default il doppio: una sessione ferma su una domanda
+  all'utente non scrive nulla, e l'avviso è la sua occasione). Massimo tre ripristini per
+  run, contati sull'intero journal; un pid riusato o senza istante di avvio registrato non
+  viene mai ucciso; nessun rilancio senza un processo registrato (sarebbero due processi
+  sulla stessa sessione); una sessione già morta viene riaperta senza uccidere nulla, e
+  quella ripristinata ha subito la sua sentinella. La ricerca del processo parte SOPRA
+  l'hook e riconosce solo il binario nativo o node con `cli.js` del pacchetto: il plugin
+  installato vive sotto `~/.claude/plugins/`, e "qualunque cosa con claude nel nome"
+  avrebbe trovato l'hook stesso (difetto trovato in revisione, non nella prova a mano fatta
+  dalla copia di lavoro). Windows completo; macOS/Linux best-effort. Le tre lezioni del test sono nel codice: via `CLAUDE_CODE_CHILD_SESSION`
+  dall'ambiente (o la sessione figlia non salva la trascrizione), prompt come argomento
+  unico, lancio dal progetto.
+- **Terzo segno di vita: la trascrizione.** Scritta a ogni messaggio, con quelle dei
+  subagent in `<sessione>/subagents/`: un modello che genera per un'ora non è silenzio.
+  `status` la mostra (`transcript: written 5s ago`).
+- **Il verbo `test` batte il cuore** mentre la suite gira (`OMC_ACTIVITY_HEARTBEAT_MS`,
+  60 s): una suite da mezz'ora non è mai un loop morto.
+- **Soglia a trenta minuti.** Con tre segnali il silenzio legittimo più lungo è un singolo
+  tool: una `Bash` arriva a dieci minuti. Trenta sono tre volte il caso peggiore; il loop
+  orfano della segnalazione ne aveva quaranta volte tanti. Un turno morto alle 11:10 riparte
+  alle 11:40 invece del giorno dopo.
+
 ## 2.3.0
 
 La 2.2.0 rendeva visibile un loop orfano quando l'utente tornava. Ma il blocco vero, il

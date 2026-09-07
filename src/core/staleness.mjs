@@ -13,10 +13,12 @@ import { formatAge, formatAt } from './time.mjs';
 
 export { formatAge, formatAt };
 
-// Two hours: a high-complexity step with subagents and a long suite can keep one turn open
-// well past an hour, and a false STALE turns into a needless question to the user; the
-// reported orphan stayed silent ten times longer.
-export const DEFAULT_STALE_MS = 2 * 60 * 60 * 1000;
+// Thirty minutes. With three signs of life (the Stop, the tool activity of the turn, the
+// transcript written at every message) the longest silence of a live turn is one tool call:
+// a Bash caps at ten minutes, the test verb beats while the suite runs, an API retry takes
+// minutes. Thirty is three times the worst case; the reported orphan stayed silent forty
+// times longer. A false positive costs a restored turn, a true positive a whole night.
+export const DEFAULT_STALE_MS = 30 * 60 * 1000;
 // Below this age the HUD shows no ⏱ at all: a live loop deserves a quiet statusline.
 export const HUD_AGE_MIN_MS = 10 * 60 * 1000;
 
@@ -36,27 +38,31 @@ export function normalizeActivity(raw) {
     .filter((d) => d && typeof d === 'object' && Number(d.at) > 0)
     .map((d) => ({ at: Number(d.at), agent: String(d.agent || '').slice(0, 120) }))
     .sort((a, b) => a.at - b.at);
-  return { at, session: String(raw.session || ''), event: String(raw.event || 'tool'), tool: String(raw.tool || ''), agent: String(raw.agent || '').slice(0, 120), pending };
+  return { at, session: String(raw.session || ''), event: String(raw.event || 'tool'), tool: String(raw.tool || ''), agent: String(raw.agent || '').slice(0, 120), pending, transcript: typeof raw.transcript === 'string' ? raw.transcript : '' };
 }
 
-// The last moment the loop showed life: the owner's last Stop or, if later, the last tool
-// activity of the owner's turn (an activity of another session is not the loop's).
-export function lastSeen(state, activity = null) {
+// The last moment the loop showed life: the owner's last Stop, the last tool activity of
+// the owner's turn (an activity of another session is not the loop's), or the last write
+// to the session transcript (every message, so the model generating counts as life).
+//   -> { at, via: 'fire'|'activity'|'transcript' }
+export function lastSeen(state, activity = null, transcriptAt = 0) {
   const fire = Number(state?.owner?.lastFireAt) || 0;
+  let best = { at: fire, via: 'fire' };
   const a = normalizeActivity(activity);
-  if (!a) return { at: fire, via: 'fire' };
   const owner = state?.owner?.sessionId;
-  if (owner && a.session && a.session !== owner) return { at: fire, via: 'fire' };
-  return a.at > fire ? { at: a.at, via: 'activity' } : { at: fire, via: 'fire' };
+  if (a && !(owner && a.session && a.session !== owner) && a.at > best.at) best = { at: a.at, via: 'activity' };
+  const t = Number(transcriptAt) || 0;
+  if (t > best.at) best = { at: t, via: 'transcript' };
+  return best;
 }
 
 // -> { claimed, paused, lastFireAt, seenAt, via, ageMs (null if never seen), stale }
 // A paused loop is never stale: the silence is a human's choice (escalation, plan approval,
 // unconfirmed git closure), and the right move is `resume`, not a takeover.
-export function staleness(state, now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null) {
+export function staleness(state, now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null, transcriptAt = 0) {
   const owner = state?.owner || {};
   const last = Number(owner.lastFireAt) || 0;
-  const seen = lastSeen(state, activity);
+  const seen = lastSeen(state, activity, transcriptAt);
   const claimed = !!owner.sessionId;
   const paused = state?.signals?.paused === true;
   const ageMs = seen.at > 0 ? Math.max(0, now - seen.at) : null;
@@ -89,8 +95,8 @@ export function releaseOpen(state, now = Date.now(), staleMs = DEFAULT_STALE_MS)
 
 // The "last fire" line shared by status and the disarm recap. The STALE flag counts the
 // activity too: a fire from last night with a tool call ten minutes ago is a live loop.
-export function describeLastFire(state, now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null) {
-  const st = staleness(state, now, staleMs, activity);
+export function describeLastFire(state, now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null, transcriptAt = 0) {
+  const st = staleness(state, now, staleMs, activity, transcriptAt);
   if (!st.lastFireAt) return st.ageMs == null ? 'never' : `never${st.stale ? '  STALE' : ''}`;
   const fireAge = formatAge(Math.max(0, now - st.lastFireAt));
   return `${fireAge} ago (${formatAt(st.lastFireAt)})${st.stale ? '  STALE' : st.paused ? '  (paused)' : ''}`;
@@ -120,8 +126,8 @@ const armedAtMs = (state) => {
 //   abandoned  the owner is silent beyond the threshold (or never fired and arm is old,
 //              or released and the window closed)
 //   live       the owner fired recently
-export function noticeKind(state, now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null) {
-  const st = staleness(state, now, staleMs, activity);
+export function noticeKind(state, now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null, transcriptAt = 0) {
+  const st = staleness(state, now, staleMs, activity, transcriptAt);
   if (releaseOpen(state, now, staleMs)) return 'released';
   if (!state.owner?.sessionId && state.owner?.releasedFrom) return 'abandoned';
   if (st.paused && st.claimed) return 'waiting';
@@ -144,9 +150,9 @@ function activityWhat(a, now, P) {
   return `${what}${pending}`;
 }
 
-function noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt, layers, activity }) {
+function noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt, layers, activity, transcriptAt = 0 }) {
   const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP }, layers);
-  const st = staleness(state, now, staleMs, activity);
+  const st = staleness(state, now, staleMs, activity, transcriptAt);
   const c = stepCounts(planText);
   const armed = armedAtMs(state);
   const a = normalizeActivity(activity);
@@ -154,7 +160,9 @@ function noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt
     ? P('hint-armed-at', { age: formatAge(armed > 0 ? Math.max(0, now - armed) : 0), at: formatAt(armed) })
     : st.via === 'activity' && a
       ? P('hint-last-activity', { age: formatAge(st.ageMs), at: formatAt(st.seenAt), what: activityWhat(a, now, P) })
-      : P('hint-last-fire', { age: formatAge(st.ageMs), at: formatAt(st.lastFireAt) });
+      : st.via === 'transcript'
+        ? P('hint-last-transcript', { age: formatAge(st.ageMs), at: formatAt(st.seenAt) })
+        : P('hint-last-fire', { age: formatAge(st.ageMs), at: formatAt(st.lastFireAt) });
   return {
     P,
     owner: state.owner?.sessionId ? P('hint-owner-session', { id: short(state.owner.sessionId) }) : P('hint-owner-none'),
@@ -171,9 +179,17 @@ function noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt
 // What another session must know when it starts in a project whose loop it does not own.
 //   sessionId: the session that just started; LOOP: the verb command; lastPrompt: the key of
 //   the last injected instruction (from the journal), if known; layers: prompt pack layers.
-export function sessionNotice(state, { planText = '', now = Date.now(), staleMs = DEFAULT_STALE_MS, sessionId = '', LOOP = 'node omc-loop.mjs', lastPrompt = '', layers = [], activity = null } = {}) {
-  const v = noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt, layers, activity });
-  return v.P(`session-${noticeKind(state, now, staleMs, activity)}`, v);
+export function sessionNotice(state, { planText = '', now = Date.now(), staleMs = DEFAULT_STALE_MS, sessionId = '', LOOP = 'node omc-loop.mjs', lastPrompt = '', layers = [], activity = null, transcriptAt = 0 } = {}) {
+  const v = noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt, layers, activity, transcriptAt });
+  return v.P(`session-${noticeKind(state, now, staleMs, activity, transcriptAt)}`, v);
+}
+
+// The prompt a restored session receives after the watchdog killed a silent turn.
+export function restorePrompt(state, { silentMs = 0, LOOP = 'node omc-loop.mjs', layers = [], activity = null, now = Date.now() } = {}) {
+  const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP }, layers);
+  const a = normalizeActivity(activity);
+  const what = a && a.pending.length ? P('hint-restore-pending', { agents: a.pending.map((d) => d.agent || 'subagent').join(', ') }) : '';
+  return P('session-restore', { silence: formatAge(silentMs), phase: state.phase, what, task: state.task });
 }
 
 // The owner session came back after a compaction: the phase instruction may be gone.

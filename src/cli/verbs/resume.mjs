@@ -3,7 +3,7 @@ import { gate, requireState, saveState, signal } from '../shared.mjs';
 import { describeLastFire, formatAge, DEFAULT_STALE_MS } from '../../core/staleness.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
 import { parseTimeoutMs } from '../../shell/util.mjs';
-import { readActivity } from '../../shell/activity.mjs';
+import { readLife } from '../../shell/life.mjs';
 
 //   resume              close the pause: retry counters reset, ESCALATION.md removed
 //   resume --takeover   release the owner session: for a while (OMC_LOOP_STALE_MS) the next
@@ -42,7 +42,7 @@ export function run({ argv, cwd, env = process.env }) {
   } else {
     console.log('perseveranza RESUMED (retry counters reset).');
     if (s.owner.sessionId) {
-      console.log(`  owner session ${s.owner.sessionId.slice(0, 8)}, last fire ${describeLastFire(s, Date.now(), staleMs, readActivity(paths.gateDir))}. If that session is gone, resume --takeover hands the loop to the session that runs it.`);
+      console.log(`  owner session ${s.owner.sessionId.slice(0, 8)}, last fire ${(() => { const l = readLife(paths.gateDir, s); return describeLastFire(s, Date.now(), staleMs, l.activity, l.transcriptAt); })()}. If that session is gone, resume --takeover hands the loop to the session that runs it.`);
     }
   }
   return 0;

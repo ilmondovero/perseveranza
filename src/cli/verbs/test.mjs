@@ -3,6 +3,7 @@ import { gate, requireState, saveState, argsAfterDoubleDash, VerbError } from '.
 import { appendJournal } from '../../shell/journal.mjs';
 import { treeFingerprints } from '../../shell/git.mjs';
 import { parseTimeoutMs } from '../../shell/util.mjs';
+import { readActivity, writeActivity } from '../../shell/activity.mjs';
 
 // Runs the suite ITSELF and records the real exit code: the proof is not self-declared.
 // Also records a fingerprint of the work tree AFTER the run, so a claim-done after further
@@ -71,13 +72,28 @@ export function flakinessNote(previous, current, sameTree) {
   return `red not reproducible: ${disappeared.join(', ')} failed in the previous run on this same tree and passed now; failing now: ${now.join(', ')}`;
 }
 
-function runSuite(cmd, { timeout, env }) {
+// While the suite runs the turn shows no other sign of life: the verb beats for it, so a
+// thirty-minute suite never looks like a dead session to the watchdog.
+function heartbeat(gateDir, cmd, intervalMs, sessionId) {
+  const beat = () => {
+    const prev = readActivity(gateDir);
+    writeActivity(gateDir, { at: Date.now(), session: (prev && prev.session) || sessionId || '', event: 'tool', tool: `test verb: ${cmd.slice(0, 60)}`, agent: '', pending: prev ? prev.pending : [], transcript: prev ? prev.transcript : '' });
+  };
+  beat();
+  const t = setInterval(beat, intervalMs);
+  t.unref();
+  return () => clearInterval(t);
+}
+
+function runSuite(cmd, { timeout, env, gateDir, heartbeatMs, sessionId }) {
   return new Promise((resolve) => {
     let child;
+    const stop = gateDir ? heartbeat(gateDir, cmd, heartbeatMs, sessionId) : () => {};
+    const done = (r) => { stop(); resolve(r); };
     try {
       child = spawn(cmd, { shell: true, stdio: ['inherit', 'pipe', 'pipe'], timeout, env });
     } catch (e) {
-      resolve({ status: 127, output: e.message });
+      done({ status: 127, output: e.message });
       return;
     }
     let tail = '';
@@ -88,9 +104,9 @@ function runSuite(cmd, { timeout, env }) {
     };
     child.stdout.on('data', (c) => keep(c, process.stdout));
     child.stderr.on('data', (c) => keep(c, process.stderr));
-    child.on('error', (e) => resolve({ status: 127, output: `${tail}\n${e.message}` }));
+    child.on('error', (e) => done({ status: 127, output: `${tail}\n${e.message}` }));
     // null status = killed (timeout or signal): 124, the conventional "timed out" code
-    child.on('close', (status) => resolve({ status: status === null ? 124 : status, output: tail }));
+    child.on('close', (status) => done({ status: status === null ? 124 : status, output: tail }));
   });
 }
 
@@ -120,7 +136,7 @@ export async function run({ argv, rawArgv, cwd, env }) {
 
   console.log(`Running: ${cmd}`);
   const timeout = parseTimeoutMs(env.OMC_TEST_TIMEOUT_MS, 1800000); // heavy suites: 30 min default
-  const r = await runSuite(cmd, { timeout, env });
+  const r = await runSuite(cmd, { timeout, env, gateDir: paths.gateDir, heartbeatMs: parseTimeoutMs(env.OMC_ACTIVITY_HEARTBEAT_MS, 60000), sessionId: s.owner.sessionId });
   const exitCode = r.status;
   const fp = treeFingerprints(cwd);
   const failed = exitCode === 0 ? [] : parseFailedTests(r.output);

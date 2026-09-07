@@ -40,13 +40,13 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
 - Silence is a first-class fact (`core/staleness.mjs`, pure): `owner.lastFireAt` is
   compared with the clock by `status`, the HUD, the `disarm` recap and the `SessionStart`
   hook (`shell/session-start.mjs`, the only code path that runs outside a Stop of the
-  owner). Past `OMC_LOOP_STALE_MS` (2 h) the loop is `STALE`, the next fire journals a
+  owner). Past `OMC_LOOP_STALE_MS` (30 min) the loop is `STALE`, the next fire journals a
   `gap` (kept in `summary.json`), and a new session is told to ask the user rather than
   act. The notice never touches the state.
 - The turn itself has a heartbeat (`shell/activity-hook.mjs` on PreToolUse/Agent,
   PostToolUse on the working tools, SubagentStop): `.omc-loop/activity.json` is its own
   file, written atomically (temp + rename) and throttled to one write per 30 s, so it never
-  races state.json; a pending delegation (`delegate`) survives the tools that run beside it
+  races state.json; the pending delegations (`pending`, a list) survive the tools that run beside them
   and closes on SubagentStop or on the Agent call's PostToolUse. The hook does the dormant
   check before importing anything beyond `node:fs`: it runs at tool-call rate in every
   project. `core/staleness.mjs` measures the silence from `lastSeen` (fire or owner
@@ -61,6 +61,28 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   (`update.mjs`, same spawn shape) completes its fetch after the Stop hook exited. `decide()` is pure
   over the gate and unit-testable; the e2e test runs it synchronously with a 1 s threshold
   and also spawns the real detached one once to prove it journals.
+- Kill and restore (`shell/restore.mjs`, behind `OMC_LOOP_RESTORE=1`) was tested by hand
+  before it was written, on Windows, with a real session: `taskkill /T` on a session mid
+  command left a valid transcript, Claude Code closed the interrupted turn itself
+  ("Continue from where you left off" / "No response requested"), and `claude -r <id>
+  "<prompt>"` reopened the same id and ran the prompt. Three facts came out of that test and
+  are encoded: strip `CLAUDE_CODE_CHILD_SESSION` (and the dead session's messaging
+  socket/token) or the child does not save its transcript; pass the prompt as one argument,
+  never through a shell's quoting; launch from the project directory. The Stop hook records
+  the Claude Code process (pid + start time, a CIM walk up the tree starting ABOVE the hook,
+  matching only the native binary or node running the npm package's cli.js: the shipped
+  plugin lives under ~/.claude/plugins/, so "anything with claude in it" would match the
+  hook itself; only when the flag is on) and the transcript path. The watchdog alerts at
+  the stale threshold and restores only after a second one (`OMC_LOOP_RESTORE_AFTER_MS`,
+  default twice: a session waiting on a human writes nothing either, the alert is the
+  human's chance); it refuses to kill a pid whose start time or command line no longer
+  match (fail closed: no start time means not proven), refuses a blind relaunch when no
+  process was recorded (two processes on one session id), restores at most 3 times per run
+  counted on the whole journal, restores a session whose recorded process is already gone
+  without killing anything, and spawns the next watchdog itself so the restored session is
+  watched before its first Stop. The third sign of life is the
+  transcript (`shell/life.mjs`: the session file and `<session>/subagents/*.jsonl`), so a
+  model generating for an hour is never silent; the `test` verb beats while the suite runs.
 
 ## Proofs, not words
 

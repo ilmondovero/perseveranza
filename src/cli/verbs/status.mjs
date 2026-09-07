@@ -7,10 +7,10 @@ import { outcomesFor } from '../../core/transitions.mjs';
 import { formatTokens } from '../../hud/render.mjs';
 import { RETAINED_STATE } from '../../shell/archive.mjs';
 import { staleness, releaseOpen, describeLastFire, describeActivity, formatAge, DEFAULT_STALE_MS } from '../../core/staleness.mjs';
-import { readActivity } from '../../shell/activity.mjs';
+import { readLife } from '../../shell/life.mjs';
 import { parseTimeoutMs } from '../../shell/util.mjs';
 
-export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null } = {}) {
+export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null, transcriptAt = 0 } = {}) {
   const c = stepCounts(planText);
   const lines = [];
   lines.push(`perseveranza ARMED — ${s.task}`);
@@ -33,12 +33,13 @@ export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE
   lines.push(`  externals:   ${s.options.externals.length ? s.options.externals.join(', ') : 'none'}`);
   const released = s.owner.releasedFrom ? (releaseOpen(s, now, staleMs) ? `released by ${s.owner.releasedFrom.slice(0, 8)}, next fire claims` : `released by ${s.owner.releasedFrom.slice(0, 8)}, window closed (resume --takeover again)`) : 'not claimed yet';
   lines.push(`  session:     ${s.owner.sessionId ? s.owner.sessionId.slice(0, 8) : released}`);
-  const st = staleness(s, now, staleMs, activity);
+  const st = staleness(s, now, staleMs, activity, transcriptAt);
   const hint = st.stale ? `  <- no sign of life for over ${formatAge(staleMs)}: the owner session is probably gone (resume --takeover to drive it from here, disarm to stop it)`
     : st.paused && st.ageMs != null && st.ageMs > staleMs ? '  <- paused, a human is expected: read .omc-loop/ESCALATION.md if present, then resume' : '';
-  lines.push(`  last fire:   ${describeLastFire(s, now, staleMs, activity)}${hint}`);
-  const act = st.via === 'activity' ? describeActivity(activity, now) : '';
+  lines.push(`  last fire:   ${describeLastFire(s, now, staleMs, activity, transcriptAt)}${hint}`);
+  const act = st.via !== 'fire' ? describeActivity(activity, now) : '';
   if (act) lines.push(`  activity:    ${act}`);
+  if (transcriptAt > 0 && transcriptAt > s.owner.lastFireAt) lines.push(`  transcript:  written ${formatAge(Math.max(0, now - transcriptAt))} ago${s.owner.claudePid ? ` (Claude Code pid ${s.owner.claudePid})` : ''}`);
   lines.push(`  armed at:    ${s.armedAt || '?'}  (engine v${s.engineVersion || '?'})`);
   const next = outcomesFor(s.phase).map((r) => r.outcome).join(', ');
   lines.push(`  next outcomes: ${next}`);
@@ -58,6 +59,6 @@ export function run({ argv, cwd, env = process.env }) {
   if (argv.includes('--json')) { console.log(JSON.stringify(s, null, 2)); return 0; }
   let planText = '';
   try { planText = readFileSync(paths.planPath, 'utf8'); } catch { /* no plan */ }
-  console.log(summary(s, planText, { now: Date.now(), staleMs: parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS), activity: readActivity(paths.gateDir) }));
+  console.log(summary(s, planText, { now: Date.now(), staleMs: parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS), ...readLife(paths.gateDir, s) }));
   return 0;
 }

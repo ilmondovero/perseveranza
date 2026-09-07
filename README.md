@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-2.3.0-blue)
+![versione](https://img.shields.io/badge/versione-2.4.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -154,7 +154,7 @@ verifica aggiunge una lente security.
   "fase review" per sempre. Perciò l'hook `SessionStart` avvisa ogni nuova sessione aperta
   nella cartella che esiste un loop di un'altra sessione, da quanto tace e in che fase era,
   e chiede all'utente se riprenderlo (`resume --takeover`) o fermarlo (`disarm`). `status`,
-  la HUD e il riepilogo di `disarm` mostrano l'età dell'ultimo fire (`STALE` oltre due ore,
+  la HUD e il riepilogo di `disarm` mostrano l'età dell'ultimo fire (`STALE` oltre trenta minuti,
   `OMC_LOOP_STALE_MS`); il journal registra il buco (`gap`).
 - **Il loop ha un battito anche dentro il turno.** Gli hook `PreToolUse` (Agent),
   `PostToolUse` (tool di lavoro) e `SubagentStop` scrivono `.omc-loop/activity.json`: l'età
@@ -166,6 +166,19 @@ verifica aggiunge una lente security.
   silenzio è vero, manda la notifica desktop e scrive `watchdog` nel journal e nel
   `summary.json`. Nessun cron, nessuna sessione da tenere aperta; `OMC_LOOP_NO_WATCHDOG=1`
   la spegne.
+- **Con `OMC_LOOP_RESTORE=1` la sentinella sblocca.** Non esiste un'interfaccia per
+  interrompere un tool in corso in Claude Code: l'unico interrupt è Esc. La sentinella fa
+  quello che farebbe Esc: termina il processo Claude Code che guidava il loop (registrato
+  allo Stop) e riapre la stessa sessione, stesso id, in una nuova console con un prompt di
+  ripristino. Un turno appeso costa la soglia, non una notte. Tre segni di vita (Stop,
+  attività dei tool, scrittura della trascrizione) e il battito del verbo `test` durante la
+  suite fanno sì che trenta minuti di silenzio siano un turno morto, non lento. Due stadi:
+  avviso a trenta minuti, kill e ripristino a sessanta (`OMC_LOOP_RESTORE_AFTER_MS`),
+  perché una sessione ferma su una domanda all'utente non scrive nulla e l'avviso è la sua
+  occasione. Al massimo tre ripristini per run; nessun rilancio senza un processo
+  registrato. Disattivo di default; verificato a mano su Windows prima di scriverlo.
+  `OMC_LOOP_CLAUDE_BIN` indica il binario `claude` se non è nel `PATH`;
+  `OMC_ACTIVITY_HEARTBEAT_MS` regola il battito del verbo `test`.
 
 ## Comandi
 

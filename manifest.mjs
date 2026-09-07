@@ -19,6 +19,8 @@ export const RUNTIME_FILES = [
   'src/shell/activity.mjs',
   'src/shell/activity-hook.mjs',
   'src/shell/watchdog.mjs',
+  'src/shell/life.mjs',
+  'src/shell/restore.mjs',
   'src/shell/effects.mjs',
   'src/shell/git.mjs',
   'src/shell/journal.mjs',

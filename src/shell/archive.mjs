@@ -61,7 +61,7 @@ export function buildSummary(state, journal, outcome) {
     // silences longer than the stale threshold between two fires (the loop looked alive, was not)
     gaps: gaps.map((g) => ({ since: g.since, ms: g.ms, paused: g.paused === true, ts: g.ts })),
     // the watchdog spoke: the loop was silent beyond the threshold while it was armed
-    watchdogAlerts: alerts.map((a) => ({ silentMs: a.silentMs, seenAt: a.seenAt, via: a.via, phase: a.phase, pending: a.activity && Array.isArray(a.activity.pending) ? a.activity.pending.map((d) => d.agent) : [], notified: a.notified === true, ts: a.ts })),
+    watchdogAlerts: alerts.map((a) => ({ action: a.action || 'alerted', silentMs: a.silentMs, seenAt: a.seenAt, via: a.via, phase: a.phase, pending: a.activity && Array.isArray(a.activity.pending) ? a.activity.pending.map((d) => d.agent) : [], notified: a.notified === true, ts: a.ts })),
     lastFireAt: state?.owner?.lastFireAt ? new Date(state.owner.lastFireAt).toISOString() : null,
     externals: state?.options?.externals ?? [],
     armedAt: state?.armedAt ?? null,
