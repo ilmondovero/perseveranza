@@ -9,6 +9,8 @@ import { ROOT } from '../../src/shell/paths.mjs';
 
 export const HOOK = join(ROOT, 'src', 'shell', 'stop.mjs');
 export const SESSION_HOOK = join(ROOT, 'src', 'shell', 'session-start.mjs');
+export const ACTIVITY_HOOK = join(ROOT, 'src', 'shell', 'activity-hook.mjs');
+export const WATCHDOG = join(ROOT, 'src', 'shell', 'watchdog.mjs');
 export const CLI = join(ROOT, 'src', 'cli', 'omc-loop.mjs');
 export const NODE = process.execPath;
 
@@ -29,7 +31,7 @@ export function freshDir(prefix = 'prs-') {
 export const OWN_ENV_VARS = [
   'OLLAMA_API_KEY', 'OLLAMA_HOST', 'OLLAMA_MODEL',
   'OMC_ASK_TIMEOUT_MS', 'OMC_ASK_RETRIES', 'OMC_HOOK_TIMEOUT_MS', 'OMC_LOOP_KILL', 'OMC_LOOP_NO_NOTIFY',
-  'OMC_NO_UPDATE_CHECK', 'OMC_PROMPT_PACK', 'OMC_LOOP_STALE_MS',
+  'OMC_NO_UPDATE_CHECK', 'OMC_PROMPT_PACK', 'OMC_LOOP_STALE_MS', 'OMC_LOOP_NO_WATCHDOG',
   'OMC_STATUSLINE_BASE_TIMEOUT_MS', 'OMC_TEST_TIMEOUT_MS',
   'PERSEVERANZA_HOME', 'PERSEVERANZA_LANG', 'CLAUDE_CONFIG_DIR',
 ];
@@ -42,7 +44,8 @@ export function project({ git = false } = {}) {
   for (const k of OWN_ENV_VARS) delete env[k];
   // English by default in the tests (assertions read the shipped templates); PERSEVERANZA_LANG
   // is deleted by the tests that check the Italian default
-  Object.assign(env, { OMC_LOOP_NO_NOTIFY: '1', PERSEVERANZA_HOME: home, OMC_NO_UPDATE_CHECK: '1', PERSEVERANZA_LANG: 'en' });
+  // no detached watchdogs from the tests: the watchdog is exercised synchronously by its own test
+  Object.assign(env, { OMC_LOOP_NO_NOTIFY: '1', PERSEVERANZA_HOME: home, OMC_NO_UPDATE_CHECK: '1', PERSEVERANZA_LANG: 'en', OMC_LOOP_NO_WATCHDOG: '1' });
   if (git) {
     const g = (...a) => spawnSync('git', a, { cwd: dir, encoding: 'utf8' });
     g('init', '-q');
@@ -96,6 +99,21 @@ export function sessionStart(p, evt = {}, envExtra = {}) {
   const trimmed = (r.stdout || '').trim();
   if (trimmed) { try { out = JSON.parse(trimmed); } catch { /* non-JSON */ } }
   return { text: out ? out.hookSpecificOutput.additionalContext : null, out, raw: r.stdout || '', stderr: r.stderr || '', code: r.status };
+}
+
+// Fire a PreToolUse/PostToolUse/SubagentStop event at the activity hook -> { code, raw }
+export function activity(p, evt = {}, rawInput = null) {
+  const payload = rawInput != null ? rawInput : JSON.stringify({ cwd: p.dir, session_id: 't-sess', hook_event_name: 'PostToolUse', tool_name: 'Bash', ...evt });
+  const r = spawnSync(NODE, [ACTIVITY_HOOK], { input: payload, encoding: 'utf8', env: p.env });
+  return { code: r.status, raw: r.stdout || '', stderr: r.stderr || '' };
+}
+export function readActivity(p) {
+  try { return JSON.parse(readFileSync(gate(p, 'activity.json'), 'utf8')); } catch { return null; }
+}
+// Run the watchdog synchronously on the gate (it exits by itself) -> { code, stderr }
+export function watchdog(p, envExtra = {}) {
+  const r = spawnSync(NODE, [WATCHDOG, gate(p, '')], { encoding: 'utf8', env: { ...p.env, ...envExtra }, timeout: 30000 });
+  return { code: r.status, stderr: r.stderr || '' };
 }
 
 export function journal(p) {

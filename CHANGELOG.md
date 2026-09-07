@@ -3,6 +3,36 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.3.0
+
+La 2.2.0 rendeva visibile un loop orfano quando l'utente tornava. Ma il blocco vero, il
+subagent che non torna, restava invisibile finché il turno non finiva, e nessuno avvisava
+mentre le ore passavano. Il plugin eseguiva codice solo negli hook di fine turno: qui
+guadagna un battito dentro il turno e una voce quando il battito si ferma.
+
+- **Battito dentro il turno.** Tre hook nuovi, `PreToolUse` sull'Agent, `PostToolUse` sui
+  tool di lavoro (non Read/Grep/Glob: frequenti e a buon mercato, non vale un processo) e
+  `SubagentStop`, scrivono `.omc-loop/activity.json` (file proprio, scrittura atomica, una
+  ogni 30 s): l'ultimo segno di vita del loop. Le deleghe restano "pendenti" finché i
+  subagent non tornano (una lista: le deleghe parallele sono la norma), così `status`, HUD, `SessionStart` e la sentinella dicono "delegato a
+  pf-reviewer alle 11:10, non ancora tornato" invece di "silenzio". `status` ha la riga
+  `activity:`, il journal le voci `activity` (deleghe e ritorni), la HUD e lo `STALE` si
+  misurano dall'ultimo segno di vita; un turno lungo che lavora non è più un `gap`.
+- **Sentinella staccata (`watchdog`).** A ogni Stop e ad `arm` parte un processo staccato
+  che dorme fino a `lastSeen + OMC_LOOP_STALE_MS`, si riallinea finché il loop dà segni di
+  vita, esce se il loop è in pausa o disarmato, cede il posto a una sentinella più recente
+  (`.omc-loop/watchdog.json` tiene il pid) e, se il silenzio è vero, manda la notifica
+  desktop e scrive `watchdog` nel journal, con le deleghe pendenti se ci sono;
+  `summary.json` conserva `watchdogAlerts`. Una sola sentinella per loop: se quella in
+  carica è viva, lo Stop non ne lancia un'altra. Vita massima 48 h, sonno massimo 1 h. `OMC_LOOP_NO_WATCHDOG=1`
+  la spegne (i test la esercitano in modo sincrono, e una volta per davvero).
+- **Una tabella per gli hook.** `manifest.mjs` espone `HOOK_SPECS`; `hooks/hooks.json`
+  deve coincidere (test di packaging) e `install.mjs` registra esattamente quelli.
+
+Cosa resta fuori, onestamente: la sentinella avvisa, non sblocca. Un subagent appeso va
+interrotto a mano (Esc) e il loop riparte al prossimo Stop; un client morto senza chiudere
+nulla si vede solo dalla sentinella.
+
 ## 2.2.0
 
 Nasce da un loop orfano (`docs/SEGNALAZIONE-2026-09-07-loop-orfano.md`): dopo 17 iterazioni

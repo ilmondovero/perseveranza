@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { gate, saveState, VerbError, positiveInt } from '../shared.mjs';
 import { defaultState, COMPLEXITIES } from '../../core/state.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
+import { spawnWatchdog } from '../../shell/watchdog.mjs';
 import { RETAINED_STATE } from '../../shell/archive.mjs';
 import { baselineDirty } from '../../shell/git.mjs';
 import { detectAvailable, hasBinary, modelLabel, PROVIDERS, checkProvider } from '../../providers/registry.mjs';
@@ -92,6 +93,7 @@ export async function run({ argv, cwd, env }) {
   });
   saveState(paths, state);
   appendJournal(paths.gateDir, { type: 'note', text: `armed: ${task}`, options: state.options, limits: state.limits, force: !!v.force });
+  spawnWatchdog(paths.gateDir, env);
 
   console.log(`perseveranza ARMED (max ${state.limits.maxIterations} iterations${v.max ? '' : ', adaptive after the plan'}, ${state.limits.maxRetries} fixes per step${maxTokens ? `, ${maxTokens} tokens` : ''}${state.options.commitSteps ? ', commit per step' : ''}). Task: ${task}`);
   console.log(`External models for the second opinion: ${externals.length ? externals.join(', ') : 'none'}${v.external !== 'off' && disabled.length ? ` (disabled by config: ${disabled.join(', ')})` : ''}`);

@@ -15,6 +15,8 @@ import { archiveRun, archiveFailureNote } from './archive.mjs';
 import { loadPromptLayers } from './packs.mjs';
 import { treeFingerprints } from './git.mjs';
 import { readTranscriptUsage } from './transcript.mjs';
+import { readActivity } from './activity.mjs';
+import { spawnWatchdog } from './watchdog.mjs';
 import { parseTimeoutMs, boolEnv } from './util.mjs';
 import { currentVersion, updateAvailable, maybeSpawnRefresh } from '../update.mjs';
 
@@ -95,6 +97,7 @@ function main() {
     version: currentVersion(ROOT),
     updateAvailable: updateAvailable(ROOT, env),
     staleMs: parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS),
+    activityAt: (() => { const a = readActivity(paths.gateDir); return a && (!a.session || !s.owner.sessionId || a.session === s.owner.sessionId) ? a.at : 0; })(),
   };
   const event = {
     sessionId: evt && typeof evt.session_id === 'string' ? evt.session_id : '',
@@ -105,7 +108,10 @@ function main() {
 
   const r = step(s, event, ctx);
   holder.state = r.state;
-  return executeEffects(r.effects, { paths, holder, deadline: DEADLINE, processEnv: env });
+  const out = executeEffects(r.effects, { paths, holder, deadline: DEADLINE, processEnv: env });
+  // still armed and driven by this session: a fresh watchdog takes over the silence watch
+  if (r.outcome !== 'foreign-session' && !r.state.signals.paused && existsSync(paths.statePath)) spawnWatchdog(paths.gateDir, env);
+  return out;
 }
 
 let out = null;

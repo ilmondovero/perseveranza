@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { project, cli, arm, fire, sessionStart, readState, writeState, patchState, writePlan, writeArtifact, gate, journal } from '../helpers/cli.mjs';
+import { project, cli, arm, fire, sessionStart, activity, readActivity, watchdog, readState, writeState, patchState, writePlan, writeArtifact, gate, journal, spawnSync, CLI, WATCHDOG } from '../helpers/cli.mjs';
 
 const PLAN = '- [ ] one\n- [ ] two\n';
 
@@ -197,7 +197,7 @@ test('session scoping through the real hook', () => {
   assert.ok(j.some((e) => e.type === 'session' && e.event === 'takeover' && e.from === 'A' && e.to === 'B'));
   assert.ok(j.some((e) => e.type === 'gap' && e.ms > 1000), 'the silence is on record');
   const hist = cli(p, 'history').out;
-  assert.ok(hist.includes('GAP: no fire for'));
+  assert.ok(hist.includes('GAP: no sign of life for'));
   assert.ok(hist.includes('session takeover A -> B'));
 });
 
@@ -432,4 +432,183 @@ test('claim-done through the real hook: an older green on the same tree, or afte
   assert.ok(journal(p).some((j) => j.type === 'transition' && j.testProof === 'docs-only'));
   // the cleanup instruction says the suite is not rerun for documentation
   assert.ok(r.reason.includes('test --if-needed -- node -e 0'), r.reason);
+});
+
+test('activity hook: dormant, heartbeat throttled, delegation pending until the subagent returns, foreign session ignored', () => {
+  const p = project();
+  assert.equal(activity(p, { hook_event_name: 'PostToolUse', tool_name: 'Bash' }).code, 0);
+  assert.ok(!existsSync(gate(p, 'activity.json')), 'dormant without state.json');
+  arm(p, 'busy task');
+  fire(p, { session_id: 'A' }); // A owns it
+  // PostToolUse on a working tool: the heartbeat
+  const r1 = activity(p, { session_id: 'A', hook_event_name: 'PostToolUse', tool_name: 'Bash' });
+  assert.equal(r1.code, 0); assert.equal(r1.raw, '', 'never prints');
+  let a = readActivity(p);
+  assert.equal(a.event, 'tool'); assert.equal(a.tool, 'Bash'); assert.equal(a.session, 'A'); assert.deepEqual(a.pending, []);
+  // throttled: a second tool a moment later does not rewrite the record
+  activity(p, { session_id: 'A', hook_event_name: 'PostToolUse', tool_name: 'Edit' });
+  assert.equal(readActivity(p).tool, 'Bash');
+  // a delegation is always recorded, journaled, and stays pending
+  activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'perseveranza:pf-reviewer', prompt: 'review it' } });
+  a = readActivity(p);
+  assert.equal(a.event, 'delegate'); assert.equal(a.agent, 'perseveranza:pf-reviewer'); assert.equal(a.pending[0].agent, 'perseveranza:pf-reviewer');
+  assert.ok(journal(p).some((e) => e.type === 'activity' && e.event === 'delegate' && e.agent === 'perseveranza:pf-reviewer' && e.pending === 1));
+  // a second, parallel delegation (Task is the older name of the tool): both pending
+  activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: { description: 'x'.repeat(500) } });
+  a = readActivity(p);
+  assert.equal(a.pending.length, 2);
+  assert.equal(a.pending[1].agent.length, 120, 'a whole prompt as a name is cut');
+  // other tools while the subagents run (throttled away here, so force the clock back)
+  const back = Date.now() - 60 * 1000;
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ ...a, at: back, pending: a.pending.map((d) => ({ ...d, at: back })) }));
+  activity(p, { session_id: 'A', hook_event_name: 'PostToolUse', tool_name: 'Bash' });
+  a = readActivity(p);
+  assert.equal(a.tool, 'Bash'); assert.equal(a.pending.length, 2, 'still pending');
+  assert.ok(cli(p, 'status').out.includes('perseveranza:pf-reviewer delegated 1m ago'));
+  assert.ok(cli(p, 'status').out.includes('not back yet'));
+  // the first to return, named: only its own entry closes
+  activity(p, { session_id: 'A', hook_event_name: 'SubagentStop', agent_type: 'perseveranza:pf-reviewer' });
+  a = readActivity(p);
+  assert.equal(a.pending.length, 1); assert.notEqual(a.pending[0].agent, 'perseveranza:pf-reviewer');
+  // PreToolUse on anything but Agent is nothing
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ ...a, at: back }));
+  activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Bash' });
+  assert.equal(readActivity(p).at, back);
+  // the last one returns, unnamed: the oldest pending closes, journaled
+  activity(p, { session_id: 'A', hook_event_name: 'SubagentStop' });
+  a = readActivity(p);
+  assert.equal(a.event, 'subagent-stop'); assert.deepEqual(a.pending, []);
+  assert.ok(journal(p).some((e) => e.type === 'activity' && e.event === 'subagent-stop' && e.agent === 'perseveranza:pf-reviewer'));
+  assert.ok(cli(p, 'history').out.includes('subagent perseveranza:pf-reviewer finished'));
+  // a returned foreground Agent call closes a pending delegation too
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ ...a, at: back, event: 'delegate', pending: [{ at: back, agent: 'x' }] }));
+  activity(p, { session_id: 'A', hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'x' } });
+  assert.deepEqual(readActivity(p).pending, []);
+  // the old single-slot shape is still read
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ at: Date.now(), session: 'A', event: 'tool', tool: 'Bash', delegate: { at: back, agent: 'legacy' } }));
+  assert.equal(readActivity(p).delegate.agent, 'legacy');
+  assert.ok(cli(p, 'status').out.includes('legacy delegated 1m ago'));
+  // another session's tools are not this loop's life
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ ...a, at: back, pending: [] }));
+  activity(p, { session_id: 'B', hook_event_name: 'PostToolUse', tool_name: 'Bash' });
+  assert.equal(readActivity(p).at, back);
+  // and a foreign record on disk is not shown beside a STALE owner
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ at: Date.now(), session: 'B', event: 'delegate', agent: 'other', pending: [{ at: Date.now(), agent: 'other' }] }));
+  const st = cli(p, 'status').out;
+  assert.ok(st.includes('STALE') && !st.includes('activity:'), st);
+  const rs = cli(p, 'resume').out;
+  assert.ok(rs.includes('STALE'), rs);
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ at: Date.now(), session: 'A', event: 'tool', tool: 'Edit', pending: [] }));
+  assert.ok(!cli(p, 'resume').out.includes('STALE'), 'resume sees the owner activity');
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now(); });
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ ...a, at: back, pending: [] }));
+  activity(p, { session_id: 'B', hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'z' } });
+  assert.equal(readActivity(p).at, back);
+  // garbage in, nothing out
+  assert.equal(activity(p, {}, '{not json').code, 0);
+  assert.equal(readState(p).owner.sessionId, 'A', 'the state is never touched');
+});
+
+test('activity keeps a long turn alive for status, HUD, the SessionStart notice and the gap', () => {
+  const p = project();
+  arm(p, 'long turn');
+  writePlan(p, PLAN);
+  fire(p, { session_id: 'A' });
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  assert.ok(cli(p, 'status').out.includes('STALE'), 'silent: stale');
+  activity(p, { session_id: 'A', hook_event_name: 'PostToolUse', tool_name: 'Bash' });
+  const st = cli(p, 'status').out;
+  assert.ok(!st.includes('STALE'), st);
+  assert.ok(/activity: {4}\d+s ago \(.*, tool Bash\)/.test(st), st);
+  const notice = sessionStart(p, { session_id: 'B' }).text;
+  assert.ok(notice.includes('driven by another session') && notice.includes('last activity'), notice);
+  // the Stop that finally comes: no gap, the turn was working
+  fire(p, { session_id: 'A' });
+  assert.ok(!journal(p).some((e) => e.type === 'gap'));
+});
+
+test('watchdog: alerts on real silence, re-sleeps on life, yields to a newer one, exits on pause and disarm', () => {
+  const p = project();
+  arm(p, 'watched task');
+  writePlan(p, PLAN);
+  fire(p, { session_id: 'A' });
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
+  // 1 s threshold (the parse floor): the silence is real, the watchdog speaks at once
+  let r = watchdog(p, { OMC_LOOP_STALE_MS: '1000' });
+  assert.equal(r.code, 0);
+  let w = journal(p).find((e) => e.type === 'watchdog');
+  assert.ok(w, 'journaled');
+  assert.ok(w.silentMs > 19 * 3600 * 1000);
+  assert.equal(w.via, 'fire'); assert.equal(w.phase, 'implement'); assert.equal(w.notified, false, 'OMC_LOOP_NO_NOTIFY in the tests');
+  assert.ok(w.text.includes('Loop silent for 20h00m') && w.text.includes('phase implement, 0/2 steps') && w.text.includes('resume --takeover'), w.text);
+  assert.ok(cli(p, 'history').out.includes('WATCHDOG: silent for 20h00m'));
+  // life inside the turn: it re-sleeps until the activity is stale, then speaks about the delegation
+  activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'pf-reviewer' } });
+  const t0 = Date.now();
+  r = watchdog(p, { OMC_LOOP_STALE_MS: '1000' });
+  assert.ok(Date.now() - t0 >= 900, 'slept until the activity went stale');
+  const ws = journal(p).filter((e) => e.type === 'watchdog');
+  assert.equal(ws.length, 2);
+  assert.equal(ws[1].via, 'activity');
+  assert.equal(ws[1].activity.pending[0].agent, 'pf-reviewer');
+  assert.ok(ws[1].text.includes('delegated to pf-reviewer), not back yet'), ws[1].text);
+  assert.ok(cli(p, 'history').out.includes('pf-reviewer delegated and not back'));
+  // a newer watchdog owns the gate: this one exits without a word
+  writeFileSync(gate(p, 'watchdog.json'), JSON.stringify({ pid: 999999, spawnedAt: new Date().toISOString() }));
+  r = watchdog(p, { OMC_LOOP_STALE_MS: '1000' });
+  assert.equal(r.code, 0);
+  assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 2);
+  writeFileSync(gate(p, 'watchdog.json'), '{broken');
+  // paused: a human is expected, the watchdog has nothing to say
+  cli(p, 'pause');
+  watchdog(p, { OMC_LOOP_STALE_MS: '1000' });
+  assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 2);
+  cli(p, 'resume');
+  // the summary keeps the alerts
+  cli(p, 'disarm');
+  const id = cli(p, 'runs').out.trim().split('\n')[0].trim().split(/\s+/)[0];
+  const summary = JSON.parse(readFileSync(join(p.home, 'runs', ...id.split('/'), 'summary.json'), 'utf8'));
+  assert.equal(summary.watchdogAlerts.length, 2);
+  assert.deepEqual(summary.watchdogAlerts[1].pending, ['pf-reviewer']);
+  // disarmed: nothing to watch
+  assert.equal(watchdog(p, { OMC_LOOP_STALE_MS: '1000' }).code, 0);
+  // no gate dir at all: exits 2 without an argument, 0 with a missing one
+  assert.equal(spawnSync(process.execPath, [WATCHDOG], { encoding: 'utf8', env: p.env }).status, 2);
+});
+
+test('the Stop hook and arm spawn ONE live watchdog per loop unless OMC_LOOP_NO_WATCHDOG; a foreign or pausing Stop spawns none', () => {
+  const p = project();
+  const env = { ...p.env }; delete env.OMC_LOOP_NO_WATCHDOG;
+  // a 1 s threshold makes the spawned watchdog speak and exit almost at once, leaving no stray process
+  env.OMC_LOOP_STALE_MS = '1000';
+  const wait = (ms) => spawnSync(process.execPath, ['-e', `setTimeout(()=>{},${ms})`]);
+  const r = spawnSync(process.execPath, [CLI, 'arm', 'spawned', '--external', 'off', '--no-git-finish'], { cwd: p.dir, encoding: 'utf8', env });
+  assert.equal(r.code ?? r.status, 0, r.stdout + r.stderr);
+  const wd = JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8'));
+  assert.ok(wd.pid > 0 && wd.spawnedAt);
+  // the incumbent is alive (napping its second): a Stop right now spawns nothing
+  fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
+  assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, wd.pid, 'one live watchdog per loop');
+  // give the detached watchdog its second to speak and leave
+  const until = Date.now() + 5000;
+  while (Date.now() < until && !journal(p).some((e) => e.type === 'watchdog')) wait(200);
+  assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 1, 'the detached watchdog really runs and journals, once');
+  wait(300);
+  // it exited: a foreign Stop still spawns nothing, the owner's Stop spawns a new one
+  fire(p, { session_id: 'B' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
+  assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, wd.pid, 'a foreign Stop spawns nothing');
+  fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
+  const wd2 = JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8'));
+  assert.notEqual(wd2.pid, wd.pid, 'the incumbent is gone: a fresh one');
+  const until2 = Date.now() + 5000;
+  while (Date.now() < until2 && journal(p).filter((e) => e.type === 'watchdog').length < 2) wait(200);
+  assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 2);
+  wait(300);
+  // a Stop that pauses the loop (escalation) spawns none: a human is expected
+  patchState(p, (s) => { s.phase = 'review'; s.counters.retries = 3; s.limits.maxRetries = 3; });
+  writeArtifact(p, 'review.json', { blocking: 1 });
+  const paused = fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
+  assert.equal(paused.state.signals.paused, true);
+  assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, wd2.pid, 'no watchdog for a paused loop');
 });

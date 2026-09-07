@@ -55,7 +55,7 @@ export function renderProgress(state, planText = '', opts = {}) {
   // glance (ten minutes): a loop silent beyond the threshold is flagged STALE in red, since
   // nothing else distinguishes it from a live one
   if (Number.isFinite(opts.now)) {
-    const st = staleness(state, opts.now, opts.staleMs);
+    const st = staleness(state, opts.now, opts.staleMs, opts.activity || null);
     if (st.stale) parts.push(paint('1;31', `⏱${formatAge(st.ageMs)} STALE`));
     else if (st.ageMs != null && st.ageMs >= HUD_AGE_MIN_MS) parts.push(`⏱${formatAge(st.ageMs)}`);
   }

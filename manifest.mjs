@@ -16,6 +16,9 @@ export const RUNTIME_FILES = [
   'src/core/time.mjs',
   'src/shell/stop.mjs',
   'src/shell/session-start.mjs',
+  'src/shell/activity.mjs',
+  'src/shell/activity-hook.mjs',
+  'src/shell/watchdog.mjs',
   'src/shell/effects.mjs',
   'src/shell/git.mjs',
   'src/shell/journal.mjs',
@@ -67,6 +70,18 @@ export const PLUGIN_FILES = ['.claude-plugin/plugin.json', 'hooks/hooks.json'];
 export const HOOK_ENTRY = 'src/shell/stop.mjs';
 // The SessionStart hook entry point (a new session learns about a loop it does not own).
 export const SESSION_HOOK_ENTRY = 'src/shell/session-start.mjs';
+// The activity hook entry point (the heartbeat of a turn: delegations, tools, subagent returns).
+export const ACTIVITY_HOOK_ENTRY = 'src/shell/activity-hook.mjs';
+
+// Every hook the plugin registers: hooks/hooks.json must match this table (packaging test)
+// and install.mjs writes exactly these into settings.json.
+export const HOOK_SPECS = [
+  { event: 'Stop', matcher: '', entry: HOOK_ENTRY, timeout: 120 },
+  { event: 'SessionStart', matcher: '', entry: SESSION_HOOK_ENTRY, timeout: 15 },
+  { event: 'PreToolUse', matcher: 'Agent|Task', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
+  { event: 'PostToolUse', matcher: 'Agent|Task|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
+  { event: 'SubagentStop', matcher: '', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
+];
 // The CLI entry point (the "verbs"), relative to the repository root.
 export const CLI_ENTRY = 'src/cli/omc-loop.mjs';
 

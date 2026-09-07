@@ -43,6 +43,24 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   owner). Past `OMC_LOOP_STALE_MS` (2 h) the loop is `STALE`, the next fire journals a
   `gap` (kept in `summary.json`), and a new session is told to ask the user rather than
   act. The notice never touches the state.
+- The turn itself has a heartbeat (`shell/activity-hook.mjs` on PreToolUse/Agent,
+  PostToolUse on the working tools, SubagentStop): `.omc-loop/activity.json` is its own
+  file, written atomically (temp + rename) and throttled to one write per 30 s, so it never
+  races state.json; a pending delegation (`delegate`) survives the tools that run beside it
+  and closes on SubagentStop or on the Agent call's PostToolUse. The hook does the dormant
+  check before importing anything beyond `node:fs`: it runs at tool-call rate in every
+  project. `core/staleness.mjs` measures the silence from `lastSeen` (fire or owner
+  activity, never a foreign session's); the `gap` starts there too.
+- The watchdog (`shell/watchdog.mjs`) is a detached process spawned by the Stop hook (not
+  for a foreign session, not after disarm) and by `arm`; `.omc-loop/watchdog.json` holds
+  the newest pid, written atomically (a torn pid file would read as "nobody owns it" and
+  let every watchdog speak); `spawnWatchdog` does not spawn while the incumbent is alive
+  (`process.kill(pid, 0)`), so one process per loop is the budget, whatever the fire rate.
+  It exits on pause, disarm and after 48 h; naps are capped at 1 h so a clock jump cannot
+  strand it. Detached children of a hook survive the hook on Windows: the update refresh
+  (`update.mjs`, same spawn shape) completes its fetch after the Stop hook exited. `decide()` is pure
+  over the gate and unit-testable; the e2e test runs it synchronously with a 1 s threshold
+  and also spawns the real detached one once to prove it journals.
 
 ## Proofs, not words
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { ROOT } from '../../src/shell/paths.mjs';
-import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, ALL_FILES, HOOK_ENTRY, SESSION_HOOK_ENTRY, CLI_ENTRY } from '../../manifest.mjs';
+import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, ALL_FILES, HOOK_ENTRY, SESSION_HOOK_ENTRY, ACTIVITY_HOOK_ENTRY, HOOK_SPECS, CLI_ENTRY } from '../../manifest.mjs';
 import { toMarkdown } from '../../src/core/transitions.mjs';
 import { validatePack, missingKeys, PROMPT_KEYS } from '../../src/core/prompts.mjs';
 import { VERBS } from '../../src/cli/omc-loop.mjs';
@@ -30,15 +30,26 @@ test('every runtime file under src/ and packs/ is in the manifest', () => {
   for (const f of onDisk) assert.ok(RUNTIME_FILES.includes(f), `${f} is not in manifest.mjs`);
 });
 
-test('hooks.json points at the hook entries: Stop with the 120 s deadline, SessionStart short', () => {
+test('hooks.json is exactly the manifest HOOK_SPECS table (entries, matchers, timeouts)', () => {
   const h = JSON.parse(readFileSync(join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
-  const cmd = h.hooks.Stop[0].hooks[0];
-  assert.ok(cmd.command.includes(`\${CLAUDE_PLUGIN_ROOT}/${HOOK_ENTRY}`));
-  assert.equal(cmd.timeout, 120);
-  const ss = h.hooks.SessionStart[0].hooks[0];
-  assert.ok(ss.command.includes(`\${CLAUDE_PLUGIN_ROOT}/${SESSION_HOOK_ENTRY}`));
-  assert.ok(ss.timeout <= 30);
-  assert.deepEqual(Object.keys(h.hooks).sort(), ['SessionStart', 'Stop']);
+  const flat = [];
+  for (const [event, groups] of Object.entries(h.hooks)) {
+    for (const g of groups) for (const c of g.hooks) flat.push({ event, matcher: g.matcher ?? '', command: c.command, timeout: c.timeout, type: c.type });
+  }
+  assert.equal(flat.length, HOOK_SPECS.length);
+  for (const spec of HOOK_SPECS) {
+    const found = flat.find((f) => f.event === spec.event && f.matcher === spec.matcher);
+    assert.ok(found, `${spec.event}/${spec.matcher} missing from hooks.json`);
+    assert.equal(found.type, 'command');
+    assert.ok(found.command.includes(`\${CLAUDE_PLUGIN_ROOT}/${spec.entry}`), `${spec.event} command`);
+    assert.equal(found.timeout, spec.timeout);
+    assert.ok(RUNTIME_FILES.includes(spec.entry), `${spec.entry} not shipped`);
+  }
+  assert.equal(HOOK_SPECS.find((s) => s.event === 'Stop').timeout, 120, 'the Stop deadline the shell keeps a margin from');
+  assert.ok(HOOK_SPECS.filter((s) => s.event !== 'Stop').every((s) => s.timeout <= 30), 'every other hook is short');
+  assert.equal(HOOK_SPECS.find((s) => s.event === 'PreToolUse').matcher, 'Agent|Task', 'a delegation is the one PreToolUse worth a process');
+  assert.ok(!/Read|Grep|Glob/.test(HOOK_SPECS.find((s) => s.event === 'PostToolUse').matcher), 'the cheap, frequent tools do not pay for a heartbeat');
+  assert.equal(HOOK_ENTRY, 'src/shell/stop.mjs'); assert.equal(SESSION_HOOK_ENTRY, 'src/shell/session-start.mjs'); assert.equal(ACTIVITY_HOOK_ENTRY, 'src/shell/activity-hook.mjs');
 });
 
 test('plugin.json, package.json and the README badge agree on the version', () => {
@@ -107,8 +118,13 @@ test('install.mjs copies exactly the manifest, registers the hook, and uninstall
   assert.equal(st.hooks.Stop.length, 1);
   assert.ok(st.hooks.Stop[0].hooks[0].command.replaceAll('\\', '/').includes(HOOK_ENTRY));
   assert.equal(st.hooks.Stop[0].hooks[0].timeout, 120);
+  for (const spec of HOOK_SPECS) {
+    const group = st.hooks[spec.event].find((g) => g.matcher === spec.matcher);
+    assert.ok(group, `${spec.event}/${spec.matcher} registered`);
+    assert.ok(group.hooks[0].command.replaceAll('\\', '/').includes(spec.entry));
+    assert.equal(group.hooks[0].timeout, spec.timeout);
+  }
   assert.equal(st.hooks.SessionStart.length, 1);
-  assert.ok(st.hooks.SessionStart[0].hooks[0].command.replaceAll('\\', '/').includes(SESSION_HOOK_ENTRY));
   const cmd = readFileSync(join(cdir, 'commands', 'perseveranza.md'), 'utf8');
   assert.ok(!cmd.includes('${CLAUDE_PLUGIN_ROOT}'));
   assert.ok(cmd.includes(CLI_ENTRY));
@@ -120,12 +136,14 @@ test('install.mjs copies exactly the manifest, registers the hook, and uninstall
   const ss = spawnSync(process.execPath, [join(cdir, 'perseveranza', SESSION_HOOK_ENTRY)], { input: JSON.stringify({ cwd: cdir, session_id: 'x' }), encoding: 'utf8' });
   assert.equal(ss.status, 0);
   assert.equal(ss.stdout, '');
+  const ah = spawnSync(process.execPath, [join(cdir, 'perseveranza', ACTIVITY_HOOK_ENTRY)], { input: JSON.stringify({ cwd: cdir, session_id: 'x', hook_event_name: 'PostToolUse', tool_name: 'Bash' }), encoding: 'utf8' });
+  assert.equal(ah.status, 0);
+  assert.equal(ah.stdout, '');
   const u = spawnSync(process.execPath, [join(ROOT, 'install.mjs'), '--claude-dir', cdir, '--uninstall'], { encoding: 'utf8' });
   assert.equal(u.status, 0, u.stdout + u.stderr);
   assert.ok(!existsSync(join(cdir, 'perseveranza')));
   const after = JSON.parse(readFileSync(join(cdir, 'settings.json'), 'utf8')).hooks;
-  assert.equal(after.Stop.length, 0);
-  assert.equal(after.SessionStart.length, 0, 'the list existed (install created it): kept, emptied');
+  for (const spec of HOOK_SPECS) assert.equal(after[spec.event].length, 0, `${spec.event}: the list existed (install created it): kept, emptied`);
   // a settings.json that never had SessionStart does not gain an empty one on uninstall
   writeFileSync(join(cdir, 'settings.json'), JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: `node "${join(cdir, 'perseveranza', HOOK_ENTRY)}"` }] }] } }));
   const u2 = spawnSync(process.execPath, [join(ROOT, 'install.mjs'), '--claude-dir', cdir, '--uninstall'], { encoding: 'utf8' });

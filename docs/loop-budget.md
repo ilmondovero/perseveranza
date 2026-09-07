@@ -18,7 +18,8 @@ readable), plus timeouts. This page gathers every cap and switch in one place.
 | Test run timeout | 30 min | `OMC_TEST_TIMEOUT_MS` | test recorded red (exit 124) |
 | External opinion timeout | 3 min | `OMC_ASK_TIMEOUT_MS`, or `providers.timeouts.<id>` in the config | opinion recorded ERROR in `external-*.md`, with the hint on how to raise it |
 | External opinion retries | 1 (timeouts and network errors only) | `OMC_ASK_RETRIES` (0–5) | the error of the last attempt is recorded, with the attempt count |
-| Stale loop | 2 h without a Stop of the owner | `OMC_LOOP_STALE_MS` | `status`/HUD flag it `STALE`, the journal records a `gap`, the `SessionStart` hook asks a new session whether to take over (`resume --takeover`, valid for the same window) or disarm; nothing happens by itself. A paused loop is never stale |
+| Activity hook cost | ~50–150 ms per matched tool call (a Node start), armed or not, in every project once the plugin is installed | matcher in `hooks/hooks.json` (`Agent\|Task\|Bash\|PowerShell\|Edit\|Write\|MultiEdit\|NotebookEdit`; Read/Grep/Glob excluded on purpose) | the dormant check runs before any import beyond `node:fs`; this is the price of a heartbeat inside the turn |
+| Stale loop | 2 h without a sign of life (Stop or tool activity of the owner) | `OMC_LOOP_STALE_MS` | `status`/HUD flag it `STALE`, the journal records a `gap`, the `SessionStart` hook asks a new session whether to take over (`resume --takeover`, valid for the same window) or disarm; nothing happens by itself. A paused loop is never stale. A detached watchdog (spawned at every Stop and at `arm`, `OMC_LOOP_NO_WATCHDOG=1` disables it) notifies and journals `watchdog` when the silence is real |
 
 An iteration is the unit of spend: every injected phase (plan, implement, review, fix,
 verification...) consumes one. Token usage is read from the transcript path that Claude

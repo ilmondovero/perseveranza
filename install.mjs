@@ -6,7 +6,7 @@
 //
 //   1. copies the files listed in manifest.mjs into <claude-dir>/perseveranza/
 //   2. installs the command and the agents into <claude-dir>/commands and <claude-dir>/agents
-//   3. registers the Stop and SessionStart hooks in <claude-dir>/settings.json (idempotent, with backup),
+//   3. registers the hooks of manifest HOOK_SPECS in <claude-dir>/settings.json (idempotent, with backup),
 //      replacing entries of previous versions (v1 scripts/loop-drive.mjs and .ps1 included)
 // Usage:  node install.mjs [--claude-dir <dir>]
 //         node install.mjs --uninstall
@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, rmSyn
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, HOOK_ENTRY, SESSION_HOOK_ENTRY, CLI_ENTRY } from './manifest.mjs';
+import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, HOOK_SPECS, CLI_ENTRY } from './manifest.mjs';
 
 const src = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -29,11 +29,9 @@ const agentsDir = join(claudeDir, 'agents');
 const settingsPath = join(claudeDir, 'settings.json');
 // forward slashes in the registered commands: Node accepts them on Windows too, and they
 // survive JSON/settings editing without escaping surprises
-const hookPath = join(installDir, HOOK_ENTRY).replaceAll('\\', '/');
-const sessionHookPath = join(installDir, SESSION_HOOK_ENTRY).replaceAll('\\', '/');
 const cliPath = join(installDir, CLI_ENTRY).replaceAll('\\', '/');
-const HOOK_RE = /loop-drive\.(ps1|mjs)|perseveranza[\\/]src[\\/]shell[\\/](stop|session-start)\.mjs/;
-const HOOK_EVENTS = ['Stop', 'SessionStart'];
+const HOOK_RE = /loop-drive\.(ps1|mjs)|perseveranza[\\/]src[\\/]shell[\\/](stop|session-start|activity-hook)\.mjs/;
+const HOOK_EVENTS = [...new Set(HOOK_SPECS.map((h) => h.event))];
 const hookEntries = (settings) => JSON.stringify(HOOK_EVENTS.map((ev) => settings.hooks?.[ev] ?? []));
 
 function loadSettings() {
@@ -99,14 +97,16 @@ for (const old of ['omc-loop.mjs', 'loop-drive.mjs', 'providers.mjs', 'hud.mjs',
   if (existsSync(p)) { rmSync(p); console.log(`Removed v1 file: hooks/${old}`); }
 }
 
-// --- 3. Stop + SessionStart hooks ---
+// --- 3. the hooks (manifest HOOK_SPECS) ---
 const settings = loadSettings();
 const before = hookEntries(settings);
 stripLoopEntries(settings);
-settings.hooks.Stop.push({ matcher: '', hooks: [{ type: 'command', command: `node "${hookPath}"`, timeout: 120 }] });
-settings.hooks.SessionStart.push({ matcher: '', hooks: [{ type: 'command', command: `node "${sessionHookPath}"`, timeout: 15 }] });
+for (const h of HOOK_SPECS) {
+  const entryPath = join(installDir, h.entry).replaceAll('\\', '/');
+  settings.hooks[h.event].push({ matcher: h.matcher, hooks: [{ type: 'command', command: `node "${entryPath}"`, timeout: h.timeout }] });
+}
 if (hookEntries(settings) === before) console.log('Hooks already registered in settings.json: no change.');
-else { saveSettings(settings); console.log('Stop and SessionStart hooks registered in settings.json.'); }
+else { saveSettings(settings); console.log(`Hooks registered in settings.json: ${HOOK_EVENTS.join(', ')}.`); }
 
 console.log('');
 console.log(`Installed. Restart Claude Code and use: /perseveranza <task>   (verbs: node "${cliPath}" ...)`);

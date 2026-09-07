@@ -143,11 +143,14 @@ export function step(input, event = {}, ctx0 = {}) {
   // Only a fire that carries a session id moves the owner's clock: it is the one signal
   // the staleness of the loop is read from.
   if (event.sessionId || !s.owner.sessionId) {
-    if (s.owner.lastFireAt > 0 && now - s.owner.lastFireAt > staleMs) {
+    // ctx.activityAt: the last tool activity of the turn (activity hook); a long turn that
+    // kept working is not a hole in the run
+    const seen = Math.max(s.owner.lastFireAt, Number(ctx.activityAt) || 0);
+    if (s.owner.lastFireAt > 0 && now - seen > staleMs) {
       // paused: the silence was a human's choice (escalation, plan approval), not a dead
       // session. Still paused now, or resumed by the verb since the last fire: both count.
       const paused = s.signals.paused === true || s.signals.resumedAt > s.owner.lastFireAt;
-      J({ type: 'gap', since: new Date(s.owner.lastFireAt).toISOString(), ms: now - s.owner.lastFireAt, paused });
+      J({ type: 'gap', since: new Date(seen).toISOString(), ms: now - seen, paused });
     }
     s.owner.lastFireAt = now;
     s.signals.resumedAt = 0;

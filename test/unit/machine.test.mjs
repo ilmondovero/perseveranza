@@ -382,6 +382,13 @@ test('gap: journaled only when the silence exceeds the stale threshold (ctx.stal
   assert.equal(resumed.state.signals.resumedAt, 0, 'consumed');
   const plain = run(r.state, {}, { sessionId: 'A', now: T + 3 * DEFAULT_STALE_MS });
   assert.equal(journal(plain).find((j) => j.type === 'gap').paused, false);
+  // the turn kept working (activity hook): no hole in the run
+  const busy = run(r.state, { activityAt: T + 3 * DEFAULT_STALE_MS - 60_000 }, { sessionId: 'A', now: T + 3 * DEFAULT_STALE_MS });
+  assert.ok(!journal(busy).some((j) => j.type === 'gap'));
+  const half = run(r.state, { activityAt: T + DEFAULT_STALE_MS }, { sessionId: 'A', now: T + 3 * DEFAULT_STALE_MS });
+  const g = journal(half).find((j) => j.type === 'gap');
+  assert.equal(g.ms, 2 * DEFAULT_STALE_MS, 'the gap starts at the last sign of life');
+  assert.equal(g.since, new Date(T + DEFAULT_STALE_MS).toISOString());
 });
 
 test('no session id in the payload: no scoping, same behaviour, but the owner clock does not move', () => {

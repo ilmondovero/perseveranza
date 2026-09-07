@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-2.2.0-blue)
+![version](https://img.shields.io/badge/version-2.3.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -154,6 +154,15 @@ verification adds a security lens.
   phase it was, and asks the user whether to resume it (`resume --takeover`) or stop it
   (`disarm`). `status`, the HUD and the `disarm` recap show the age of the last fire (`STALE`
   past two hours, `OMC_LOOP_STALE_MS`); the journal records the hole (`gap`).
+- **The loop has a heartbeat inside the turn too.** The `PreToolUse` (Agent), `PostToolUse`
+  (working tools) and `SubagentStop` hooks write `.omc-loop/activity.json`: the silence is
+  measured from the last sign of life, not the last Stop, and a subagent delegated and never
+  returned reads as such ("delegated to pf-reviewer at 11:10, not back yet") in `status`, the
+  HUD and the `SessionStart` notice.
+- **A watchdog speaks when the loop goes silent.** Every Stop (and `arm`) spawns a detached
+  process that sleeps until the threshold, re-sleeps as long as the loop shows life and, when
+  the silence is real, sends the desktop notification and writes `watchdog` to the journal
+  and to `summary.json`. No cron, no session to keep open; `OMC_LOOP_NO_WATCHDOG=1` disables it.
 
 ## Commands
 

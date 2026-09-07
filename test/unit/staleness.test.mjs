@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatAge, formatAt, staleness, releaseOpen, describeLastFire, openStepTitles, noticeKind, sessionNotice, compactNotice, DEFAULT_STALE_MS, HUD_AGE_MIN_MS } from '../../src/core/staleness.mjs';
+import { formatAge, formatAt, staleness, lastSeen, normalizeActivity, describeActivity, releaseOpen, describeLastFire, openStepTitles, noticeKind, sessionNotice, compactNotice, DEFAULT_STALE_MS, HUD_AGE_MIN_MS } from '../../src/core/staleness.mjs';
 import { validatePack } from '../../src/core/prompts.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -32,7 +32,7 @@ test('formatAge / formatAt', () => {
 
 test('staleness: never fired, fresh, stale, custom threshold', () => {
   const never = staleness(mk(), T0);
-  assert.deepEqual(never, { claimed: false, paused: false, lastFireAt: 0, ageMs: null, stale: false });
+  assert.deepEqual(never, { claimed: false, paused: false, lastFireAt: 0, seenAt: 0, via: 'fire', ageMs: null, stale: false });
   const s = mk({ owner: { sessionId: '8dd6a127-x', lastFireAt: T0 } });
   assert.equal(staleness(s, T0 + DEFAULT_STALE_MS).stale, false, 'at the threshold: not yet');
   assert.equal(staleness(s, T0 + DEFAULT_STALE_MS + 1).stale, true);
@@ -44,6 +44,35 @@ test('staleness: never fired, fresh, stale, custom threshold', () => {
   assert.equal(paused.stale, false);
   assert.equal(paused.paused, true);
   assert.equal(paused.ageMs, 30 * H);
+});
+
+test('activity: the heartbeat of a turn moves the last sign of life, a foreign session\'s does not', () => {
+  const s = mk({ owner: { sessionId: 'A', lastFireAt: T0 } });
+  assert.deepEqual(lastSeen(s, null), { at: T0, via: 'fire' });
+  assert.deepEqual(lastSeen(s, { at: T0 + H, session: 'A', event: 'tool', tool: 'Bash' }), { at: T0 + H, via: 'activity' });
+  assert.deepEqual(lastSeen(s, { at: T0 - H, session: 'A' }), { at: T0, via: 'fire' }, 'older than the fire: the fire wins');
+  assert.deepEqual(lastSeen(s, { at: T0 + H, session: 'B' }), { at: T0, via: 'fire' }, 'another session\'s tools are not this loop\'s life');
+  assert.deepEqual(lastSeen(mk(), { at: T0 + H, session: 'B' }), { at: T0 + H, via: 'activity' }, 'unclaimed: any activity counts');
+  assert.equal(normalizeActivity({ at: 'x' }), null);
+  assert.equal(normalizeActivity(null), null);
+  assert.deepEqual(normalizeActivity({ at: 5, delegate: { at: 0 } }).pending, []);
+  assert.deepEqual(normalizeActivity({ at: 5, delegate: { at: 3, agent: 'old' } }).pending, [{ at: 3, agent: 'old' }], 'the single-slot shape of the first cut is still read');
+  assert.deepEqual(normalizeActivity({ at: 5, pending: [{ at: 9, agent: 'b' }, { at: 2, agent: 'a' }, null, { at: 0 }] }).pending.map((d) => d.agent), ['a', 'b'], 'oldest first, garbage dropped');
+  // a fire last night with a tool call ten minutes ago is a live loop
+  const live = staleness(s, T0 + 20 * H, DEFAULT_STALE_MS, { at: T0 + 20 * H - 10 * 60 * 1000, session: 'A' });
+  assert.equal(live.stale, false);
+  assert.equal(live.via, 'activity');
+  assert.equal(live.ageMs, 10 * 60 * 1000);
+  assert.equal(describeLastFire(s, T0 + 20 * H, DEFAULT_STALE_MS, { at: T0 + 20 * H - 10 * 60 * 1000, session: 'A' }), '20h00m ago (2026-09-06 11:10 UTC)', 'the fire age is still the fire age, just not STALE');
+  // the forensic sentence
+  const now = T0 + 3 * H;
+  assert.equal(describeActivity({ at: T0 + H, event: 'tool', tool: 'Bash' }, now), '2h00m ago (2026-09-06 12:10 UTC, tool Bash)');
+  assert.equal(describeActivity({ at: T0 + H, event: 'delegate', agent: 'pf-reviewer', pending: [{ at: T0 + H, agent: 'pf-reviewer' }] }, now), '2h00m ago (2026-09-06 12:10 UTC, delegated to pf-reviewer), not back yet');
+  assert.equal(describeActivity({ at: T0 + 2 * H, event: 'tool', tool: 'Read', pending: [{ at: T0 + H, agent: 'pf-reviewer' }] }, now), '1h00m ago (2026-09-06 13:10 UTC, tool Read); pf-reviewer delegated 2h00m ago, not back yet');
+  assert.equal(describeActivity({ at: T0 + 2 * H, event: 'delegate', agent: 'b', pending: [{ at: T0 + H, agent: 'a' }, { at: T0 + 2 * H, agent: 'b' }] }, now), '1h00m ago (2026-09-06 13:10 UTC, delegated to b), not back yet; a delegated 2h00m ago, not back yet', 'parallel delegations: all of them');
+  assert.equal(describeActivity({ at: T0 + H, event: 'delegate', agent: 'x', pending: [] }, now), '2h00m ago (2026-09-06 12:10 UTC, delegated to x)', 'delegated and already back');
+  assert.equal(describeActivity({ at: T0 + H, event: 'subagent-stop', agent: 'pf-reviewer' }, now), '2h00m ago (2026-09-06 12:10 UTC, subagent pf-reviewer finished)');
+  assert.equal(describeActivity(null, now), '');
 });
 
 test('releaseOpen: only a released loop, only within the window', () => {
@@ -131,6 +160,26 @@ test('sessionNotice: abandoned asks the user; live, released and fresh only info
   assert.ok(waiting.includes('It is not abandoned'));
   assert.ok(waiting.includes('ESCALATION.md'));
   assert.ok(waiting.includes('LOOP resume --takeover'));
+});
+
+test('sessionNotice: with an activity record the notice says what the turn was doing', () => {
+  const s = mk({ task: 'ship it', phase: 'review', owner: { sessionId: 'A', lastFireAt: T0 } });
+  const act = { at: T0 + 10 * 60 * 1000, session: 'A', event: 'delegate', agent: 'pf-reviewer', pending: [{ at: T0 + 10 * 60 * 1000, agent: 'pf-reviewer' }] };
+  const en = sessionNotice(s, { now: T0 + 20 * H, LOOP: 'LOOP', activity: act });
+  assert.ok(en.includes('ABANDONED'));
+  assert.ok(en.includes('last activity 19h50m ago (2026-09-06 11:20 UTC: delegated to pf-reviewer, not back yet)'), en);
+  const it = sessionNotice(s, { now: T0 + 20 * H, LOOP: 'LOOP', activity: act, layers: [IT] });
+  assert.ok(it.includes("ultima attivita' 19h50m fa (2026-09-06 11:20 UTC: delegato a pf-reviewer, non ancora tornato)"), it);
+  const pend = sessionNotice(s, { now: T0 + 20 * H, activity: { at: T0 + H, session: 'A', event: 'tool', tool: 'Read', pending: [{ at: T0 + 10 * 60 * 1000, agent: 'pf-reviewer' }, { at: T0 + H, agent: 'pf-executor' }] } });
+  assert.ok(pend.includes('tool Read; pf-reviewer delegated 19h50m ago and not back yet; pf-executor delegated 19h00m ago and not back yet'), pend);
+  // never fired but the arming turn is alive: fresh, not live-by-nobody
+  const arming = mk({ task: 't', armedAt: new Date(T0).toISOString() });
+  assert.equal(noticeKind(arming, T0 + 3 * H, DEFAULT_STALE_MS, { at: T0 + 3 * H - 60 * 1000, session: 'X' }), 'fresh');
+  assert.equal(noticeKind(arming, T0 + 3 * H, DEFAULT_STALE_MS, { at: T0 + 10 * 60 * 1000, session: 'X' }), 'abandoned');
+  assert.ok(sessionNotice(arming, { now: T0 + 3 * H, activity: { at: T0 + 3 * H - 60 * 1000, session: 'X', event: 'tool', tool: 'Bash' } }).includes('just armed in this project (last activity 1m ago'));
+  const alive = sessionNotice(s, { now: T0 + 20 * H, activity: { at: T0 + 20 * H - 60 * 1000, session: 'A', event: 'tool', tool: 'Bash' } });
+  assert.ok(alive.includes('driven by another session') && alive.includes('last activity 1m ago'), 'the fire is old, the turn is alive');
+  assert.equal(noticeKind(s, T0 + 20 * H, DEFAULT_STALE_MS, { at: T0 + 20 * H - 60 * 1000, session: 'A' }), 'live');
 });
 
 test('sessionNotice and compactNotice speak the language of the pack', () => {

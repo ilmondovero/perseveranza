@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-2.2.0-blue)
+![versione](https://img.shields.io/badge/versione-2.3.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -156,6 +156,16 @@ verifica aggiunge una lente security.
   e chiede all'utente se riprenderlo (`resume --takeover`) o fermarlo (`disarm`). `status`,
   la HUD e il riepilogo di `disarm` mostrano l'età dell'ultimo fire (`STALE` oltre due ore,
   `OMC_LOOP_STALE_MS`); il journal registra il buco (`gap`).
+- **Il loop ha un battito anche dentro il turno.** Gli hook `PreToolUse` (Agent),
+  `PostToolUse` (tool di lavoro) e `SubagentStop` scrivono `.omc-loop/activity.json`: l'età
+  del silenzio si misura dall'ultimo segno di vita, non dall'ultimo Stop, e un subagent
+  delegato e mai tornato si legge come tale ("delegato a pf-reviewer alle 11:10, non ancora
+  tornato") in `status`, nella HUD e nell'avviso di `SessionStart`.
+- **Una sentinella parla quando il loop tace.** A ogni Stop (e ad `arm`) parte un processo
+  staccato che dorme fino alla soglia, si riallinea finché il loop dà segni di vita e, se il
+  silenzio è vero, manda la notifica desktop e scrive `watchdog` nel journal e nel
+  `summary.json`. Nessun cron, nessuna sessione da tenere aperta; `OMC_LOOP_NO_WATCHDOG=1`
+  la spegne.
 
 ## Comandi
 
