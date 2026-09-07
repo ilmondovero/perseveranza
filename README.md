@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-2.4.0-blue)
+![versione](https://img.shields.io/badge/versione-2.5.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -179,6 +179,17 @@ verifica aggiunge una lente security.
   registrato. Disattivo di default; verificato a mano su Windows prima di scriverlo.
   `OMC_LOOP_CLAUDE_BIN` indica il binario `claude` se non è nel `PATH`;
   `OMC_ACTIVITY_HEARTBEAT_MS` regola il battito del verbo `test`.
+- **Dopo un ripristino si riconcilia, in sola lettura.** La sessione riaperta ispeziona
+  piano, note, diff e processi e scrive `.omc-loop/reconcile.json` (`complete`, `partial`,
+  `uncertain`, con i comandi ancora in esecuzione). Finché non lo fa, l'hook rifiuta
+  modifiche, deleghe e comandi non di sola lettura: le istruzioni nel prompt non bastano,
+  un tool rifiutato sì. `partial` continua lo step senza rifare il fatto, `complete` va in
+  review, `uncertain` o un comando ancora vivo mettono in pausa per un umano. I contatori
+  di retry non si azzerano: l'interruzione conta, non regala budget.
+- **Un verdetto scritto prima della richiesta non vale.** `review.json` o `verify.json`
+  più vecchi dell'istante in cui la fase li ha chiesti (un subagent di un turno ucciso, un
+  file rimasto attraverso un takeover) vengono messi da parte come `review-stale-<n>.json`
+  e la fase richiede il verdetto, una volta.
 
 ## Comandi
 
@@ -288,6 +299,10 @@ Requisiti: Claude Code e Node.js ≥ 20. Installazione manuale in alternativa al
 | any | budget | disarm | iterations or tokens exhausted: archive, disarm, notify |
 | any | kill | disarm | STOP file or OMC_LOOP_KILL: before any other check |
 | any | unknown-phase | plan | `phase-recovered`; tampered state: restart from the plan |
+| any | reconcile-missing | unchanged | `reconcile-missing`; restored session: reconcile.json missing or invalid, asked once |
+| any | reconcile-uncertain | unchanged | pause + escalation: a command still running, an uncertain disposition, or reconcile.json missing twice |
+| any | reconcile-implement | implement | `reconcile-implement`; work partial: continue the current step from disk; counters untouched |
+| any | reconcile-review | review | `review-delegate`; work complete: review it; counters untouched |
 <!-- transitions:end -->
 
 </details>

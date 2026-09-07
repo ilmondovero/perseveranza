@@ -219,15 +219,17 @@ test('restorePrompt: what a restored session is told, in the language of the pac
   assert.ok(en.includes('interrupted by the watchdog after 31m without a sign of life'), en);
   assert.ok(en.includes('Task: ship it. Phase `review`.'));
   assert.ok(en.includes('A delegation was pending and never returned (pf-reviewer)'));
-  assert.ok(en.includes('LOOP status'));
-  assert.ok(en.includes('do not blindly repeat'));
+  assert.ok(en.includes('RECONCILE FIRST, READ-ONLY'));
+  assert.ok(en.includes('.omc-loop/reconcile.json'));
+  assert.ok(en.includes('write the file and stop'));
   assert.ok(!en.includes('{{'));
   const plain = restorePrompt(s, { silentMs: 60_000 });
-  assert.ok(!plain.includes('delegation'));
+  assert.ok(!plain.includes('pending and never returned'));
   const it = restorePrompt(s, { silentMs: 31 * 60 * 1000, LOOP: 'LOOP', layers: [IT], activity: { at: 1, pending: [{ at: 1, agent: 'a' }, { at: 2, agent: 'b' }] } });
   assert.ok(it.includes('interrotto dalla sentinella dopo 31m'), it);
   assert.ok(it.includes('non e\' mai tornata (a, b)'));
-  assert.ok(it.includes('LOOP status'));
+  assert.ok(it.includes('PRIMA RICONCILIA, IN SOLA LETTURA'));
+  assert.ok(it.includes('reconcile.json'));
 });
 
 test('compactNotice reminds the owner of the phase and the status verb', () => {

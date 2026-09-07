@@ -739,8 +739,10 @@ test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens
   await new Promise((r) => setTimeout(r, 800));
   const { processInfo } = await import('../../src/shell/restore.mjs');
   const info = processInfo(dummy.pid);
-  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = dummy.pid; s.owner.claudeStartedAt = info.startedAt; });
-  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ ...readActivity(p), at: Date.now() - 20 * 3600 * 1000, pending: [{ at: Date.now() - 20 * 3600 * 1000, agent: 'pf-reviewer' }] }));
+  const T20 = Date.now() - 20 * 3600 * 1000;
+  patchState(p, (s) => { s.owner.lastFireAt = T20; s.owner.claudePid = dummy.pid; s.owner.claudeStartedAt = info.startedAt; });
+  // strictly after the fire (same millisecond would make the fire the last sign of life)
+  writeFileSync(gate(p, 'activity.json'), JSON.stringify({ ...readActivity(p), at: T20 + 1000, pending: [{ at: T20 + 1000, agent: 'pf-reviewer' }] }));
   const r = watchdog(p, env);
   assert.equal(r.code, 0, r.stderr);
   // two stages: the alert first (the human's chance), the restore after the second threshold
@@ -757,12 +759,17 @@ test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens
   assert.ok(existsSync(out), 'the fake claude was launched');
   const call = JSON.parse(readFileSync(out, 'utf8'));
   assert.deepEqual(call.argv.slice(0, 2), ['-r', 'sess-A-full'], 'same session id: it keeps owning the loop');
-  assert.ok(call.argv[2].includes('interrupted by the watchdog after 20h00m'), call.argv[2]);
+  assert.ok(/interrupted by the watchdog after (19h59m|20h00m)/.test(call.argv[2]), call.argv[2]);
   assert.ok(call.argv[2].includes('pending and never returned (pf-reviewer)'));
   assert.ok(call.argv[2].includes('Phase `implement`'));
   assert.equal(call.cwd.replace(/\\/g, '/'), p.dir.replace(/\\/g, '/'), 'launched from the project');
   assert.equal(call.child, null, 'the inherited child marker is stripped, so the restored session saves its transcript');
   assert.equal(call.sock, null);
+  assert.ok(call.argv[2].includes('RECONCILE FIRST, READ-ONLY'), 'the restored session reconciles before anything else');
+  const intr = readState(p).signals.interrupted;
+  assert.ok(intr && intr.silentMs > 19 * 3600 * 1000 && intr.phase === 'implement' && intr.pending.includes('pf-reviewer'), JSON.stringify(intr));
+  assert.ok(cli(p, 'status').out.includes('interrupted:'), 'status says it');
+  patchState(p, (s) => { s.signals.interrupted = null; }); // the rest of this test is about the watchdog, not the reconciliation
   assert.ok(cli(p, 'history').out.includes('WATCHDOG (killed and restored)'));
   // the recorded process is gone (client died): nothing to kill, still restored
   patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
@@ -822,4 +829,87 @@ test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens
   const id = cli(p, 'runs').out.trim().split('\n')[0].trim().split(/\s+/)[0];
   const summary = JSON.parse(readFileSync(join(p.home, 'runs', ...id.split('/'), 'summary.json'), 'utf8'));
   assert.equal(summary.watchdogAlerts.filter((a) => a.action === 'restored').length, 3);
+});
+
+test('a review.json older than the review request is set aside through the real hook', () => {
+  const p = project();
+  arm(p, 'late verdict');
+  writePlan(p, PLAN);
+  fire(p, { session_id: 'A' }); fire(p, { session_id: 'A' }); // -> review, request stamped now
+  assert.ok(readState(p).verdictRequestedAt > 0);
+  writeArtifact(p, 'review.json', { blocking: 0 });
+  const old = (Date.now() - 60 * 1000) / 1000;
+  spawnSync(process.execPath, ['-e', `require('fs').utimesSync(process.argv[1], ${old}, ${old})`, gate(p, 'review.json')]);
+  let r = fire(p, { session_id: 'A' });
+  assert.equal(r.state.phase, 'review', 'not advanced on a stale verdict');
+  assert.ok(r.reason.includes('outcome missing'), r.reason);
+  assert.ok(!existsSync(gate(p, 'review.json')));
+  assert.ok(existsSync(gate(p, 'review-stale-2.json')), 'kept aside, never lost');
+  assert.ok(cli(p, 'history').out.includes('STALE (written'));
+  // a fresh verdict is read normally
+  writeArtifact(p, 'review.json', { blocking: 0 });
+  r = fire(p, { session_id: 'A' });
+  assert.equal(r.state.phase, 'implement');
+  assert.ok(existsSync(gate(p, 'review-3.json')));
+});
+
+test('reconciliation through the real hooks: mutating tools refused, inspection allowed, the file routes the loop', () => {
+  const p = project();
+  arm(p, 'restored task');
+  writePlan(p, PLAN);
+  fire(p, { session_id: 'A' }); // implement
+  patchState(p, (s) => { s.signals.interrupted = { at: new Date().toISOString(), silentMs: 31 * 60 * 1000, phase: 'implement', pending: ['pf-reviewer'] }; });
+  const deny = (r) => { const o = JSON.parse(r.raw); return o.hookSpecificOutput.permissionDecision === 'deny' ? o.hookSpecificOutput.permissionDecisionReason : null; };
+  // the one write the reconciliation exists to produce is allowed, in every path shape
+  for (const file_path of [join(p.dir, '.omc-loop', 'reconcile.json'), '.omc-loop/reconcile.json', `${p.dir.replace(/\\/g, '/')}/.omc-loop/reconcile.json`]) {
+    assert.equal(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path, content: '{}' } }).raw, '', `allowed: Write ${file_path}`);
+    assert.equal(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path } }).raw, '', `allowed: Edit ${file_path}`);
+  }
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(p.dir, '.omc-loop', 'plan.md') } })), 'any other file is refused');
+  // refused: edits, writes, delegations, mutating and chained commands
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'x' } })).includes('Edit is refused until .omc-loop/reconcile.json'));
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: 'x' } })));
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'pf-executor' } })));
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })).includes('only read-only commands'));
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status && npm test' } })));
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'cat a > b' } })));
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'PowerShell', tool_input: { command: 'Remove-Item x' } })));
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'node scripts/migrate.mjs' } })));
+  // bypasses a review found: every segment is judged, not only the first
+  for (const command of ['find . -name "*.mjs" -delete', 'git branch -D main', 'git branch -m main other', 'ls\ngit commit -am wip', 'ls & git commit -am wip', 'ls\nnpm ci', 'cat a.txt & git push --force', 'git log | tee out.txt', 'git stash', 'git checkout -- .']) {
+    assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } })), `refused: ${command}`);
+  }
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'PowerShell', tool_input: { command: 'Get-ChildItem *.mjs | ForEach-Object { $_.Delete() }' } })), 'no scriptblocks');
+  // allowed: inspection, filters, the read-only verbs, a format string with angle brackets, a path with spaces
+  for (const command of ['git status', 'git diff --stat', 'git log --oneline -5 | head -3', 'cat .omc-loop/notes.md', 'tasklist | findstr node', 'ls -la', `node "${CLI}" status`, 'Get-Process node | Select-Object Id', 'git log --pretty=format:"%h %an <%ae>" -5', 'node "C:/Program Files/omc/src/cli/omc-loop.mjs" history --tail 5', 'grep -rn foo src/', 'rg foo | head', 'sed -n 1,20p f', 'git branch --show-current', 'git log --oneline | grep -i del']) {
+    const r = activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: command.startsWith('Get-') ? 'PowerShell' : 'Bash', tool_input: { command } });
+    assert.equal(r.raw, '', `allowed: ${command}`);
+  }
+  assert.ok(journal(p).filter((e) => e.type === 'activity' && e.event === 'refused').length >= 8);
+  assert.ok(cli(p, 'history').out.includes('REFUSED Edit (reconciling)'));
+  // another session is not reconciling this loop's turn: nothing printed; nor an event without a session
+  assert.equal(activity(p, { session_id: 'B', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {} }).raw, '');
+  assert.equal(activity(p, { session_id: '', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {} }).raw, '');
+  // the Stop without the file: asked once
+  let r = fire(p, { session_id: 'A' });
+  assert.ok(r.reason.includes('RECONCILIATION (after a restore)'), r.reason);
+  assert.equal(r.state.phase, 'implement');
+  // the file, written THROUGH the hook's permission (the harness only mirrors what Write would do)
+  assert.equal(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(p.dir, '.omc-loop', 'reconcile.json'), content: '{}' } }).raw, '');
+  writeArtifact(p, 'reconcile.json', { disposition: 'partial', running: [], next: 'implement', summary: 'one file of two edited' });
+  r = fire(p, { session_id: 'A' });
+  assert.equal(r.state.phase, 'implement');
+  assert.ok(r.reason.includes('after reconciliation: the step was partial'), r.reason);
+  assert.equal(r.state.signals.interrupted, null);
+  assert.ok(!existsSync(gate(p, 'reconcile.json')) && existsSync(gate(p, 'reconcile-2.json')), 'kept under the iteration it was read at');
+  assert.ok(cli(p, 'history').out.includes('reconcile: partial -> reconcile-implement (one file of two edited)'));
+  assert.equal(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {} }).raw, '', 'edits allowed again');
+  // a command still running: a human
+  patchState(p, (s) => { s.signals.interrupted = { at: new Date().toISOString(), silentMs: 1, phase: 'implement', pending: [] }; });
+  writeArtifact(p, 'reconcile.json', { disposition: 'partial', running: ['node server.js --port 3000'] });
+  r = fire(p, { session_id: 'A' });
+  assert.equal(r.blocked, false);
+  assert.equal(r.state.signals.paused, true);
+  assert.ok(existsSync(gate(p, 'ESCALATION.md')));
+  assert.ok(readFileSync(gate(p, 'ESCALATION.md'), 'utf8').includes('node server.js --port 3000'));
 });

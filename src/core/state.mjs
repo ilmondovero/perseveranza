@@ -32,8 +32,10 @@ export function defaultState(overrides = {}) {
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, source: null },
     // resumedAt: when `resume` closed a pause (ms); consumed by the next fire so the gap
     // it journals is marked as a human's pause, not a dead session
-    signals: { lastReport: 'none', claimedDone: false, paused: false, resumedAt: 0 },
-    flags: { repeated: false, cleanedOnce: false, planPresented: false },
+    // interrupted: written by the watchdog when it kills and restores the session; the next
+    // Stop runs a read-only reconciliation before anything else
+    signals: { lastReport: 'none', claimedDone: false, paused: false, resumedAt: 0, interrupted: null },
+    flags: { repeated: false, cleanedOnce: false, planPresented: false, reconcileAsked: false },
     lastTest: null,
     baselineDirty: [],
     // releasedFrom: the previous owner after `resume --takeover`, until the next fire claims
@@ -42,6 +44,9 @@ export function defaultState(overrides = {}) {
     owner: { sessionId: null, lastFireAt: 0, releasedFrom: null, releasedAt: 0, transcriptPath: null, claudePid: 0, claudeStartedAt: null },
     // the work tree as the hook last saw it: lets it notice a stop that changed nothing
     tree: { fingerprint: null, iteration: 0 },
+    // when the phase that awaits a verdict (review, final-verify) was entered: a verdict file
+    // written before that instant answers an earlier request, not this one
+    verdictRequestedAt: 0,
     armedAt: null,
     engineVersion: null,
   };
@@ -89,6 +94,11 @@ export function normalizeState(raw) {
   s.signals.claimedDone = bool(s.signals.claimedDone, false);
   s.signals.paused = bool(s.signals.paused, false);
   s.signals.resumedAt = Math.max(0, num(s.signals.resumedAt, 0));
+  if (s.signals.interrupted && typeof s.signals.interrupted === 'object') {
+    const i = s.signals.interrupted;
+    s.signals.interrupted = { at: i.at ?? null, silentMs: Math.max(0, num(i.silentMs, 0)), phase: typeof i.phase === 'string' ? i.phase : '', pending: Array.isArray(i.pending) ? i.pending.map(String).slice(0, 10) : [] };
+  } else s.signals.interrupted = null;
+  s.flags.reconcileAsked = bool(s.flags.reconcileAsked, false);
   s.flags.repeated = bool(s.flags.repeated, false);
   s.flags.cleanedOnce = bool(s.flags.cleanedOnce, false);
   s.flags.planPresented = bool(s.flags.planPresented, false);
@@ -113,6 +123,7 @@ export function normalizeState(raw) {
       failed: Array.isArray(s.lastTest.failed) ? s.lastTest.failed.map(String) : [],
     };
   } else s.lastTest = null;
+  s.verdictRequestedAt = Math.max(0, num(s.verdictRequestedAt, 0));
   s.tree.fingerprint = typeof s.tree.fingerprint === 'string' && s.tree.fingerprint ? s.tree.fingerprint : null;
   s.tree.iteration = Math.max(0, num(s.tree.iteration, 0));
   s.owner.sessionId = typeof s.owner.sessionId === 'string' && s.owner.sessionId ? s.owner.sessionId : null;

@@ -80,7 +80,7 @@ export const ACTIVITY_HOOK_ENTRY = 'src/shell/activity-hook.mjs';
 export const HOOK_SPECS = [
   { event: 'Stop', matcher: '', entry: HOOK_ENTRY, timeout: 120 },
   { event: 'SessionStart', matcher: '', entry: SESSION_HOOK_ENTRY, timeout: 15 },
-  { event: 'PreToolUse', matcher: 'Agent|Task', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
+  { event: 'PreToolUse', matcher: 'Agent|Task|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
   { event: 'PostToolUse', matcher: 'Agent|Task|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
   { event: 'SubagentStop', matcher: '', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
 ];

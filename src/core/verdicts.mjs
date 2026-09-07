@@ -48,6 +48,28 @@ export function parseReviewVerdict(text) {
   return { ok: true, blocking: effective, declaredBlocking: blocking, findings: f.findings, notes };
 }
 
+// .omc-loop/reconcile.json, written by a restored session after a read-only inspection:
+//   { "disposition": "complete"|"partial"|"uncertain", "running": [...], "next": "implement"|"review", "summary": "..." }
+// -> { ok: true, disposition, running, next, summary, notes } | { ok: false, error }
+export const DISPOSITIONS = ['complete', 'partial', 'uncertain'];
+export function parseReconcile(text) {
+  const p = parseJson(text);
+  if (p.error) return { ok: false, error: p.error };
+  const v = p.value;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return { ok: false, error: 'not an object' };
+  const disposition = typeof v.disposition === 'string' ? v.disposition.trim().toLowerCase() : '';
+  if (!DISPOSITIONS.includes(disposition)) return { ok: false, error: `disposition must be one of ${DISPOSITIONS.join(', ')} (got ${JSON.stringify(v.disposition)})` };
+  if (v.running != null && !Array.isArray(v.running)) return { ok: false, error: 'running is not an array' };
+  const running = (v.running || []).map((r) => String(r).slice(0, 200)).filter(Boolean);
+  const notes = [];
+  let next = typeof v.next === 'string' ? v.next.trim().toLowerCase() : '';
+  if (next && next !== 'implement' && next !== 'review') return { ok: false, error: `next must be implement or review (got ${JSON.stringify(v.next)})` };
+  if (!next) next = disposition === 'complete' ? 'review' : 'implement';
+  if (disposition === 'complete' && next === 'implement') notes.push('complete but next=implement: implementing again what is complete');
+  if (disposition === 'partial' && next === 'review') { notes.push('partial but next=review: a partial step is continued, not reviewed'); next = 'implement'; }
+  return { ok: true, disposition, running, next, summary: typeof v.summary === 'string' ? v.summary.slice(0, 500) : '', notes };
+}
+
 // -> { ok: true, pass, findings, notes: [] } | { ok: false, error }
 export function parseVerifyVerdict(text) {
   const p = parseJson(text);

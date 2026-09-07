@@ -77,7 +77,9 @@ export const DEFAULT_PROMPTS = {
   'session-released': `perseveranza: a loop in this project was released by session {{from}} ({{LOOP}} resume --takeover) and is waiting for a claim: phase \`{{phase}}\`, {{when}}, {{steps}}. Task: {{task}}. The next Stop of the session that continues the work takes it over: do that ONLY if the user asks this session to continue the task; otherwise do not touch .omc-loop/.`,
   'session-fresh': `perseveranza: a loop was just armed in this project ({{when}}) and no session has fired yet: phase \`{{phase}}\`, {{steps}}. Task: {{task}}. It belongs to the session that armed it: do not touch .omc-loop/ and do not work on its task from here unless the user says so.`,
   'session-waiting': `perseveranza: a loop in this project is PAUSED and waits for a human: owner {{owner}}, phase \`{{phase}}\`, {{when}}, {{steps}}. Task: {{task}}. It is not abandoned. Do not touch .omc-loop/ and do not work on its task. If the user wants to continue it from this session: read .omc-loop/ESCALATION.md if present, then {{LOOP}} resume --takeover and let the Stop hook drive.`,
-  'session-restore': `perseveranza: the previous turn of this session was interrupted by the watchdog after {{silence}} without a sign of life, and the session was restored. Task: {{task}}. Phase \`{{phase}}\`.{{what}} Run {{LOOP}} status, then continue the current phase from what is on disk (plan, notes, artifacts); do not blindly repeat the interrupted command. The Stop hook drives from here.`,
+  'session-restore': `perseveranza: the previous turn of this session was interrupted by the watchdog after {{silence}} without a sign of life, and the session was restored. Task: {{task}}. Phase \`{{phase}}\`.{{what}} RECONCILE FIRST, READ-ONLY: edits, writes and delegations are refused until you do. Inspect .omc-loop/plan.md, .omc-loop/notes.md, git status, git diff, git log, and the process table for commands the interrupted turn may have left running. Then write .omc-loop/reconcile.json as {"disposition": "complete|partial|uncertain", "running": ["<command still running>"], "next": "implement|review", "summary": "<one line>"}: complete = the step's work is on disk and only needs its review; partial = continue the step from what exists, without redoing it; uncertain = you cannot tell, or a command is still running (a human decides). Do not implement anything in this turn: write the file and stop. The Stop hook drives from there.`,
+  'reconcile-missing': `RECONCILIATION (after a restore): .omc-loop/reconcile.json is missing or invalid{{error}}. Inspect the work on disk, read-only, and write it NOW as {"disposition": "complete|partial|uncertain", "running": [], "next": "implement|review", "summary": "..."}; then stop. A second miss pauses the loop for a human.`,
+  'reconcile-implement': `PHASE: implement (after reconciliation: the step was partial). Continue the CURRENT step from what is on disk: do not redo edits that already exist, do not repeat commands that already ran, check .omc-loop/notes.md and the diff first.{{implHint}}{{testHint}} Do NOT tick the box: it is ticked only after the review passes. If you need input from the user: {{LOOP}} pause and then ask.`,
   'session-compact': `perseveranza: this session drives an armed loop (phase \`{{phase}}\`, {{steps}}). Task: {{task}}. If the context lost the phase instruction, run {{LOOP}} status and continue the current phase; the Stop hook injects the next instruction when the turn ends.`,
 };
 
@@ -122,6 +124,8 @@ export const PROMPT_VARS = {
   'hint-last-transcript': ['age', 'at'],
   'hint-restore-pending': ['agents'],
   'session-restore': ['silence', 'task', 'phase', 'what', 'LOOP'],
+  'reconcile-missing': ['error'],
+  'reconcile-implement': ['implHint', 'testHint', 'LOOP'],
   'hint-act-tool': ['tool'],
   'hint-act-delegate': ['agent'],
   'hint-act-subagent-stop': ['agent'],

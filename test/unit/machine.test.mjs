@@ -63,6 +63,42 @@ test('implement -> review, drops a stale review.json', () => {
   assert.ok(r.effects.some((e) => e.type === 'dropArtifact' && e.name === 'review.json'));
 });
 
+test('a verdict written before the phase asked for it is kept aside and treated as missing', () => {
+  const T = 1_700_000_000_000;
+  // entering review stamps the request
+  const enter = run(mk({ phase: 'implement' }), { planText: PLAN }, { now: T });
+  assert.equal(enter.state.verdictRequestedAt, T);
+  // a file from before the request (a subagent of a killed turn, a leftover across a takeover)
+  const late = run(enter.state, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 5000 } }, { now: T + 60_000 });
+  assert.equal(late.outcome, 'missing', 'not read as this iteration\'s verdict');
+  assert.equal(late.state.phase, 'review');
+  assert.ok(late.effects.some((e) => e.type === 'keepArtifact' && e.name === 'review.json' && e.as === 'review-stale-1.json'));
+  assert.ok(!late.effects.some((e) => e.type === 'keepArtifact' && e.as === 'review-1.json'));
+  const j = journal(late).find((e) => e.type === 'verdict');
+  assert.equal(j.stale, true); assert.equal(j.treatedAs, 'missing'); assert.equal(j.savedAs, 'review-stale-1.json');
+  assert.ok(late.reason.includes('outcome missing'));
+  assert.equal(late.state.verdictRequestedAt, T, 'staying in the phase keeps the request');
+  // within a second of the request: coarse clocks, accepted
+  const edge = run(enter.state, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 900 } }, { now: T + 60_000 });
+  assert.equal(edge.outcome, 'pass');
+  // written after the request: accepted
+  const fresh = run(enter.state, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T + 10 } }, { now: T + 60_000 });
+  assert.equal(fresh.outcome, 'pass');
+  // no mtime known (shell could not stat), or no request stamped (state from before 2.5): accepted as before
+  assert.equal(run(enter.state, { artifacts: { review: '{"blocking":0}' } }, { now: T + 60_000 }).outcome, 'pass');
+  assert.equal(run({ ...enter.state, verdictRequestedAt: 0 }, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 5000 } }, { now: T + 60_000 }).outcome, 'pass');
+  // the same for the final verification
+  const cleanup = mk({ phase: 'cleanup' });
+  const fv = run(cleanup, {}, { now: T });
+  assert.equal(fv.state.phase, 'final-verify'); assert.equal(fv.state.verdictRequestedAt, T);
+  const lateV = run(fv.state, { artifacts: { verify: '{"pass":true}' }, artifactAt: { verify: T - 5000 } }, { now: T + 1000 });
+  assert.equal(lateV.outcome, 'missing');
+  assert.ok(lateV.effects.some((e) => e.type === 'keepArtifact' && e.as === 'verify-stale-1.json'));
+  // a second stale file after the missing ask counts as a failed review, like any missing outcome
+  const twice = run(late.state, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 5000 } }, { now: T + 120_000 });
+  assert.equal(twice.outcome, 'missing-twice');
+});
+
 test('review model routing follows complexity', () => {
   assert.ok(run(mk({ phase: 'implement', complexity: 'low' })).reason.includes('model=haiku'));
   assert.ok(run(mk({ phase: 'implement', complexity: 'high' })).reason.includes('model=opus'));
@@ -426,6 +462,70 @@ test('the fire journal entry records the payload keys, never the values', () => 
   assert.deepEqual(fire.payloadKeys, ['session_id', 'transcript_path']);
 });
 
+// ---------------------------------------------------------------- reconciliation after a restore
+const INTERRUPTED = { at: '2026-09-07T11:10:00.000Z', silentMs: 31 * 60 * 1000, phase: 'implement', pending: ['pf-reviewer'] };
+
+test('reconcile: missing file asked once, twice pauses for a human', () => {
+  const s = mk({ phase: 'implement', counters: { iterations: 5, retries: 2 }, signals: { interrupted: INTERRUPTED } });
+  const r = run(s);
+  assert.equal(r.outcome, 'reconcile-missing');
+  assert.equal(r.state.phase, 'implement');
+  assert.equal(r.state.flags.reconcileAsked, true);
+  assert.ok(r.state.signals.interrupted, 'still reconciling');
+  assert.ok(r.reason.includes('RECONCILIATION (after a restore)') && r.reason.includes('reconcile.json is missing or invalid'), r.reason);
+  assert.equal(r.state.counters.iterations, 6);
+  assert.equal(r.state.counters.retries, 2, 'counters untouched');
+  // an invalid file names the error
+  const bad = run(s, { artifacts: { reconcile: '{"disposition":"whatever"}' } });
+  assert.ok(bad.reason.includes('(disposition must be one of'), bad.reason);
+  // the second miss: a human
+  const twice = run(r.state);
+  assert.equal(twice.outcome, 'reconcile-uncertain');
+  assert.equal(twice.state.signals.paused, true);
+  assert.equal(twice.state.signals.interrupted, null);
+  assert.ok(twice.types.includes('writeEscalation') && twice.types.includes('notify') && !twice.blocked);
+  assert.ok(journal(twice).some((j) => j.type === 'reconcile' && j.outcome === 'reconcile-uncertain' && j.why.includes('still missing')));
+});
+
+test('reconcile: uncertain or a command still running pauses; partial continues the step; complete goes to review', () => {
+  const s = mk({ phase: 'review', counters: { iterations: 5, retries: 2, finalFails: 1 }, signals: { interrupted: INTERRUPTED } });
+  const running = run(s, { artifacts: { reconcile: '{"disposition":"partial","running":["node server.js"]}' } });
+  assert.equal(running.outcome, 'reconcile-uncertain');
+  assert.ok(journal(running).find((j) => j.type === 'reconcile').why.includes('node server.js'));
+  assert.ok(running.effects.some((e) => e.type === 'keepArtifact' && e.name === 'reconcile.json' && e.as === 'reconcile-5.json'), 'the file is kept');
+  const unsure = run(s, { artifacts: { reconcile: '{"disposition":"uncertain","summary":"half a migration"}' } });
+  assert.equal(unsure.outcome, 'reconcile-uncertain');
+  assert.ok(journal(unsure).find((j) => j.type === 'reconcile').why.includes('half a migration'));
+  const partial = run(s, { artifacts: { reconcile: '{"disposition":"partial","summary":"two of three files edited"}' }, planText: PLAN });
+  assert.equal(partial.outcome, 'reconcile-implement');
+  assert.equal(partial.state.phase, 'implement');
+  assert.equal(partial.state.signals.interrupted, null);
+  assert.equal(partial.state.counters.retries, 2, 'the interruption does not buy a fresh budget');
+  assert.equal(partial.state.counters.finalFails, 1);
+  assert.ok(partial.reason.includes('after reconciliation: the step was partial') && partial.reason.includes('do not redo edits'), partial.reason);
+  assert.ok(journal(partial).some((j) => j.type === 'reconcile' && j.disposition === 'partial' && j.savedAs === 'reconcile-5.json'));
+  const T = 1_700_000_000_000;
+  // interrupted IN review with the work complete: the request is fresh even though the phase
+  // does not change, so a reviewer of the killed turn writing after the drop is late
+  const inReview = run(mk({ phase: 'review', verdictRequestedAt: T - 5000, signals: { interrupted: INTERRUPTED } }), { artifacts: { reconcile: '{"disposition":"complete"}' } }, { now: T });
+  assert.equal(inReview.outcome, 'reconcile-review');
+  assert.equal(inReview.state.verdictRequestedAt, T);
+  const complete = run(mk({ phase: 'implement', signals: { interrupted: INTERRUPTED } }), { artifacts: { reconcile: '{"disposition":"complete"}' } }, { now: T });
+  assert.equal(complete.outcome, 'reconcile-review');
+  assert.equal(complete.state.phase, 'review');
+  assert.equal(complete.state.verdictRequestedAt, T, 'a verdict from before the restore is late');
+  assert.ok(complete.reason.includes('PHASE: code review'));
+  assert.ok(complete.effects.some((e) => e.type === 'dropArtifact' && e.name === 'review.json'));
+  // reconciliation comes before everything: a pending claim-done or a verdict on disk waits
+  const busy = run(mk({ phase: 'review', signals: { interrupted: INTERRUPTED, claimedDone: true, lastReport: 'pass' } }), { artifacts: { review: '{"blocking":0}' } });
+  assert.equal(busy.outcome, 'reconcile-missing');
+  assert.equal(busy.state.signals.claimedDone, true, 'nothing decided yet: the signals wait');
+  const decided = run(busy.state, { artifacts: { reconcile: '{"disposition":"partial"}' } });
+  assert.equal(decided.outcome, 'reconcile-implement');
+  assert.equal(decided.state.signals.claimedDone, false, 'the killed turn\'s claim and report are dropped with the decision');
+  assert.equal(decided.state.signals.lastReport, 'none');
+});
+
 // ---------------------------------------------------------------- table coverage
 test('every regular transition row is reachable through step()', () => {
   const reached = new Set();
@@ -455,6 +555,10 @@ test('every regular transition row is reachable through step()', () => {
   note(run(mk({ phase: 'git-finish' })));
   note(run(mk({ counters: { iterations: 99 } })));
   note(run(mk({ phase: 'weird' })));
+  note(run(mk({ phase: 'review', signals: { interrupted: INTERRUPTED } })));
+  note(run(mk({ phase: 'review', signals: { interrupted: INTERRUPTED }, flags: { reconcileAsked: true } })));
+  note(run(mk({ phase: 'review', signals: { interrupted: INTERRUPTED } }), { artifacts: { reconcile: '{"disposition":"partial"}' } }));
+  note(run(mk({ phase: 'implement', signals: { interrupted: INTERRUPTED } }), { artifacts: { reconcile: '{"disposition":"complete"}' } }));
   const expected = TRANSITIONS.map((r) => r.outcome).filter((o) => o !== 'kill'); // kill lives in the shell
   for (const o of new Set(expected)) assert.ok(reached.has(o), `outcome "${o}" never produced by step()`);
 });

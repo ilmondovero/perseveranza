@@ -57,3 +57,24 @@ test('verify: malformed inputs are errors', () => {
     assert.equal(parseVerifyVerdict(bad).ok, false, `expected error for ${JSON.stringify(bad)}`);
   }
 });
+
+test('reconcile.json: disposition and next validated, running listed, defaults derived', async () => {
+  const { parseReconcile } = await import('../../src/core/verdicts.mjs');
+  assert.equal(parseReconcile('').ok, false);
+  assert.equal(parseReconcile('[]').ok, false);
+  assert.ok(parseReconcile('{"disposition":"done"}').error.includes('disposition must be one of'));
+  assert.ok(parseReconcile('{"disposition":"partial","next":"cleanup"}').error.includes('next must be implement or review'));
+  assert.ok(parseReconcile('{"disposition":"partial","running":"npm test"}').error.includes('running is not an array'));
+  const c = parseReconcile('{"disposition":"Complete","summary":"step 4 edits are on disk"}');
+  assert.deepEqual([c.ok, c.disposition, c.next, c.running, c.summary], [true, 'complete', 'review', [], 'step 4 edits are on disk']);
+  const p = parseReconcile('{"disposition":"partial"}');
+  assert.equal(p.next, 'implement');
+  const u = parseReconcile('{"disposition":"uncertain","running":["node server.js", 42]}');
+  assert.deepEqual([u.ok, u.disposition, u.running], [true, 'uncertain', ['node server.js', '42']]);
+  const odd = parseReconcile('{"disposition":"complete","next":"implement"}');
+  assert.equal(odd.next, 'implement');
+  assert.ok(odd.notes[0].includes('complete but next=implement'));
+  const pr = parseReconcile('{"disposition":"partial","next":"review"}');
+  assert.equal(pr.next, 'implement', 'a partial step is continued, never reviewed as is');
+  assert.ok(pr.notes[0].includes('partial but next=review'));
+});

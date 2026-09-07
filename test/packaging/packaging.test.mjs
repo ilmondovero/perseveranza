@@ -47,7 +47,7 @@ test('hooks.json is exactly the manifest HOOK_SPECS table (entries, matchers, ti
   }
   assert.equal(HOOK_SPECS.find((s) => s.event === 'Stop').timeout, 120, 'the Stop deadline the shell keeps a margin from');
   assert.ok(HOOK_SPECS.filter((s) => s.event !== 'Stop').every((s) => s.timeout <= 30), 'every other hook is short');
-  assert.equal(HOOK_SPECS.find((s) => s.event === 'PreToolUse').matcher, 'Agent|Task', 'a delegation is the one PreToolUse worth a process');
+  assert.equal(HOOK_SPECS.find((s) => s.event === 'PreToolUse').matcher, 'Agent|Task|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit', 'delegations, and every tool a reconciliation must refuse');
   assert.ok(!/Read|Grep|Glob/.test(HOOK_SPECS.find((s) => s.event === 'PostToolUse').matcher), 'the cheap, frequent tools do not pay for a heartbeat');
   assert.equal(HOOK_ENTRY, 'src/shell/stop.mjs'); assert.equal(SESSION_HOOK_ENTRY, 'src/shell/session-start.mjs'); assert.equal(ACTIVITY_HOOK_ENTRY, 'src/shell/activity-hook.mjs');
 });

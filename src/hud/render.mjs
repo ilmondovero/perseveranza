@@ -39,6 +39,7 @@ export function renderProgress(state, planText = '', opts = {}) {
     const c = stepCounts(planText);
     if (c.total) parts.push(`${bar(c.done, c.total)} ${c.done}/${c.total}`);
   }
+  if (state.signals?.interrupted) parts.push(paint('1;35', '⟲ reconcile'));
   const it = Number(state.counters?.iterations) || 0;
   parts.push(`it${it}/${iterationCap(state)}`);
   const spent = tokensSpent(state.usage);

@@ -40,8 +40,9 @@ export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE
   const act = st.via !== 'fire' ? describeActivity(activity, now) : '';
   if (act) lines.push(`  activity:    ${act}`);
   if (transcriptAt > 0 && transcriptAt > s.owner.lastFireAt) lines.push(`  transcript:  written ${formatAge(Math.max(0, now - transcriptAt))} ago${s.owner.claudePid ? ` (Claude Code pid ${s.owner.claudePid})` : ''}`);
+  if (s.signals.interrupted) lines.push(`  interrupted: ${s.signals.interrupted.at || '?'} after ${formatAge(s.signals.interrupted.silentMs)} silent in phase ${s.signals.interrupted.phase || '?'}${s.signals.interrupted.pending.length ? `, pending: ${s.signals.interrupted.pending.join(', ')}` : ''}  <- reconciling: read-only until .omc-loop/reconcile.json is written`);
   lines.push(`  armed at:    ${s.armedAt || '?'}  (engine v${s.engineVersion || '?'})`);
-  const next = outcomesFor(s.phase).map((r) => r.outcome).join(', ');
+  const next = outcomesFor(s.phase).filter((r) => s.signals.interrupted || !r.outcome.startsWith('reconcile-')).map((r) => r.outcome).join(', ');
   lines.push(`  next outcomes: ${next}`);
   return lines.join('\n');
 }

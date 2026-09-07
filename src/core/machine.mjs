@@ -22,7 +22,7 @@
 // Pre-state checks (kill switch, corrupt state) live in the shell: they need no state.
 
 import { countOpenSteps, stepCounts } from './plan.mjs';
-import { parseReviewVerdict, parseVerifyVerdict } from './verdicts.mjs';
+import { parseReviewVerdict, parseVerifyVerdict, parseReconcile } from './verdicts.mjs';
 import { lookup } from './transitions.mjs';
 import { canContinue, adaptiveMax, tokensSpent } from './budget.mjs';
 import { renderPrompt } from './prompts.mjs';
@@ -191,6 +191,9 @@ export function step(input, event = {}, ctx0 = {}) {
     ]);
   }
 
+  // --- after a kill-and-restore: reconcile first, read-only, before any signal or verdict ---
+  if (s.signals.interrupted) return reconcile(s, ctx, { now, phase, J, done, effects });
+
   // --- consume the signals written by the verbs, then the verdict artifacts ---
   let report = s.signals.lastReport;
   const claimed = s.signals.claimedDone === true;
@@ -198,36 +201,40 @@ export function step(input, event = {}, ctx0 = {}) {
   s.signals.claimedDone = false;
   let verdictSrc = report === 'none' ? null : 'verb';
   const artifacts = ctx.artifacts || {};
+  const artifactAt = ctx.artifactAt || {};
   // A verdict is consumed on read, but not thrown away: it is renamed after the iteration
   // it judged, so the fix phase can reread the findings instead of asking the reviewer again.
   const keptAs = (name) => name.replace(/\.json$/, `-${s.counters.iterations}.json`);
-  if (phase === 'review' && artifacts.review != null) {
-    ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs('review.json')}` };
-    effects.push({ type: 'keepArtifact', name: 'review.json', as: keptAs('review.json') });
-    const v = parseReviewVerdict(artifacts.review);
+  // A verdict written BEFORE this phase asked for one answers an earlier request: a subagent
+  // of a turn that was killed and restored, or a file left over across a takeover. It is
+  // kept aside (never read as this iteration's verdict) and the phase asks again, once.
+  // One second of tolerance for coarse file clocks.
+  const LATE_TOLERANCE_MS = 1000;
+  const readVerdict = (name, key, parse, summarize) => {
+    const at = Number(artifactAt[key]) || 0;
+    const stale = s.verdictRequestedAt > 0 && at > 0 && at + LATE_TOLERANCE_MS < s.verdictRequestedAt;
+    if (stale) {
+      const as = name.replace(/\.json$/, `-stale-${s.counters.iterations}.json`);
+      effects.push({ type: 'keepArtifact', name, as });
+      report = 'none';
+      verdictSrc = name;
+      J({ type: 'verdict', artifact: name, stale: true, writtenAt: new Date(at).toISOString(), requestedAt: new Date(s.verdictRequestedAt).toISOString(), savedAs: as, treatedAs: 'missing' });
+      return;
+    }
+    ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs(name)}` };
+    effects.push({ type: 'keepArtifact', name, as: keptAs(name) });
+    const v = parse(artifacts[key]);
+    verdictSrc = name;
     if (v.ok) {
-      report = v.blocking === 0 ? 'pass' : 'fail';
-      verdictSrc = 'review.json';
-      J({ type: 'verdict', artifact: 'review.json', blocking: v.blocking, declaredBlocking: v.declaredBlocking, findings: v.findings.length, notes: v.notes, savedAs: keptAs('review.json'), details: v.findings });
+      report = summarize(v);
+      J({ type: 'verdict', artifact: name, ...(key === 'review' ? { blocking: v.blocking, declaredBlocking: v.declaredBlocking } : { pass: v.pass, declaredPass: v.declaredPass }), findings: v.findings.length, notes: v.notes, savedAs: keptAs(name), details: v.findings });
     } else {
       report = 'none';
-      verdictSrc = 'review.json';
-      J({ type: 'verdict', artifact: 'review.json', error: v.error, treatedAs: 'missing' });
+      J({ type: 'verdict', artifact: name, error: v.error, treatedAs: 'missing' });
     }
-  } else if (phase === 'final-verify' && artifacts.verify != null) {
-    ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs('verify.json')}` };
-    effects.push({ type: 'keepArtifact', name: 'verify.json', as: keptAs('verify.json') });
-    const v = parseVerifyVerdict(artifacts.verify);
-    if (v.ok) {
-      report = v.pass ? 'pass' : 'fail';
-      verdictSrc = 'verify.json';
-      J({ type: 'verdict', artifact: 'verify.json', pass: v.pass, declaredPass: v.declaredPass, findings: v.findings.length, notes: v.notes, savedAs: keptAs('verify.json'), details: v.findings });
-    } else {
-      report = 'none';
-      verdictSrc = 'verify.json';
-      J({ type: 'verdict', artifact: 'verify.json', error: v.error, treatedAs: 'missing' });
-    }
-  }
+  };
+  if (phase === 'review' && artifacts.review != null) readVerdict('review.json', 'review', parseReviewVerdict, (v) => (v.blocking === 0 ? 'pass' : 'fail'));
+  else if (phase === 'final-verify' && artifacts.verify != null) readVerdict('verify.json', 'verify', parseVerifyVerdict, (v) => (v.pass ? 'pass' : 'fail'));
 
   if (!COMPLEXITIES.includes(s.complexity)) s.complexity = 'medium';
   const V = buildVars(s, ctx);
@@ -252,6 +259,9 @@ export function step(input, event = {}, ctx0 = {}) {
   const go = (outcome, vars = {}, extraEffects = []) => {
     const row = lookup(phase, outcome);
     if (!row) throw new Error(`no transition for ${phase}:${outcome}`);
+    // entering a phase that waits for a verdict: from now on only a file written after this
+    // instant answers it (staying in the phase after a missing outcome keeps the request)
+    if (row.next !== phase && (row.next === 'review' || row.next === 'final-verify')) s.verdictRequestedAt = now;
     s.phase = row.next;
     const reason = say(row.prompt, vars);
     s.counters.iterations += 1;
@@ -385,6 +395,60 @@ export function step(input, event = {}, ctx0 = {}) {
       return done('unknown-phase', [{ type: 'saveState' }, { type: 'block', reason: say(row.prompt) }]);
     }
   }
+}
+
+// The restored session inspected the interrupted work and wrote .omc-loop/reconcile.json.
+// Its disposition decides where the loop resumes; anything uncertain, and any command still
+// running, goes to a human. Counters are never reset: the interruption counts, it does not
+// buy a fresh budget. A decision (route or pause) also drops the signals the killed turn
+// may have left (a report, a claim): the reconciliation judged the work, not that turn.
+function reconcile(s, ctx, { now, phase, J, done, effects }) {
+  const i = s.signals.interrupted;
+  const LOOP = ctx.LOOP || 'node omc-loop.mjs';
+  const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP }, ctx.overrides || []);
+  const head = header(s, ctx, String(ctx.planText ?? ''));
+  const V = buildVars(s, ctx);
+  const raw = ctx.artifacts && ctx.artifacts.reconcile != null ? ctx.artifacts.reconcile : null;
+  const v = raw == null ? { ok: false, error: 'missing' } : parseReconcile(raw);
+  const clear = () => { s.signals.interrupted = null; s.flags.reconcileAsked = false; s.flags.repeated = false; s.signals.lastReport = 'none'; s.signals.claimedDone = false; };
+  const pause = (why) => {
+    clear();
+    s.signals.paused = true;
+    J({ type: 'reconcile', ok: v.ok, disposition: v.ok ? v.disposition : null, running: v.ok ? v.running : [], outcome: 'reconcile-uncertain', why });
+    J({ type: 'transition', from: phase, to: phase, outcome: 'reconcile-uncertain', paused: true, why });
+    return done('reconcile-uncertain', [
+      { type: 'saveState' },
+      { type: 'writeEscalation', why },
+      { type: 'notify', title: NOTIFY_TITLE, message: `Loop paused after a restore, a human is needed: ${why} - ${ctx.projectName || 'project'}. Hand-off in .omc-loop/ESCALATION.md` },
+      { type: 'allowStop' },
+    ]);
+  };
+  if (!v.ok) {
+    if (s.flags.reconcileAsked) return pause(`reconcile.json ${v.error === 'missing' ? 'still missing' : `invalid (${v.error})`} after a second ask: the interrupted work (phase ${i.phase || phase}) needs a human's eyes`);
+    s.flags.reconcileAsked = true;
+    const row = lookup('*', 'reconcile-missing');
+    s.counters.iterations += 1;
+    J({ type: 'reconcile', ok: false, error: v.error, outcome: 'reconcile-missing', iteration: s.counters.iterations });
+    J({ type: 'transition', from: phase, to: phase, outcome: 'reconcile-missing', prompt: row.prompt, iteration: s.counters.iterations });
+    return done('reconcile-missing', [{ type: 'saveState' }, { type: 'block', reason: `${head} ${P(row.prompt, { error: v.error === 'missing' ? '' : ` (${v.error})` })}` }]);
+  }
+  const as = `reconcile-${s.counters.iterations}.json`;
+  effects.push({ type: 'keepArtifact', name: 'reconcile.json', as });
+  if (v.disposition === 'uncertain' || v.running.length) {
+    return pause(v.running.length ? `command(s) still running after the restore: ${v.running.slice(0, 3).join('; ')}` : `the restored session could not tell what state the work is in${v.summary ? `: ${v.summary}` : ''}`);
+  }
+  clear();
+  const outcome = v.next === 'review' ? 'reconcile-review' : 'reconcile-implement';
+  const row = lookup('*', outcome);
+  // a fresh request even when the phase does not change: review.json is dropped below, and a
+  // reviewer of the killed turn that writes after that must not pass for the new one
+  if (row.next === 'review') s.verdictRequestedAt = now;
+  s.phase = row.next;
+  s.counters.iterations += 1;
+  J({ type: 'reconcile', ok: true, disposition: v.disposition, next: v.next, summary: v.summary, notes: v.notes, savedAs: as, outcome, iteration: s.counters.iterations });
+  J({ type: 'transition', from: phase, to: s.phase, outcome, prompt: row.prompt, iteration: s.counters.iterations });
+  const extra = outcome === 'reconcile-review' ? [{ type: 'dropArtifact', name: 'review.json' }] : [];
+  return done(outcome, [...extra, { type: 'saveState' }, { type: 'block', reason: `${head} ${P(row.prompt, V)}` }]);
 }
 
 // After the shell ran the gitFinish effect. gitResult:

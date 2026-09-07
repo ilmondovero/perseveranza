@@ -3,6 +3,33 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.5.0
+
+Due lezioni prese da `osolmaz/pi-workflows`, che risolve gli stessi problemi su Pi con
+un'API di estensione che Claude Code non ha: il timeout non chiude il run ma instrada a una
+riconciliazione in sola lettura, e una risposta a una richiesta scaduta non avanza nulla.
+
+- **Riconciliazione dopo un ripristino.** La sentinella, prima di riaprire la sessione,
+  scrive `signals.interrupted`; il prompt di ripristino chiede un'ispezione in sola lettura
+  e `.omc-loop/reconcile.json` (`disposition` complete/partial/uncertain, `running`, `next`).
+  Allo Stop la macchina riconcilia prima di ogni altra cosa: file mancante o invalido →
+  chiesto una volta, poi pausa; `uncertain` o un comando ancora vivo → pausa con escalation
+  (un comando incerto blocca ogni nuovo tentativo mutante); `partial` → `implement` con
+  `reconcile-implement` (continua, non rifare); `complete` → `review`. I contatori di retry
+  restano: l'interruzione conta nel limite. Quattro righe nella tabella delle transizioni.
+- **Sola lettura per enforcement.** L'hook `PreToolUse` ora copre anche Bash, PowerShell,
+  Edit, Write, MultiEdit e NotebookEdit: con `interrupted` attivo risponde `deny`, con il
+  motivo, a ogni tool che muterebbe e a ogni comando fuori dalla lista di ispezione. Anche
+  loro hanno scoperto in review che le istruzioni nel prompt non bastano. L'unica scrittura
+  ammessa è `reconcile.json` stesso: la revisione ha trovato che la prima stesura la negava,
+  e la riconciliazione non poteva mai chiudersi (il test e2e scriveva il file dall'harness);
+  la lista giudica ogni segmento del comando, non solo il primo (`ls & git commit` passava).
+- **Verdetti tardivi.** Entrando in `review` o `final-verify` la macchina registra
+  `verdictRequestedAt`; lo Stop hook passa l'mtime di `review.json`/`verify.json`; un file
+  più vecchio della richiesta (tolleranza 1 s) è messo da parte come `<nome>-stale-<n>.json`
+  e trattato come mancante. Chiude il caso del subagent di un turno ucciso che scrive dopo
+  il ripristino, e quello del file rimasto attraverso un takeover.
+
 ## 2.4.0
 
 La sentinella della 2.3.0 avvisava e basta: non esiste un'interfaccia per interrompere un

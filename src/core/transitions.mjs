@@ -31,6 +31,11 @@ export const TRANSITIONS = [
   { phase: '*',            outcome: 'budget',         next: 'disarm',       prompt: null,                    note: 'iterations or tokens exhausted: archive, disarm, notify' },
   { phase: '*',            outcome: 'kill',           next: 'disarm',       prompt: null,                    note: 'STOP file or OMC_LOOP_KILL: before any other check' },
   { phase: '*',            outcome: 'unknown-phase',  next: 'plan',         prompt: 'phase-recovered',       note: 'tampered state: restart from the plan' },
+  // after a kill-and-restore (signals.interrupted): a read-only reconciliation decides where to resume
+  { phase: '*',            outcome: 'reconcile-missing',   next: '=',         prompt: 'reconcile-missing',     note: 'restored session: reconcile.json missing or invalid, asked once' },
+  { phase: '*',            outcome: 'reconcile-uncertain', next: '=',         prompt: null,                    note: 'pause + escalation: a command still running, an uncertain disposition, or reconcile.json missing twice' },
+  { phase: '*',            outcome: 'reconcile-implement', next: 'implement', prompt: 'reconcile-implement',   note: 'work partial: continue the current step from disk; counters untouched' },
+  { phase: '*',            outcome: 'reconcile-review',    next: 'review',    prompt: 'review-delegate',       note: 'work complete: review it; counters untouched' },
 ];
 
 // Lookup. Claim/kill/budget rows use phase '*'; next '=' means "unchanged".

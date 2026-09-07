@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-2.4.0-blue)
+![version](https://img.shields.io/badge/version-2.5.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -175,6 +175,17 @@ verification adds a security lens.
   without a recorded process. Off by default; verified by hand on Windows before it was
   written. `OMC_LOOP_CLAUDE_BIN` names the `claude` binary when it is not on `PATH`;
   `OMC_ACTIVITY_HEARTBEAT_MS` tunes the `test` verb's heartbeat.
+- **After a restore, reconcile first, read-only.** The reopened session inspects plan,
+  notes, diff and processes and writes `.omc-loop/reconcile.json` (`complete`, `partial`,
+  `uncertain`, with the commands still running). Until it does, the hook refuses edits,
+  delegations and any command that is not read-only: prompt instructions do not make an
+  agent read-only, a refused tool does. `partial` continues the step without redoing what
+  exists, `complete` goes to review, `uncertain` or a live command pauses for a human. Retry
+  counters are not reset: the interruption counts, it buys no budget.
+- **A verdict written before it was requested does not count.** A `review.json` or
+  `verify.json` older than the instant the phase asked for it (a subagent of a killed turn,
+  a file left across a takeover) is set aside as `review-stale-<n>.json` and the phase asks
+  for the verdict, once.
 
 ## Commands
 
@@ -283,6 +294,10 @@ plugin: `node install.mjs` (never both). Caps and timeouts: [docs/loop-budget.md
 | any | budget | disarm | iterations or tokens exhausted: archive, disarm, notify |
 | any | kill | disarm | STOP file or OMC_LOOP_KILL: before any other check |
 | any | unknown-phase | plan | `phase-recovered`; tampered state: restart from the plan |
+| any | reconcile-missing | unchanged | `reconcile-missing`; restored session: reconcile.json missing or invalid, asked once |
+| any | reconcile-uncertain | unchanged | pause + escalation: a command still running, an uncertain disposition, or reconcile.json missing twice |
+| any | reconcile-implement | implement | `reconcile-implement`; work partial: continue the current step from disk; counters untouched |
+| any | reconcile-review | review | `review-delegate`; work complete: review it; counters untouched |
 <!-- transitions:end -->
 
 </details>

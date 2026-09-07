@@ -124,6 +124,19 @@ export function restore(gateDir, d, env = process.env) {
   const packs = loadPromptLayers({ gateDir, env, lang: s.options.lang, root: ROOT });
   const prompt = restorePrompt(s, { silentMs: d.silentMs, LOOP: loopCommand(ROOT), layers: packs.layers, activity: d.activity });
   const r = launchRestore({ cwd: dirname(gateDir), sessionId: s.owner.sessionId, prompt, env });
+  // the next Stop of the restored session reconciles first, read-only: mark the interruption,
+  // but only once a session exists to do it (a marked loop with nobody to reconcile would
+  // refuse every edit to the next human who opens the project)
+  if (r.ok) {
+    try {
+      const fresh = loadState(JSON.parse(readFileSync(join(gateDir, 'state.json'), 'utf8'))).state;
+      if (fresh) {
+        fresh.signals.interrupted = { at: new Date().toISOString(), silentMs: d.silentMs, phase: fresh.phase, pending: d.activity ? d.activity.pending.map((p) => p.agent) : [] };
+        fresh.flags.reconcileAsked = false;
+        writeAtomic(join(gateDir, 'state.json'), JSON.stringify(fresh, null, 2));
+      }
+    } catch { /* the restore prompt still asks for the reconciliation */ }
+  }
   return { attempted: true, killed, wasAlive: info.alive, launched: r.ok, how: r.how, why: r.error || '' };
 }
 

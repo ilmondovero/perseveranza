@@ -83,6 +83,28 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
   watched before its first Stop. The third sign of life is the
   transcript (`shell/life.mjs`: the session file and `<session>/subagents/*.jsonl`), so a
   model generating for an hour is never silent; the `test` verb beats while the suite runs.
+- After a kill-and-restore the watchdog writes `signals.interrupted`; the next Stop runs
+  `reconcile()` in `core/machine.mjs` BEFORE signals, claims and verdicts. The restored
+  session's first move is read-only by enforcement, not by instruction: the activity hook
+  answers PreToolUse with `permissionDecision: deny` for Edit/Write/MultiEdit/NotebookEdit/
+  Agent/Task and for any Bash/PowerShell that is not on the inspection allowlist
+  (`READ_ONLY_CMD` on EVERY segment of the command, filters allowed after the first, no
+  redirection/substitution outside quotes; the one write allowed is `.omc-loop/reconcile.json`
+  itself, or the reconciliation could never end — a review found that deadlock, not a test,
+  because the e2e wrote the file from the harness). The deny is built before the journal
+  entry so a journaling error can never turn into a permission. Tools outside the matcher
+  (MCP writers) are not refused: a known limit. `signals.interrupted` is written by the
+  watchdog only once the restore is launched (a marked loop with nobody to reconcile would
+  refuse every edit to the next human), atomically. A reconciliation decision also drops the
+  killed turn's `lastReport`/`claimedDone`. The
+  `reconcile.json` contract (`core/verdicts.mjs` `parseReconcile`): `uncertain` or a
+  non-empty `running` pauses for a human (a command whose settlement cannot be proved blocks
+  mutation, it never manufactures a success); `partial` -> implement with
+  `reconcile-implement`, `complete` -> review; retry counters untouched. The four rows are
+  wildcard rows in the transition table and are covered by the table-coverage test.
+- A verdict file is late when its mtime is older than `verdictRequestedAt` (stamped in `go()`
+  on entering review/final-verify, 1 s tolerance): it is kept as `<name>-stale-<n>.json`
+  and treated as missing, so the phase asks once. Shell passes `ctx.artifactAt`.
 
 ## Proofs, not words
 

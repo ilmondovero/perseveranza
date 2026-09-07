@@ -2,7 +2,7 @@
 // The Stop hook. Thin by design: read the event, gather facts, ask the core what to do,
 // execute the effects, print the decision. DORMANT until .omc-loop/state.json exists in
 // the cwd. Must never throw and must finish within the hook deadline.
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { gatePaths, ROOT, loopCommand } from './paths.mjs';
 import { loadState } from '../core/state.mjs';
@@ -74,9 +74,12 @@ function main() {
     if (!existsSync(p)) return null;
     try { return readFileSync(p, 'utf8'); } catch { return ''; }
   };
+  const artifactMtime = (name) => { try { return statSync(join(paths.gateDir, name)).mtimeMs; } catch { return 0; } };
   const artifacts = {};
-  if (s.phase === 'review') artifacts.review = readArtifact('review.json');
-  if (s.phase === 'final-verify') artifacts.verify = readArtifact('verify.json');
+  const artifactAt = {};
+  if (s.phase === 'review') { artifacts.review = readArtifact('review.json'); artifactAt.review = artifactMtime('review.json'); }
+  if (s.phase === 'final-verify') { artifacts.verify = readArtifact('verify.json'); artifactAt.verify = artifactMtime('verify.json'); }
+  if (s.signals.interrupted) artifacts.reconcile = readArtifact('reconcile.json');
   const packs = loadPromptLayers({ gateDir: paths.gateDir, env, lang: s.options.lang, root: ROOT });
   for (const err of packs.errors) appendJournal(paths.gateDir, { type: 'prompt-pack', source: err.source, error: err.error });
   // The tree at every stop, within the hook's remaining time: it revalidates a pending claim,
@@ -91,6 +94,7 @@ function main() {
     planText,
     planExists,
     artifacts,
+    artifactAt,
     overrides: packs.layers,
     fingerprint: fps.full,
     codeFingerprint: fps.code,
