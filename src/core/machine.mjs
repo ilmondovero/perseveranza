@@ -287,7 +287,12 @@ export function step(input, event = {}, ctx0 = {}) {
   };
 
   // --- claim-done: the entrance to the exit ramp. Proofs, not words. ---
-  if (claimed) {
+  // A clean final verdict answers the claim that asked for it: a second claim-done in the
+  // same turn (documentation touched up after the pass, typically) must not throw it away
+  // and reopen a whole verification round on a tree that was already approved.
+  const passedFinal = phase === 'final-verify' && report === 'pass';
+  if (claimed && passedFinal) J({ type: 'claim', ignored: true, why: 'final verification already passed' });
+  if (claimed && !passedFinal) {
     const openSteps = countOpenSteps(planText);
     const t = s.lastTest;
     const testRequired = !!(s.options.testCmd || t);

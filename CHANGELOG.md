@@ -3,6 +3,19 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.5.1
+
+Visto in un run reale: undici giri di verifica finale, gli ultimi due su un albero già
+approvato. Il giro 9 aveva dato `pass:true`, ma nello stesso turno l'agente aveva ritoccato
+la documentazione e ridichiarato `claim-done`.
+
+- **Un pass finale non si butta via.** In `step` il ramo `claim-done` veniva valutato
+  prima dello switch sulle fasi: con `verify.json` `pass:true` e un claim nello stesso
+  turno vinceva il claim, esito `claim-again`, verdetto pulito scartato e verifica
+  ripartita da zero (un giro intero di token per nulla, ogni volta). Ora in `final-verify`
+  con verdetto `pass` il claim è ignorato, annotato nel journal (`claim`, `ignored`), e il
+  loop va a `git-finish`. Con una bocciatura il claim prevale come prima.
+
 ## 2.5.0
 
 Due lezioni prese da `osolmaz/pi-workflows`, che risolve gli stessi problemi su Pi con

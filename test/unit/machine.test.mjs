@@ -290,6 +290,17 @@ test('verify.json pass:true -> git-finish effect (closure happens in finishProje
   assert.ok(!r.blocked);
 });
 
+test('a claim-done in the same turn as a clean final verdict does not reopen the verification', () => {
+  const r = run(mk({ phase: 'final-verify', signals: { claimedDone: true }, flags: { cleanedOnce: true } }), { planText: PLAN_DONE, artifacts: { verify: '{"pass":true}' } });
+  assert.equal(r.outcome, 'pass');
+  assert.equal(r.state.phase, 'git-finish');
+  assert.ok(r.types.includes('gitFinish'));
+  assert.equal(r.state.signals.claimedDone, false);
+  // a rejection is another story: the claim still wins and asks for a new round
+  const f = run(mk({ phase: 'final-verify', signals: { claimedDone: true }, flags: { cleanedOnce: true } }), { planText: PLAN_DONE, artifacts: { verify: '{"pass":false}' } });
+  assert.equal(f.outcome, 'claim-again');
+});
+
 test('verify.json pass:false -> post-verification fix, finalFails++', () => {
   const r = run(mk({ phase: 'final-verify' }), { artifacts: { verify: '{"pass":false,"findings":[{"severity":"critical","desc":"x"}]}' } });
   assert.equal(r.outcome, 'fail');
