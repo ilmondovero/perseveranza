@@ -4,6 +4,8 @@ description: Adversarial final verifier of the perseveranza loop. Used at the ex
 tools: Read, Grep, Glob, Bash, Write
 model: inherit
 color: red
+maxTurns: 300
+effort: high
 ---
 
 You are the adversarial final verifier of the "perseveranza" loop. You are invoked when the

@@ -3,6 +3,28 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.5.2
+
+Riletta la tabella dei campi frontmatter dei subagent di Claude Code contro i tre agenti del
+plugin: niente da correggere, due campi da prendere.
+
+- **Giudici con un tetto, misurato.** `maxTurns: 120` su `pf-reviewer` e `maxTurns: 300` su
+  `pf-verifier`: un giudice che non si ferma non tiene più il turno in ostaggio. I numeri
+  vengono dalle trascrizioni dei run reali (48 subagent su quattro progetti): il reviewer
+  sta a 18 turni di mediana e 52 di massimo su 28 run, il verificatore a 64 di mediana e
+  150 di massimo su 8, con il verdetto scritto al turno 148 dopo 32 minuti di lavoro
+  legittimo. La prima stesura metteva il tetto proprio a 150: avrebbe tagliato quel giro
+  sul filo. Il tetto è circa il doppio del massimo visto, perché un giudice tagliato non
+  scrive il verdetto e la macchina lo legge come esito mancante (chiesto una volta, poi
+  bocciatura). `pf-executor` resta senza tetto: un passo tagliato a metà è peggio di uno lungo.
+- **Sforzo del verificatore fissato.** `effort: high` su `pf-verifier`: il giro avversariale
+  non dipende più dallo sforzo della sessione che lo lancia.
+- **Scartati, con il motivo.** `omitClaudeMd` toglierebbe al giudice le note di macchina del
+  CLAUDE.md (l'interprete giusto per lanciare i test, per esempio); `isolation: worktree`
+  parte dal ramo di default e non dall'albero di lavoro, quindi giudicherebbe altro codice;
+  `hooks`, `mcpServers` e `permissionMode` sono ignorati per i subagent dei plugin, e il
+  test di packaging ora vieta di scriverli.
+
 ## 2.5.1
 
 Visto in un run reale: undici giri di verifica finale, gli ultimi due su un albero già

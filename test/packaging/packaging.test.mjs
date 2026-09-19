@@ -79,7 +79,17 @@ test('the agents exist with the expected front matter', () => {
     const text = readLf(join(ROOT, a));
     assert.ok(text.startsWith('---\nname: pf-'), a);
     assert.ok(/^tools: /m.test(text), a);
+    const fm = text.slice(4, text.indexOf('\n---\n', 4));
+    // ignored for plugin subagents: writing them here would promise something that never happens
+    assert.ok(!/^(hooks|mcpServers|permissionMode):/m.test(fm), `${a}: field ignored for plugin subagents`);
+    // the judges are bounded, and loosely: a judge cut short writes no verdict, which the
+    // machine reads as a missing outcome
+    if (!a.endsWith('pf-executor.md')) {
+      const turns = Number((fm.match(/^maxTurns: (\d+)$/m) || [])[1]);
+      assert.ok(turns >= 120, `${a}: maxTurns missing or too tight`);
+    }
   }
+  assert.ok(/^effort: high$/m.test(readLf(join(ROOT, AGENT_FILES.find((a) => a.endsWith('pf-verifier.md'))))));
 });
 
 test('the README transition tables are generated from the code (both languages)', () => {

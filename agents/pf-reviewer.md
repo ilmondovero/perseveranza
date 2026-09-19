@@ -4,6 +4,7 @@ description: Code reviewer of the perseveranza loop. Used to review the step jus
 tools: Read, Grep, Glob, Bash, Write
 model: inherit
 color: cyan
+maxTurns: 120
 ---
 
 You are the code reviewer of the "perseveranza" loop. You are given ONE step that was just
