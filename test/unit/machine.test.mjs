@@ -290,6 +290,22 @@ test('verify.json pass:true -> git-finish effect (closure happens in finishProje
   assert.ok(!r.blocked);
 });
 
+test('a final pass cannot close work whose completion evidence became invalid', () => {
+  const open = run(mk({ phase: 'final-verify' }), { planText: PLAN, artifacts: { verify: '{"pass":true}' } });
+  assert.equal(open.outcome, 'claim-open');
+  assert.equal(open.state.phase, 'final-verify');
+  assert.ok(!open.types.includes('gitFinish'));
+
+  const red = run(mk({
+    phase: 'final-verify',
+    options: { testCmd: 'npm test' },
+    lastTest: { cmd: 'npm test', exitCode: 1, iteration: 0, fingerprint: 'old' },
+  }), { planText: PLAN_DONE, fingerprint: 'changed', artifacts: { verify: '{"pass":true}' } });
+  assert.equal(red.outcome, 'claim-no-test');
+  assert.equal(red.state.phase, 'final-verify');
+  assert.ok(!red.types.includes('gitFinish'));
+});
+
 test('a claim-done in the same turn as a clean final verdict does not reopen the verification', () => {
   const r = run(mk({ phase: 'final-verify', signals: { claimedDone: true }, flags: { cleanedOnce: true } }), { planText: PLAN_DONE, artifacts: { verify: '{"pass":true}' } });
   assert.equal(r.outcome, 'pass');

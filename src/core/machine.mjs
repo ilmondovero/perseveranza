@@ -286,6 +286,26 @@ export function step(input, event = {}, ctx0 = {}) {
     return go(outcome, { finalFails: s.counters.finalFails });
   };
 
+  // Re-check the evidence at the exit gate too. The tree, plan or recorded test may have
+  // changed while final verification was running; a positive verdict alone must not close
+  // work that no longer satisfies the same conditions that admitted it to verification.
+  const completionBlock = () => {
+    const openSteps = countOpenSteps(planText);
+    const t = s.lastTest;
+    const testRequired = !!(s.options.testCmd || t);
+    const green = !!t && Number(t.exitCode) === 0;
+    const sameIteration = green && Number(t.iteration) === s.counters.iterations;
+    const fresh = sameIteration || proof.green;
+    const unverifiable = !!t && !!t.fingerprint && ctx.fingerprint == null;
+    const stale = green && !!t.fingerprint && !unverifiable && !proof.green;
+    if (openSteps > 0) return { outcome: 'claim-open', vars: { openSteps } };
+    if (testRequired && !green) return { outcome: 'claim-no-test', vars: {} };
+    if (unverifiable) return { outcome: 'claim-unverifiable', vars: {} };
+    if (stale) return { outcome: 'claim-stale', vars: {} };
+    if (testRequired && !fresh) return { outcome: 'claim-no-test', vars: {} };
+    return null;
+  };
+
   // --- claim-done: the entrance to the exit ramp. Proofs, not words. ---
   // A clean final verdict answers the claim that asked for it: a second claim-done in the
   // same turn (documentation touched up after the pass, typically) must not throw it away
@@ -293,24 +313,11 @@ export function step(input, event = {}, ctx0 = {}) {
   const passedFinal = phase === 'final-verify' && report === 'pass';
   if (claimed && passedFinal) J({ type: 'claim', ignored: true, why: 'final verification already passed' });
   if (claimed && !passedFinal) {
-    const openSteps = countOpenSteps(planText);
     const t = s.lastTest;
-    const testRequired = !!(s.options.testCmd || t);
     const green = !!t && Number(t.exitCode) === 0;
-    // Fresh = run in this very iteration, or run on this very tree: the fingerprint is the
-    // stronger evidence, so a green from an earlier iteration still counts when the code did
-    // not change since (documentation changes included: they run in no test).
     const sameIteration = green && Number(t.iteration) === s.counters.iterations;
-    const fresh = sameIteration || proof.green;
-    // A recorded snapshot must be revalidated: null means the shell could not recompute it
-    // (deadline, unreadable tree), which is NOT a code change and gets its own instruction.
-    const unverifiable = !!t && !!t.fingerprint && ctx.fingerprint == null;
-    const stale = green && !!t.fingerprint && !unverifiable && !proof.green;
-    if (openSteps > 0) return go('claim-open', { openSteps });
-    if (testRequired && !green) return go('claim-no-test');
-    if (unverifiable) return go('claim-unverifiable');
-    if (stale) return go('claim-stale');
-    if (testRequired && !fresh) return go('claim-no-test');
+    const blocked = completionBlock();
+    if (blocked) return go(blocked.outcome, blocked.vars);
     s.flags.repeated = false;
     s.counters.retries = 0;
     const testProofKind = !t ? 'none' : sameIteration ? 'same-iteration' : proof.docsOnly ? 'docs-only' : 'same-tree';
@@ -373,6 +380,8 @@ export function step(input, event = {}, ctx0 = {}) {
     }
     case 'final-verify': {
       if (report === 'pass') {
+        const blocked = completionBlock();
+        if (blocked) return go(blocked.outcome, blocked.vars);
         s.phase = 'git-finish';
         s.flags.repeated = false;
         s.counters.iterations += 1;
