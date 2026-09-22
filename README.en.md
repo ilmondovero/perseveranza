@@ -181,7 +181,8 @@ verification adds a security lens.
   delegations and any command that is not read-only: prompt instructions do not make an
   agent read-only, a refused tool does. `partial` continues the step without redoing what
   exists, `complete` goes to review, `uncertain` or a live command pauses for a human. Retry
-  counters are not reset: the interruption counts, it buys no budget.
+  counters are not reset: the interruption counts, it buys no budget. The replacement
+  watchdog gives the restored session one full startup interval before judging it again.
 - **A verdict written before it was requested does not count.** A `review.json` or
   `verify.json` older than the instant the phase asked for it (a subagent of a killed turn,
   a file left across a takeover) is set aside as `review-stale-<n>.json` and the phase asks

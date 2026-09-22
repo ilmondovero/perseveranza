@@ -82,12 +82,18 @@ export function decide(gateDir, { now = Date.now(), staleMs = DEFAULT_STALE_MS, 
   const { activity, transcriptAt } = readLife(gateDir, state);
   const st = staleness(state, now, staleMs, activity, transcriptAt);
   const armed = Date.parse(state.armedAt || '') || 0;
-  const seen = st.seenAt || armed;
+  // A restored process needs time to start before it can emit transcript/tool activity.
+  // Treat the successful launch recorded in `interrupted.at` as life until the first real
+  // signal arrives, otherwise the replacement watchdog immediately restores it again.
+  const restoredAt = state.signals.interrupted ? (Date.parse(state.signals.interrupted.at || '') || 0) : 0;
+  const baseSeen = st.seenAt || armed;
+  const seen = Math.max(baseSeen, Math.min(now, restoredAt));
+  const via = restoredAt > baseSeen ? 'restore' : (st.seenAt ? st.via : 'arm');
   if (!seen) return { action: 'exit', why: 'no clock' };
   const wait = seen + staleMs - now;
   if (wait > 0) return { action: 'sleep', ms: Math.min(wait + 500, MAX_NAP_MS), why: 'alive' };
   // only the owner's activity is the loop's (lastSeen already filtered it)
-  return { action: 'alert', state, activity: st.via === 'activity' ? activity : null, silentMs: now - seen, seenAt: seen, via: st.seenAt ? st.via : 'arm' };
+  return { action: 'alert', state, activity: via === 'activity' ? activity : null, silentMs: now - seen, seenAt: seen, via };
 }
 
 export function alertText(d, gateDir, now = Date.now()) {
@@ -98,6 +104,7 @@ export function alertText(d, gateDir, now = Date.now()) {
   const last = d.via === 'activity' ? `last activity ${describeActivity(d.activity, now)}`
     : d.via === 'transcript' ? `last output ${formatAge(now - d.seenAt)} ago (${formatAt(d.seenAt)})`
       : d.via === 'fire' ? `last Stop ${formatAge(now - d.seenAt)} ago (${formatAt(d.seenAt)})`
+        : d.via === 'restore' ? `restored ${formatAge(now - d.seenAt)} ago (${formatAt(d.seenAt)})`
         : `armed ${formatAge(now - d.seenAt)} ago, never fired`;
   return `Loop silent for ${formatAge(d.silentMs)} - ${proj}: phase ${d.state.phase}${c.total ? `, ${c.done}/${c.total} steps` : ''}; ${last}.`;
 }

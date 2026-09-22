@@ -185,7 +185,8 @@ verifica aggiunge una lente security.
   modifiche, deleghe e comandi non di sola lettura: le istruzioni nel prompt non bastano,
   un tool rifiutato sì. `partial` continua lo step senza rifare il fatto, `complete` va in
   review, `uncertain` o un comando ancora vivo mettono in pausa per un umano. I contatori
-  di retry non si azzerano: l'interruzione conta, non regala budget.
+  di retry non si azzerano: l'interruzione conta, non regala budget. La nuova sentinella
+  concede alla sessione ripristinata un intero intervallo di avvio prima di valutarla di nuovo.
 - **Un verdetto scritto prima della richiesta non vale.** `review.json` o `verify.json`
   più vecchi dell'istante in cui la fase li ha chiesti (un subagent di un turno ucciso, un
   file rimasto attraverso un takeover) vengono messi da parte come `review-stale-<n>.json`

@@ -723,6 +723,23 @@ test('restore.mjs: what Claude Code looks like, the walk starts above the hook, 
   assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CONFIG_DIR', 'PATH'], 'everything Claude Code sets about its own session is stripped; the user config dir is not');
 });
 
+test('a replacement watchdog gives the restored session a fresh startup interval', async () => {
+  const p = project();
+  arm(p, 'restore grace');
+  const T = Date.now();
+  patchState(p, (s) => {
+    s.owner.lastFireAt = T - 60_000;
+    s.signals.interrupted = { at: new Date(T - 100).toISOString(), silentMs: 60_000, phase: 'implement', pending: [] };
+  });
+  const { decide } = await import('../../src/shell/watchdog.mjs');
+  const grace = decide(gate(p, ''), { now: T, staleMs: 1000, pid: process.pid, startedAt: T - 100 });
+  assert.equal(grace.action, 'sleep');
+  assert.ok(grace.ms >= 900 && grace.ms <= 1500, JSON.stringify(grace));
+  const expired = decide(gate(p, ''), { now: T + 1001, staleMs: 1000, pid: process.pid, startedAt: T - 100 });
+  assert.equal(expired.action, 'alert');
+  assert.equal(expired.via, 'restore');
+});
+
 test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens the session with the restore prompt, guards pid reuse and the restore limit', async () => {
   const p = project();
   arm(p, 'hung review');
