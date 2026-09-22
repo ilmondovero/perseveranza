@@ -40,6 +40,7 @@ working directory) EXACTLY in this format:
 
 ```json
 {
+  "requestId": "<the verdict request ID supplied by the caller>",
   "pass": true|false,
   "findings": [
     { "severity": "critical|warning", "desc": "defect + how to reproduce it", "file": "path:line" }
@@ -51,3 +52,5 @@ working directory) EXACTLY in this format:
 blocking defect or red test → `pass: false`. A `critical` finding with `pass: true` is read
 as a rejection: the loop takes the stricter reading. This file closes the loop (`true`) or
 sends it back to the fix (`false`). Write the file and finish.
+Copy the caller's verdict request ID exactly into `requestId`; it binds this verdict to the
+verification round that requested it.

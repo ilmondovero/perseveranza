@@ -70,7 +70,7 @@ Complexity routes the models of the phases (hints for the subagents):
 How the loop works (feedback):
 
 - implement -> code review (delegated to a subagent with a clean context): the reviewer
-  writes the verdict to `.omc-loop/review.json` (`{"blocking": N, "findings": [...]}`) and
+  writes the verdict to `.omc-loop/review.json` (`{"requestId": "<ID from the phase prompt>", "blocking": N, "findings": [...]}`) and
   that file routes the loop; only if it is missing, you record the outcome with
   `report pass|fail`. A missing outcome is asked for once, then counts as a failed review.
   - blocking > 0 -> back to fixing the SAME step, and the fix gets re-reviewed (after the
@@ -98,8 +98,9 @@ How the loop works (feedback):
   edits do not count as code). -> first a cleanup round (only at the first claim:
   dead code, duplication, docs), then the adversarial final verification (independent
   subagent + falsification by an external model if detected; security lens for high
-  complexity): the verifier writes `.omc-loop/verify.json` (`{"pass": true|false,
-  "findings": [...]}`); `pass` closes the loop, `fail` sends you back to fix.
+  complexity): the verifier writes `.omc-loop/verify.json` (`{"requestId": "<ID from the
+  phase prompt>", "pass": true|false, "findings": [...]}`); `pass` closes the loop, `fail`
+  sends you back to fix.
 - At closure, if the directory is inside a git repo, the hook itself runs `git add -A`
   (excluding `.omc-loop/`), commit `perseveranza: <task>` and `git push`, verified on facts
   (clean tree, HEAD not ahead of upstream). If the closure cannot be confirmed the loop

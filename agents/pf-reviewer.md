@@ -39,6 +39,7 @@ working directory) EXACTLY in this format:
 
 ```json
 {
+  "requestId": "<the verdict request ID supplied by the caller>",
   "blocking": <integer count of blocking problems>,
   "findings": [
     { "severity": "critical|warning|suggestion", "desc": "description + how to fix", "file": "path:line" }
@@ -49,4 +50,6 @@ working directory) EXACTLY in this format:
 `blocking` is the number of findings severe enough to stop the step from advancing: that
 number routes the loop (0 = step promoted, >0 = back to the fix). Mark blocking findings as
 `critical`: the loop takes the stricter of `blocking` and the number of critical findings.
+Copy the caller's verdict request ID exactly into `requestId`; it binds this verdict to the
+review round that requested it.
 Write the file and finish; do not leave the verdict only in the message.

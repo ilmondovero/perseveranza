@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { parseReviewVerdict, parseVerifyVerdict } from '../../src/core/verdicts.mjs';
 
 test('review: well-formed pass and fail', () => {
-  const pass = parseReviewVerdict('{"blocking":0,"findings":[]}');
+  const pass = parseReviewVerdict('{"requestId":"req-1","blocking":0,"findings":[]}');
   assert.equal(pass.ok, true);
   assert.equal(pass.blocking, 0);
+  assert.equal(pass.requestId, 'req-1');
   const fail = parseReviewVerdict('{"blocking":2,"findings":[{"severity":"critical","desc":"a"},{"severity":"critical","desc":"b"}]}');
   assert.equal(fail.ok, true);
   assert.equal(fail.blocking, 2);
@@ -32,7 +33,7 @@ test('review: the stricter reading wins when blocking under-counts critical find
 
 test('review: malformed inputs are errors, never a pass', () => {
   for (const bad of ['', '   ', 'not json', '[]', '{}', '{"blocking":null}', '{"blocking":false}', '{"blocking":""}', '{"blocking":[]}', '{"blocking":"0"}', '{"blocking":"many"}', '{"blocking":-1}', '{"blocking":1.5}',
-    '{"blocking":0,"findings":"x"}', '{"blocking":0,"findings":[{"severity":"fatal"}]}', '{"blocking":0,"findings":[1]}']) {
+    '{"blocking":0,"requestId":""}', '{"blocking":0,"requestId":42}', '{"blocking":0,"findings":"x"}', '{"blocking":0,"findings":[{"severity":"fatal"}]}', '{"blocking":0,"findings":[1]}']) {
     const r = parseReviewVerdict(bad);
     assert.equal(r.ok, false, `expected error for ${JSON.stringify(bad)}`);
     assert.ok(typeof r.error === 'string' && r.error.length > 0);
@@ -40,7 +41,9 @@ test('review: malformed inputs are errors, never a pass', () => {
 });
 
 test('verify: well-formed pass and fail', () => {
-  assert.equal(parseVerifyVerdict('{"pass":true,"findings":[]}').pass, true);
+  const pass = parseVerifyVerdict('{"requestId":"req-2","pass":true,"findings":[]}');
+  assert.equal(pass.pass, true);
+  assert.equal(pass.requestId, 'req-2');
   assert.equal(parseVerifyVerdict('{"pass":false,"findings":[{"severity":"critical","desc":"x"}]}').pass, false);
 });
 

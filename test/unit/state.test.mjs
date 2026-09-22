@@ -21,12 +21,14 @@ test('defaultState deep-merges overrides without losing siblings', () => {
 });
 
 test('normalizeState coerces bad numbers and unknown enums', () => {
-  const s = normalizeState({ phase: 'weird', complexity: 'huge', counters: { iterations: 'x' }, limits: { maxIterations: 0, maxRetries: -2 } });
+  const s = normalizeState({ phase: 'weird', complexity: 'huge', counters: { iterations: 'x' }, limits: { maxIterations: 0, maxRetries: -2 }, verdictRequestId: 42 });
   assert.equal(s.phase, 'plan');
   assert.equal(s.complexity, 'medium');
   assert.equal(s.counters.iterations, 0);
   assert.equal(s.limits.maxIterations, 25);
   assert.equal(s.limits.maxRetries, 3);
+  assert.equal(s.verdictRequestId, null);
+  assert.equal(normalizeState({ phase: 'review', verdictRequestId: 'req-1' }).verdictRequestId, 'req-1');
 });
 
 test('normalizeState recovers malformed nested containers without crashing the hook', () => {

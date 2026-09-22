@@ -103,10 +103,10 @@ flowchart TD
 |---|---|---|
 | **plan** | Claude, dopo aver esplorato il codice | `plan.md` come checklist, complessità registrata |
 | **implement** | Claude (o `pf-executor` con opus se la complessità è alta) | uno step, con i suoi casi limite |
-| **review** | `pf-reviewer`, contesto pulito, modello per complessità | `review.json` con `blocking` e findings |
+| **review** | `pf-reviewer`, contesto pulito, modello per complessità | `review.json` con `requestId`, `blocking` e findings |
 | **fix** | Claude, sullo stesso step | il fix, che torna in review |
 | **cleanup** | Claude, una volta sola | codice morto e duplicazioni rimossi, docs aggiornati |
-| **verifica finale** | `pf-verifier` che assume che il lavoro sia sbagliato | `verify.json` con `pass` e findings |
+| **verifica finale** | `pf-verifier` che assume che il lavoro sia sbagliato | `verify.json` con `requestId`, `pass` e findings |
 | **chiusura** | lo Stop hook, non Claude | commit, push, archivio del run, notifica |
 
 Il modello dei revisori segue la complessità che Claude registra: `haiku` / `sonnet` /
@@ -190,6 +190,8 @@ verifica aggiunge una lente security.
   più vecchi dell'istante in cui la fase li ha chiesti (un subagent di un turno ucciso, un
   file rimasto attraverso un takeover) vengono messi da parte come `review-stale-<n>.json`
   e la fase richiede il verdetto, una volta.
+- **Ogni verdetto risponde a una richiesta precisa.** Il `requestId` impedisce che un agente
+  avviato da un turno precedente venga accettato solo perché ha scritto il file più tardi.
 
 ## Comandi
 

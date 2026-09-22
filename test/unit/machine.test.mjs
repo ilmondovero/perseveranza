@@ -68,6 +68,9 @@ test('a verdict written before the phase asked for it is kept aside and treated 
   // entering review stamps the request
   const enter = run(mk({ phase: 'implement' }), { planText: PLAN }, { now: T });
   assert.equal(enter.state.verdictRequestedAt, T);
+  assert.ok(enter.state.verdictRequestId);
+  assert.ok(enter.reason.includes(enter.state.verdictRequestId));
+  const reviewPass = JSON.stringify({ requestId: enter.state.verdictRequestId, blocking: 0 });
   // a file from before the request (a subagent of a killed turn, a leftover across a takeover)
   const late = run(enter.state, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 5000 } }, { now: T + 60_000 });
   assert.equal(late.outcome, 'missing', 'not read as this iteration\'s verdict');
@@ -79,14 +82,14 @@ test('a verdict written before the phase asked for it is kept aside and treated 
   assert.ok(late.reason.includes('outcome missing'));
   assert.equal(late.state.verdictRequestedAt, T, 'staying in the phase keeps the request');
   // within a second of the request: coarse clocks, accepted
-  const edge = run(enter.state, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 900 } }, { now: T + 60_000 });
+  const edge = run(enter.state, { artifacts: { review: reviewPass }, artifactAt: { review: T - 900 } }, { now: T + 60_000 });
   assert.equal(edge.outcome, 'pass');
   // written after the request: accepted
-  const fresh = run(enter.state, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T + 10 } }, { now: T + 60_000 });
+  const fresh = run(enter.state, { artifacts: { review: reviewPass }, artifactAt: { review: T + 10 } }, { now: T + 60_000 });
   assert.equal(fresh.outcome, 'pass');
   // no mtime known (shell could not stat), or no request stamped (state from before 2.5): accepted as before
-  assert.equal(run(enter.state, { artifacts: { review: '{"blocking":0}' } }, { now: T + 60_000 }).outcome, 'pass');
-  assert.equal(run({ ...enter.state, verdictRequestedAt: 0 }, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 5000 } }, { now: T + 60_000 }).outcome, 'pass');
+  assert.equal(run(enter.state, { artifacts: { review: reviewPass } }, { now: T + 60_000 }).outcome, 'pass');
+  assert.equal(run({ ...enter.state, verdictRequestedAt: 0, verdictRequestId: null }, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 5000 } }, { now: T + 60_000 }).outcome, 'pass');
   // the same for the final verification
   const cleanup = mk({ phase: 'cleanup' });
   const fv = run(cleanup, {}, { now: T });
@@ -97,6 +100,20 @@ test('a verdict written before the phase asked for it is kept aside and treated 
   // a second stale file after the missing ask counts as a failed review, like any missing outcome
   const twice = run(late.state, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: T - 5000 } }, { now: T + 120_000 });
   assert.equal(twice.outcome, 'missing-twice');
+});
+
+test('a verdict from an older request is stale even when written after the new request', () => {
+  const T = 1_700_000_000_000;
+  const s = mk({ phase: 'review', verdictRequestedAt: T, verdictRequestId: 'new-request' });
+  const r = run(s, {
+    artifacts: { review: '{"requestId":"old-request","blocking":0}' },
+    artifactAt: { review: T + 5000 },
+  }, { now: T + 6000 });
+  assert.equal(r.outcome, 'missing');
+  assert.ok(r.effects.some((e) => e.type === 'keepArtifact' && e.as === 'review-stale-0.json'));
+  const v = journal(r).find((e) => e.type === 'verdict');
+  assert.equal(v.staleBy, 'requestId');
+  assert.equal(v.expectedRequestId, 'new-request');
 });
 
 test('review model routing follows complexity', () => {

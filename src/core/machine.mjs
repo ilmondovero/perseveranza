@@ -77,6 +77,7 @@ function buildVars(s, ctx) {
     verifierRef: agentRef('pf-verifier', 'an independent adversarial subagent'),
     reviewModel: MODEL_ROUTING.review[s.complexity],
     verifyModel: MODEL_ROUTING.verify[s.complexity],
+    verdictRequestId: s.verdictRequestId || '',
     testRun,
     retries: s.counters.retries,
     maxRetries: s.limits.maxRetries,
@@ -212,18 +213,19 @@ export function step(input, event = {}, ctx0 = {}) {
   const LATE_TOLERANCE_MS = 1000;
   const readVerdict = (name, key, parse, summarize) => {
     const at = Number(artifactAt[key]) || 0;
-    const stale = s.verdictRequestedAt > 0 && at > 0 && at + LATE_TOLERANCE_MS < s.verdictRequestedAt;
-    if (stale) {
+    const v = parse(artifacts[key]);
+    const oldByTime = s.verdictRequestedAt > 0 && at > 0 && at + LATE_TOLERANCE_MS < s.verdictRequestedAt;
+    const oldById = !!s.verdictRequestId && v.ok && v.requestId !== s.verdictRequestId;
+    if (oldByTime || oldById) {
       const as = name.replace(/\.json$/, `-stale-${s.counters.iterations}.json`);
       effects.push({ type: 'keepArtifact', name, as });
       report = 'none';
       verdictSrc = name;
-      J({ type: 'verdict', artifact: name, stale: true, writtenAt: new Date(at).toISOString(), requestedAt: new Date(s.verdictRequestedAt).toISOString(), savedAs: as, treatedAs: 'missing' });
+      J({ type: 'verdict', artifact: name, stale: true, staleBy: oldById ? 'requestId' : 'mtime', requestId: v.ok ? v.requestId : null, expectedRequestId: s.verdictRequestId, writtenAt: at > 0 ? new Date(at).toISOString() : null, requestedAt: new Date(s.verdictRequestedAt).toISOString(), savedAs: as, treatedAs: 'missing' });
       return;
     }
     ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs(name)}` };
     effects.push({ type: 'keepArtifact', name, as: keptAs(name) });
-    const v = parse(artifacts[key]);
     verdictSrc = name;
     if (v.ok) {
       report = summarize(v);
@@ -261,9 +263,12 @@ export function step(input, event = {}, ctx0 = {}) {
     if (!row) throw new Error(`no transition for ${phase}:${outcome}`);
     // entering a phase that waits for a verdict: from now on only a file written after this
     // instant answers it (staying in the phase after a missing outcome keeps the request)
-    if (row.next !== phase && (row.next === 'review' || row.next === 'final-verify')) s.verdictRequestedAt = now;
+    if (row.next !== phase && (row.next === 'review' || row.next === 'final-verify')) {
+      s.verdictRequestedAt = now;
+      s.verdictRequestId = `${now}-${s.counters.iterations + 1}-${row.next}`;
+    }
     s.phase = row.next;
-    const reason = say(row.prompt, vars);
+    const reason = say(row.prompt, { ...vars, verdictRequestId: s.verdictRequestId || '' });
     s.counters.iterations += 1;
     J({ type: 'transition', from: phase, to: s.phase, outcome, report, verdictSrc, claimed, prompt: row.prompt, iteration: s.counters.iterations, ...(vars.testProof ? { testProof: vars.testProof } : {}) });
     return done(outcome, [...extraEffects, { type: 'saveState' }, { type: 'block', reason }]);
@@ -456,13 +461,16 @@ function reconcile(s, ctx, { now, phase, J, done, effects }) {
   const row = lookup('*', outcome);
   // a fresh request even when the phase does not change: review.json is dropped below, and a
   // reviewer of the killed turn that writes after that must not pass for the new one
-  if (row.next === 'review') s.verdictRequestedAt = now;
+  if (row.next === 'review') {
+    s.verdictRequestedAt = now;
+    s.verdictRequestId = `${now}-${s.counters.iterations + 1}-${row.next}`;
+  }
   s.phase = row.next;
   s.counters.iterations += 1;
   J({ type: 'reconcile', ok: true, disposition: v.disposition, next: v.next, summary: v.summary, notes: v.notes, savedAs: as, outcome, iteration: s.counters.iterations });
   J({ type: 'transition', from: phase, to: s.phase, outcome, prompt: row.prompt, iteration: s.counters.iterations });
   const extra = outcome === 'reconcile-review' ? [{ type: 'dropArtifact', name: 'review.json' }] : [];
-  return done(outcome, [...extra, { type: 'saveState' }, { type: 'block', reason: `${head} ${P(row.prompt, V)}` }]);
+  return done(outcome, [...extra, { type: 'saveState' }, { type: 'block', reason: `${head} ${P(row.prompt, { ...V, verdictRequestId: s.verdictRequestId || '' })}` }]);
 }
 
 // After the shell ran the gitFinish effect. gitResult:

@@ -1,6 +1,6 @@
 // Verdict artifacts written by the review / verification agents.
-//   .omc-loop/review.json : { "blocking": <int>, "findings": [ {severity, desc, file?} ] }
-//   .omc-loop/verify.json : { "pass": <bool>,   "findings": [ {severity, desc, file?} ] }
+//   .omc-loop/review.json : { "requestId": <string>, "blocking": <int>, "findings": [...] }
+//   .omc-loop/verify.json : { "requestId": <string>, "pass": <bool>, "findings": [...] }
 // A malformed artifact is never "a pass": it becomes a MISSING outcome (which the machine
 // treats as a failure after one reminder) and the discrepancy is journaled.
 // When the declared verdict and the findings disagree, the STRICTER reading wins.
@@ -26,6 +26,12 @@ function validateFindings(raw) {
   return { findings };
 }
 
+function validateRequestId(raw) {
+  if (raw == null) return { requestId: null };
+  if (typeof raw !== 'string' || !raw.trim()) return { error: 'requestId must be a non-empty string' };
+  return { requestId: raw };
+}
+
 const criticalCount = (findings) => findings.filter((f) => f.severity === 'critical').length;
 
 // -> { ok: true, blocking, findings, notes: [] } | { ok: false, error }
@@ -38,6 +44,8 @@ export function parseReviewVerdict(text) {
   if (!Number.isInteger(blocking) || blocking < 0) return { ok: false, error: `blocking must be a non-negative integer (got ${JSON.stringify(v.blocking)})` };
   const f = validateFindings(v.findings);
   if (f.error) return { ok: false, error: f.error };
+  const req = validateRequestId(v.requestId);
+  if (req.error) return { ok: false, error: req.error };
   const notes = [];
   const crit = criticalCount(f.findings);
   let effective = blocking;
@@ -45,7 +53,7 @@ export function parseReviewVerdict(text) {
     effective = crit;
     notes.push(`blocking=${blocking} but ${crit} critical finding(s): the stricter count wins`);
   }
-  return { ok: true, blocking: effective, declaredBlocking: blocking, findings: f.findings, notes };
+  return { ok: true, blocking: effective, declaredBlocking: blocking, findings: f.findings, requestId: req.requestId, notes };
 }
 
 // .omc-loop/reconcile.json, written by a restored session after a read-only inspection:
@@ -79,6 +87,8 @@ export function parseVerifyVerdict(text) {
   if (typeof v.pass !== 'boolean') return { ok: false, error: `pass must be a boolean (got ${JSON.stringify(v.pass)})` };
   const f = validateFindings(v.findings);
   if (f.error) return { ok: false, error: f.error };
+  const req = validateRequestId(v.requestId);
+  if (req.error) return { ok: false, error: req.error };
   const notes = [];
   let pass = v.pass;
   const crit = criticalCount(f.findings);
@@ -86,5 +96,5 @@ export function parseVerifyVerdict(text) {
     pass = false;
     notes.push(`pass=true but ${crit} critical finding(s): the stricter reading wins`);
   }
-  return { ok: true, pass, declaredPass: v.pass, findings: f.findings, notes };
+  return { ok: true, pass, declaredPass: v.pass, findings: f.findings, requestId: req.requestId, notes };
 }

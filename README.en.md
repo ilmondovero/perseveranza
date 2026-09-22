@@ -101,10 +101,10 @@ flowchart TD
 |---|---|---|
 | **plan** | Claude, after exploring the code | `plan.md` as a checklist, complexity recorded |
 | **implement** | Claude (or `pf-executor` with opus when complexity is high) | one step, with its edge cases |
-| **review** | `pf-reviewer`, clean context, model by complexity | `review.json` with `blocking` and findings |
+| **review** | `pf-reviewer`, clean context, model by complexity | `review.json` with `requestId`, `blocking` and findings |
 | **fix** | Claude, on the same step | the fix, which goes back to review |
 | **cleanup** | Claude, once | dead code and duplication removed, docs updated |
-| **final verification** | `pf-verifier`, assuming the work is wrong | `verify.json` with `pass` and findings |
+| **final verification** | `pf-verifier`, assuming the work is wrong | `verify.json` with `requestId`, `pass` and findings |
 | **closure** | the Stop hook, not Claude | commit, push, run archive, notification |
 
 The reviewers' model follows the complexity Claude records: `haiku` / `sonnet` / `opus`
@@ -186,6 +186,8 @@ verification adds a security lens.
   `verify.json` older than the instant the phase asked for it (a subagent of a killed turn,
   a file left across a takeover) is set aside as `review-stale-<n>.json` and the phase asks
   for the verdict, once.
+- **Every verdict answers one exact request.** Its `requestId` prevents an agent launched by
+  an earlier turn from being accepted merely because it wrote the file later.
 
 ## Commands
 

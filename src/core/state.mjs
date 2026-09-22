@@ -47,6 +47,9 @@ export function defaultState(overrides = {}) {
     // when the phase that awaits a verdict (review, final-verify) was entered: a verdict file
     // written before that instant answers an earlier request, not this one
     verdictRequestedAt: 0,
+    // Correlation token copied into the reviewer/verifier verdict. Unlike file timestamps it
+    // also rejects an old agent that finishes after a replacement request was issued.
+    verdictRequestId: null,
     armedAt: null,
     engineVersion: null,
   };
@@ -124,6 +127,7 @@ export function normalizeState(raw) {
     };
   } else s.lastTest = null;
   s.verdictRequestedAt = Math.max(0, num(s.verdictRequestedAt, 0));
+  s.verdictRequestId = typeof s.verdictRequestId === 'string' && s.verdictRequestId ? s.verdictRequestId : null;
   s.tree.fingerprint = typeof s.tree.fingerprint === 'string' && s.tree.fingerprint ? s.tree.fingerprint : null;
   s.tree.iteration = Math.max(0, num(s.tree.iteration, 0));
   s.owner.sessionId = typeof s.owner.sessionId === 'string' && s.owner.sessionId ? s.owner.sessionId : null;
