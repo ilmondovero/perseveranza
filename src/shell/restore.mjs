@@ -55,7 +55,7 @@ for ($i = 0; $i -lt 12 -and $p; $i++) {
   let pid = fromPid;
   for (let i = 0; i < 13 && pid > 1; i++) {
     let line = '';
-    try { line = spawnSync('ps', ['-o', 'ppid=,lstart=,comm=,args=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 }).stdout.trim(); } catch { return null; }
+    try { line = spawnSync('ps', ['-o', 'ppid=,lstart=,ucomm=,args=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 }).stdout.trim(); } catch { return null; }
     if (!line) return null;
     const m = line.match(/^\s*(\d+)\s+(.{24})\s+(\S+)\s+(.*)$/);
     if (!m) return null;
@@ -77,7 +77,9 @@ export function processInfo(pid) {
   try {
     // stat first: a zombie (Z) is a process that already exited and waits for its parent to
     // reap it. It runs nothing and cannot be signalled away: dead, for every caller here.
-    const line = spawnSync('ps', ['-o', 'stat=,lstart=,comm=,args=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 }).stdout.trim();
+    // ucomm, not comm: the bare executable name on Linux and macOS alike (macOS's comm is
+    // the whole path, cut at 16 characters, which no name test can read).
+    const line = spawnSync('ps', ['-o', 'stat=,lstart=,ucomm=,args=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 }).stdout.trim();
     if (!line) return { alive: false };
     const m = line.match(/^(\S+)\s+(.{24})\s+(\S+)\s+(.*)$/);
     if (m && m[1].startsWith('Z')) return { alive: false };
