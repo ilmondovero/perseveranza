@@ -41,7 +41,7 @@ export const DEFAULT_PROMPTS = {
   'review-delegate': `PHASE: code review. Delegate to {{reviewerRef}} with model={{reviewModel}} (clean context) the review of the step just implemented, passing in the prompt: the plan step, the list of touched files, the diff (if huge: file list + relevant excerpts), and verdict request ID {{verdictRequestId}}.{{testHint}} It checks: correctness, edge cases, regressions, security, adequacy of tests. The agent MUST write the verdict to .omc-loop/review.json as {"requestId": "{{verdictRequestId}}", "blocking": <number of blocking issues>, "findings": [{"severity": "critical|warning|suggestion", "desc": "...", "file": "path:line"}]}: that file routes the loop. Do NOT fix anything in this phase: fixes belong to the fix phase, where they get re-reviewed. Only if the agent could not write the file, record the outcome yourself with: {{LOOP}} report pass or: {{LOOP}} report fail. Do NOT edit .omc-loop/state.json by hand.`,
   'review-fix': `PHASE: fix (attempt {{retries}}/{{maxRetries}}). The review left open problems: fix ALL of them staying on the same plan step and run the relevant tests.{{verdictHint}}{{implHint}}{{testHint}}{{extFixHint}} Do NOT tick the step.`,
   'review-advance': `PHASE: implement. Review passed: tick the completed step in .omc-loop/plan.md ('- [x]') and append 2-3 lines to .omc-loop/notes.md (decisions taken, traps met).{{commitHint}} If unchecked steps remain, implement the NEXT one; if its complexity clearly differs from the recorded one, update it first with: {{LOOP}} complexity low|medium|high.{{implHint}} If you lost the thread, re-read .omc-loop/plan.md and .omc-loop/notes.md.{{testHint}} If instead ALL steps are ticked and the project is complete: FIRST run the suite through the test verb ({{testRun}}: it skips the run when a green for this tree is already recorded) to get a green proof for the current tree (a claim-done without it is refused and costs a whole round), and IN THE SAME RESPONSE run: {{LOOP}} claim-done (it triggers the final verification). If you need input from the user: {{LOOP}} pause and then ask.`,
-  'review-missing-outcome': `PHASE: code review (outcome missing). You did not record the review outcome. Finish it if needed, then run NOW: {{LOOP}} report pass or: {{LOOP}} report fail. A second missing outcome counts as a failed review.`,
+  'review-missing-outcome': `PHASE: code review (outcome missing). You did not record the review outcome. Finish it if needed (an agent you delegate to again gets the verdict request ID {{verdictRequestId}} and copies it into review.json), then run NOW: {{LOOP}} report pass or: {{LOOP}} report fail. A second missing outcome counts as a failed review.`,
 
   // --- exit ramp: claim-done, cleanup, final verification ---
   'claim-open-steps': `claim-done REFUSED: .omc-loop/plan.md still has {{openSteps}} unchecked step(s). Complete them (each goes through its review like the others) and, only when the plan is entirely '- [x]', declare again: {{LOOP}} claim-done.`,
@@ -51,7 +51,9 @@ export const DEFAULT_PROMPTS = {
   'cleanup': `PHASE: pre-verification cleanup. You declared the project complete: before the final gate do a cleanup pass WITHOUT adding features: remove dead code and duplication, simplify where behaviour stays the same, align style with the rest of the repo, update README/docstrings if behaviour changed. After the cleanup prove the tests are still green with: {{testRun}} (it does not rerun the suite when only documentation changed, or nothing did).{{testHint}} The final verification starts at the next stop.`,
   'final-verify': `PHASE: adversarial final verification. You declared the project complete: now it must be falsified. Delegate to {{verifierRef}} with model={{verifyModel}} (clean context) the verification, passing in the prompt the full plan, the total diff (if huge: file list + relevant excerpts), and verdict request ID {{verdictRequestId}}: it must assume the work is WRONG, build edge cases and hostile inputs, REALLY run targeted tests and the build, and check every claim against actual execution.{{testHint}}{{secHint}}{{extVerifyHint}} Do NOT fix anything in this phase. The agent MUST write the verdict to .omc-loop/verify.json as {"requestId": "{{verdictRequestId}}", "pass": true|false, "findings": [{"severity": "critical|warning", "desc": "...", "file": "path:line"}]}: that file routes the loop. Only if it could not write it, record the outcome yourself with: {{LOOP}} report pass or: {{LOOP}} report fail`,
   'verify-postfix': `PHASE: post-verification fix (rejection {{finalFails}}/{{maxRetries}}). The final verification found defects: fix them all and reopen the affected steps in .omc-loop/plan.md ('- [ ]').{{verdictHint}}{{implHint}}{{testHint}} When everything is complete and tested again, run {{testRun}} and then: {{LOOP}} claim-done`,
-  'verify-missing-outcome': `PHASE: final verification (outcome missing). You did not record the verification outcome. Finish it if needed, then run NOW: {{LOOP}} report pass or: {{LOOP}} report fail. A second missing outcome counts as a rejection.`,
+  'verify-missing-outcome': `PHASE: final verification (outcome missing). You did not record the verification outcome. Finish it if needed (an agent you delegate to again gets the verdict request ID {{verdictRequestId}} and copies it into verify.json), then run NOW: {{LOOP}} report pass or: {{LOOP}} report fail. A second missing outcome counts as a rejection.`,
+  'verify-pass-open': `PHASE: implement. The final verification passed, but .omc-loop/plan.md has {{openSteps}} unchecked step(s): nothing was committed. Implement the FIRST unchecked step now; each step goes through its review as usual.{{implHint}}{{testHint}} When ALL steps are ticked, run {{testRun}} and IN THE SAME RESPONSE: {{LOOP}} claim-done (a new final verification follows).`,
+  'verify-pass-stale': `PHASE: implement. The final verification passed, but that pass does not cover the current work, so nothing was committed: the code changed after the verification was requested, or the last recorded suite run is not a green run on the code the verifier judged (red, missing, or run on older code). Code is not changed during a verification: a fix belongs here. If nobody edited the code, look for build or test output that git does not ignore (the verifier's own runs rewrite it) and add it to .gitignore. Make the suite green on the current tree with {{testRun}} and IN THE SAME RESPONSE run: {{LOOP}} claim-done (a new final verification of the current tree follows).{{testHint}}`,
 
   // --- recovery from an inconsistent state ---
   'phase-recovered': `PHASE: plan (inconsistent state, restored). Check .omc-loop/plan.md: if missing write it as a '- [ ] step' checklist, then stop.`,
@@ -104,7 +106,7 @@ export const PROMPT_VARS = {
   'review-delegate': ['reviewerRef', 'reviewModel', 'verdictRequestId', 'testHint', 'LOOP'],
   'review-fix': ['retries', 'maxRetries', 'verdictHint', 'implHint', 'testHint', 'extFixHint'],
   'review-advance': ['commitHint', 'implHint', 'testHint', 'testRun', 'LOOP'],
-  'review-missing-outcome': ['LOOP'],
+  'review-missing-outcome': ['verdictRequestId', 'LOOP'],
   'claim-open-steps': ['openSteps', 'LOOP'],
   'claim-no-fresh-test': ['testRun', 'LOOP'],
   'claim-stale-test': ['testRun', 'LOOP'],
@@ -112,7 +114,9 @@ export const PROMPT_VARS = {
   'cleanup': ['testRun', 'testHint'],
   'final-verify': ['verifierRef', 'verifyModel', 'verdictRequestId', 'testHint', 'secHint', 'extVerifyHint', 'LOOP'],
   'verify-postfix': ['finalFails', 'maxRetries', 'verdictHint', 'implHint', 'testHint', 'testRun', 'LOOP'],
-  'verify-missing-outcome': ['LOOP'],
+  'verify-missing-outcome': ['verdictRequestId', 'LOOP'],
+  'verify-pass-open': ['openSteps', 'implHint', 'testHint', 'testRun', 'LOOP'],
+  'verify-pass-stale': ['testHint', 'testRun', 'LOOP'],
   'phase-recovered': [],
   'hint-paused': [],
   'hint-steps': ['done', 'total'],
@@ -142,6 +146,14 @@ export const PROMPT_VARS = {
 
 export const PROMPT_KEYS = Object.keys(DEFAULT_PROMPTS);
 
+// Placeholders a key should keep: without the request id, the agents a prompt delegates to
+// write verdicts the loop can only date by the file clock. A warning, not an error: such a
+// verdict still counts when written after the request.
+export const PROMPT_EXPECTED = {
+  'review-delegate': ['verdictRequestId'],
+  'final-verify': ['verdictRequestId'],
+};
+
 const PLACEHOLDER = /\{\{([a-zA-Z0-9_-]+)\}\}/g;
 
 // Pure rendering: template (first layer that has the key, else default) + variables.
@@ -160,14 +172,15 @@ export function renderPrompt(key, vars = {}, layers = []) {
 }
 
 // Validate a parsed pack object. Never throws.
-// -> { overrides, unknownKeys, badPlaceholders: [{key, placeholder}], error }
+// -> { overrides, unknownKeys, badPlaceholders: [{key, placeholder}], missingPlaceholders: [{key, placeholder}], error }
 export function validatePack(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { overrides: {}, unknownKeys: [], badPlaceholders: [], error: 'pack is not an object' };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { overrides: {}, unknownKeys: [], badPlaceholders: [], missingPlaceholders: [], error: 'pack is not an object' };
   const src = raw.prompts && typeof raw.prompts === 'object' && !Array.isArray(raw.prompts) ? raw.prompts : null;
-  if (!src) return { overrides: {}, unknownKeys: [], badPlaceholders: [], error: 'missing "prompts" object' };
+  if (!src) return { overrides: {}, unknownKeys: [], badPlaceholders: [], missingPlaceholders: [], error: 'missing "prompts" object' };
   const overrides = {};
   const unknownKeys = [];
   const badPlaceholders = [];
+  const missingPlaceholders = [];
   for (const [k, v] of Object.entries(src)) {
     if (!(k in DEFAULT_PROMPTS)) { unknownKeys.push(k); continue; }
     if (typeof v !== 'string') { badPlaceholders.push({ key: k, placeholder: null, reason: 'not a string' }); continue; }
@@ -175,9 +188,12 @@ export function validatePack(raw) {
     for (const m of v.matchAll(PLACEHOLDER)) {
       if (!allowed.includes(m[1])) badPlaceholders.push({ key: k, placeholder: m[1], reason: `not available for "${k}" (allowed: ${allowed.join(', ') || 'none'})` });
     }
+    for (const name of PROMPT_EXPECTED[k] || []) {
+      if (!v.includes(`{{${name}}}`)) missingPlaceholders.push({ key: k, placeholder: name });
+    }
     overrides[k] = v;
   }
-  return { overrides, unknownKeys, badPlaceholders, error: null };
+  return { overrides, unknownKeys, badPlaceholders, missingPlaceholders, error: null };
 }
 
 // Keys a pack does NOT override (used to check that a language pack is complete).

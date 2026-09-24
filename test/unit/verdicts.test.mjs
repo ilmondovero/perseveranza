@@ -33,11 +33,17 @@ test('review: the stricter reading wins when blocking under-counts critical find
 
 test('review: malformed inputs are errors, never a pass', () => {
   for (const bad of ['', '   ', 'not json', '[]', '{}', '{"blocking":null}', '{"blocking":false}', '{"blocking":""}', '{"blocking":[]}', '{"blocking":"0"}', '{"blocking":"many"}', '{"blocking":-1}', '{"blocking":1.5}',
-    '{"blocking":0,"requestId":""}', '{"blocking":0,"requestId":42}', '{"blocking":0,"findings":"x"}', '{"blocking":0,"findings":[{"severity":"fatal"}]}', '{"blocking":0,"findings":[1]}']) {
+    '{"blocking":0,"requestId":42}', '{"blocking":0,"findings":"x"}', '{"blocking":0,"findings":[{"severity":"fatal"}]}', '{"blocking":0,"findings":[1]}']) {
     const r = parseReviewVerdict(bad);
     assert.equal(r.ok, false, `expected error for ${JSON.stringify(bad)}`);
     assert.ok(typeof r.error === 'string' && r.error.length > 0);
   }
+});
+
+test('an empty requestId is read like an absent one, not as a malformed verdict', () => {
+  assert.equal(parseReviewVerdict('{"requestId":"","blocking":0}').requestId, null);
+  assert.equal(parseVerifyVerdict('{"requestId":"  ","pass":true}').requestId, null);
+  assert.equal(parseVerifyVerdict('{"requestId":7,"pass":true}').ok, false);
 });
 
 test('verify: well-formed pass and fail', () => {

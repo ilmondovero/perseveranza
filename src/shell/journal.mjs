@@ -51,14 +51,20 @@ export function readJournalTail(gateDir, bytes = 64 * 1024) {
   finally { if (fd != null) { try { closeSync(fd); } catch { /* nothing */ } } }
 }
 
+const at19 = (v) => (v ? String(v).replace('T', ' ').slice(0, 19) : 'unknown');
+// why a verdict file was set aside: the request it answers, or its clock
+const staleWhy = (e) => (e.staleBy === 'requestId'
+  ? `answers request ${e.requestId}, current request ${e.expectedRequestId}`
+  : `written ${at19(e.writtenAt)}, requested ${at19(e.requestedAt)}${e.requestId ? '' : ', no request id'}`);
+
 // One human-readable line per entry (the `history` verb).
 export function formatEntry(e) {
   const ts = e.ts ? e.ts.replace('T', ' ').slice(0, 19) : '????-??-?? ??:??:??';
   const it = Number.isFinite(e.iteration) ? ` it${String(e.iteration).padStart(2)}` : '';
   switch (e.type) {
     case 'fire': return `${ts} | fire session=${e.session || '-'} sha=${e.stopHookActive ? 1 : 0} keys=${(e.payloadKeys || []).join(',')}`;
-    case 'transition': return `${ts} |${it} ${e.from} -> ${e.to} | ${e.outcome}${e.report && e.report !== 'none' ? ` report=${e.report}` : ''}${e.verdictSrc ? ` (${e.verdictSrc})` : ''}${e.claimed ? ' claim-done' : ''}${e.testProof ? ` test-proof=${e.testProof}` : ''}${e.paused ? ` PAUSED: ${e.why}` : ''}`;
-    case 'verdict': return `${ts} | verdict ${e.artifact}: ${e.stale ? `STALE (written ${String(e.writtenAt || '').replace('T', ' ').slice(0, 19)}, requested ${String(e.requestedAt || '').replace('T', ' ').slice(0, 19)}) -> ${e.treatedAs}` : e.error ? `ERROR ${e.error} -> ${e.treatedAs}` : (e.artifact === 'review.json' ? `blocking=${e.blocking}` : `pass=${e.pass}`)}${e.notes && e.notes.length ? ` (${e.notes.join('; ')})` : ''}${e.savedAs ? ` -> ${e.savedAs}` : ''}`;
+    case 'transition': return `${ts} |${it} ${e.from} -> ${e.to} | ${e.outcome}${e.report && e.report !== 'none' ? ` report=${e.report}` : ''}${e.verdictSrc ? ` (${e.verdictSrc})` : ''}${e.claimed ? ' claim-done' : ''}${e.testProof ? ` test-proof=${e.testProof}` : ''}${e.gate ? ` gate=${e.gate}` : ''}${e.paused ? ` PAUSED: ${e.why}` : ''}`;
+    case 'verdict': return `${ts} | verdict ${e.artifact}: ${e.stale ? `STALE (${staleWhy(e)}) -> ${e.treatedAs}` : e.error ? `ERROR ${e.error} -> ${e.treatedAs}` : (e.artifact === 'review.json' ? `blocking=${e.blocking}` : `pass=${e.pass}`)}${e.notes && e.notes.length ? ` (${e.notes.join('; ')})` : ''}${e.savedAs ? ` -> ${e.savedAs}` : ''}`;
     case 'test': return `${ts} | test exit=${e.exitCode} it${e.iteration} ${e.cmd}${e.reused ? ` (green reused${e.docsOnly ? ', only docs changed' : ''}, not rerun)` : ''}${e.failed && e.failed.length ? ` failed: ${e.failed.join(', ')}` : ''}${e.flaky ? ` FLAKY: ${e.flaky}` : ''}`;
     case 'ask': return `${ts} | ask ${e.provider}${e.model ? `/${e.model}` : ''} slot=${e.slot} ${e.ok ? 'ok' : 'ERROR'}`;
     case 'usage': return `${ts} | usage ${e.spent} tokens (+${e.delta})`;

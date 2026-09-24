@@ -150,17 +150,26 @@ def dry_loop(work: Path, name: str):
                        cwd=work, capture_output=True, text=True, env=env, timeout=120)
 
     gate = work / ".omc-loop"
+
+    def verdict(fields: dict) -> str:
+        # the request id the phase prompt hands the reviewer/verifier, copied like an agent does
+        try:
+            request_id = json.loads((gate / "state.json").read_text(encoding="utf-8")).get("verdictRequestId")
+        except (OSError, ValueError):
+            request_id = None
+        return json.dumps({"requestId": request_id, **fields})
+
     fire()                                             # plan-write
     (gate / "plan.md").write_text("- [ ] do it\n", encoding="utf-8")
     fire()                                             # -> implement
     fire()                                             # -> review
-    (gate / "review.json").write_text('{"blocking":0}', encoding="utf-8")
+    (gate / "review.json").write_text(verdict({"blocking": 0}), encoding="utf-8")
     fire()                                             # -> implement (advance)
     (gate / "plan.md").write_text("- [x] do it\n", encoding="utf-8")
     subprocess.run(["node", str(LOOP_MJS), "claim-done"], cwd=work, capture_output=True, text=True, env=env)
     fire()                                             # -> cleanup (no suite configured in dry run)
     fire()                                             # -> final-verify
-    (gate / "verify.json").write_text('{"pass":true}', encoding="utf-8")
+    (gate / "verify.json").write_text(verdict({"pass": True}), encoding="utf-8")
     fire()                                             # -> done: archived + disarmed
 
 

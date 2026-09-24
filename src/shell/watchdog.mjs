@@ -84,16 +84,19 @@ export function decide(gateDir, { now = Date.now(), staleMs = DEFAULT_STALE_MS, 
   const armed = Date.parse(state.armedAt || '') || 0;
   // A restored process needs time to start before it can emit transcript/tool activity.
   // Treat the successful launch recorded in `interrupted.at` as life until the first real
-  // signal arrives, otherwise the replacement watchdog immediately restores it again.
-  const restoredAt = state.signals.interrupted ? (Date.parse(state.signals.interrupted.at || '') || 0) : 0;
+  // signal arrives, otherwise the replacement watchdog immediately restores it again. A
+  // launch in the future is a hand edit or a clock jump, not a sign of life.
+  const launched = state.signals.interrupted ? (Date.parse(state.signals.interrupted.at || '') || 0) : 0;
+  const restoredAt = launched <= now ? launched : 0;
   const baseSeen = st.seenAt || armed;
-  const seen = Math.max(baseSeen, Math.min(now, restoredAt));
+  const seen = Math.max(baseSeen, restoredAt);
   const via = restoredAt > baseSeen ? 'restore' : (st.seenAt ? st.via : 'arm');
   if (!seen) return { action: 'exit', why: 'no clock' };
   const wait = seen + staleMs - now;
   if (wait > 0) return { action: 'sleep', ms: Math.min(wait + 500, MAX_NAP_MS), why: 'alive' };
-  // only the owner's activity is the loop's (lastSeen already filtered it)
-  return { action: 'alert', state, activity: via === 'activity' ? activity : null, silentMs: now - seen, seenAt: seen, via };
+  // only the owner's activity is the loop's (lastSeen already filtered it); kept after a
+  // restore too: its pending delegations are still the ones that never came back
+  return { action: 'alert', state, activity: st.via === 'activity' ? activity : null, silentMs: now - seen, seenAt: seen, via };
 }
 
 export function alertText(d, gateDir, now = Date.now()) {
@@ -121,6 +124,12 @@ export function restore(gateDir, d, env = process.env) {
   // "never recorded" is not "known dead": a relaunch beside a still-running session would
   // put two processes on the same session id
   if (!(pid > 0)) return { attempted: false, why: 'no Claude Code process recorded at the last Stop: refusing a blind relaunch' };
+  // A restored session records its process at its first Stop. Before that, the pid on record
+  // is the one the previous restore terminated: found dead it would read as "already gone",
+  // and a second `claude -r` would open beside a restored session that may well be alive
+  // (waiting on a trust or permission prompt, typically).
+  const launched = s.signals.interrupted ? (Date.parse(s.signals.interrupted.at || '') || 0) : 0;
+  if (launched > s.owner.lastFireAt) return { attempted: false, why: 'the restored session has not reached a Stop yet, so its Claude Code process is unknown: refusing a blind relaunch' };
   const info = processInfo(pid);
   let killed = false;
   if (info.alive) {
@@ -130,6 +139,8 @@ export function restore(gateDir, d, env = process.env) {
   }
   const packs = loadPromptLayers({ gateDir, env, lang: s.options.lang, root: ROOT });
   const prompt = restorePrompt(s, { silentMs: d.silentMs, LOOP: loopCommand(ROOT), layers: packs.layers, activity: d.activity });
+  // stamped before the launch: the restored session's first Stop, however quick, comes after
+  const launchedAt = new Date().toISOString();
   const r = launchRestore({ cwd: dirname(gateDir), sessionId: s.owner.sessionId, prompt, env });
   // the next Stop of the restored session reconciles first, read-only: mark the interruption,
   // but only once a session exists to do it (a marked loop with nobody to reconcile would
@@ -138,7 +149,7 @@ export function restore(gateDir, d, env = process.env) {
     try {
       const fresh = loadState(JSON.parse(readFileSync(join(gateDir, 'state.json'), 'utf8'))).state;
       if (fresh) {
-        fresh.signals.interrupted = { at: new Date().toISOString(), silentMs: d.silentMs, phase: fresh.phase, pending: d.activity ? d.activity.pending.map((p) => p.agent) : [] };
+        fresh.signals.interrupted = { at: launchedAt, silentMs: d.silentMs, phase: fresh.phase, pending: d.activity ? d.activity.pending.map((p) => p.agent) : [] };
         fresh.flags.reconcileAsked = false;
         writeAtomic(join(gateDir, 'state.json'), JSON.stringify(fresh, null, 2));
       }

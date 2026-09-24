@@ -37,6 +37,7 @@ export function run({ argv, cwd, env }) {
     console.log(`${file}: ${Object.keys(v.overrides).length} key(s) overridden`);
     if (v.unknownKeys.length) console.log(`  unknown keys (ignored): ${v.unknownKeys.join(', ')}`);
     for (const b of v.badPlaceholders) console.log(`  BAD placeholder in "${b.key}": ${b.placeholder ? `{{${b.placeholder}}}` : ''} ${b.reason}`);
+    for (const m of v.missingPlaceholders) console.log(`  WARNING "${m.key}" lacks {{${m.placeholder}}}: its agents' verdicts carry no request id and count only when written after the request`);
     if (argv.includes('--complete') && missing.length) console.log(`  missing keys (fall back to defaults): ${missing.join(', ')}`);
     const bad = v.badPlaceholders.length || (argv.includes('--complete') && missing.length);
     console.log(bad ? 'INVALID' : 'OK');

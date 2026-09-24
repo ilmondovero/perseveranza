@@ -26,9 +26,11 @@ function validateFindings(raw) {
   return { findings };
 }
 
+// An empty id carries no claim about the request: read like an absent one (the machine then
+// falls back to the file clock), not as a malformed verdict.
 function validateRequestId(raw) {
-  if (raw == null) return { requestId: null };
-  if (typeof raw !== 'string' || !raw.trim()) return { error: 'requestId must be a non-empty string' };
+  if (raw == null || (typeof raw === 'string' && !raw.trim())) return { requestId: null };
+  if (typeof raw !== 'string') return { error: 'requestId must be a string' };
   return { requestId: raw };
 }
 

@@ -24,6 +24,7 @@ export function run({ argv, cwd, env = process.env }) {
   if (closingPause || !takeover) {
     s.counters.retries = 0;
     s.counters.finalFails = 0;
+    s.counters.staleGates = 0;
   }
   if (takeover && s.owner.sessionId) {
     const from = s.owner.sessionId;

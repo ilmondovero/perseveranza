@@ -99,8 +99,13 @@ How the loop works (feedback):
   dead code, duplication, docs), then the adversarial final verification (independent
   subagent + falsification by an external model if detected; security lens for high
   complexity): the verifier writes `.omc-loop/verify.json` (`{"requestId": "<ID from the
-  phase prompt>", "pass": true|false, "findings": [...]}`); `pass` closes the loop, `fail`
-  sends you back to fix.
+  phase prompt>", "pass": true|false, "findings": [...]}`); `fail` sends you back to fix.
+  `pass` closes the loop only if the plan is still fully ticked, the last recorded suite
+  run is green on the code the verifier judged, and that code (everything git does not
+  ignore, docs aside) did not change after the verification was requested: do not touch the
+  code while it runs, and keep build/test output in .gitignore. Otherwise nothing is
+  committed and you are sent back to implement, with a new claim-done that asks for a new
+  verification.
 - At closure, if the directory is inside a git repo, the hook itself runs `git add -A`
   (excluding `.omc-loop/`), commit `perseveranza: <task>` and `git push`, verified on facts
   (clean tree, HEAD not ahead of upstream). If the closure cannot be confirmed the loop

@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { ROOT } from '../../src/shell/paths.mjs';
 import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, ALL_FILES, HOOK_ENTRY, SESSION_HOOK_ENTRY, ACTIVITY_HOOK_ENTRY, HOOK_SPECS, CLI_ENTRY } from '../../manifest.mjs';
 import { toMarkdown } from '../../src/core/transitions.mjs';
-import { validatePack, missingKeys, PROMPT_KEYS } from '../../src/core/prompts.mjs';
+import { validatePack, missingKeys, PROMPT_KEYS, PROMPT_EXPECTED, DEFAULT_PROMPTS } from '../../src/core/prompts.mjs';
 import { VERBS } from '../../src/cli/omc-loop.mjs';
 
 function walk(dir, out = []) {
@@ -102,11 +102,21 @@ test('the README transition tables are generated from the code (both languages)'
   }
 });
 
+test('the default prompts that delegate a verdict hand out its request id; a pack without it is warned about', () => {
+  for (const [key, names] of Object.entries(PROMPT_EXPECTED)) {
+    for (const name of names) assert.ok(DEFAULT_PROMPTS[key].includes(`{{${name}}}`), `${key} lacks {{${name}}}`);
+  }
+  const old = validatePack({ prompts: { 'review-delegate': 'Delegate to {{reviewerRef}}.', 'final-verify': 'Verify with {{verifierRef}} and {{verdictRequestId}}.' } });
+  assert.deepEqual(old.badPlaceholders, []);
+  assert.deepEqual(old.missingPlaceholders, [{ key: 'review-delegate', placeholder: 'verdictRequestId' }]);
+});
+
 test('packs/it.json is a complete, valid override of the defaults', () => {
   const v = validatePack(JSON.parse(readFileSync(join(ROOT, 'packs', 'it.json'), 'utf8')));
   assert.equal(v.error, null);
   assert.deepEqual(v.unknownKeys, []);
   assert.deepEqual(v.badPlaceholders, []);
+  assert.deepEqual(v.missingPlaceholders, [], 'the prompts that delegate a verdict hand out its request id');
   assert.deepEqual(missingKeys(v.overrides), []);
   assert.equal(Object.keys(v.overrides).length, PROMPT_KEYS.length);
   // the operative verbs must survive translation

@@ -102,6 +102,73 @@ test('a verdict written before the phase asked for it is kept aside and treated 
   assert.equal(twice.outcome, 'missing-twice');
 });
 
+test('the request id decides when present, the file clock only when absent', () => {
+  const T = 1_700_000_000_000;
+  const enter = run(mk({ phase: 'implement' }), { planText: PLAN }, { now: T });
+  const id = enter.state.verdictRequestId;
+  const at = (review, when) => run(enter.state, { artifacts: { review }, artifactAt: { review: when } }, { now: T + 60_000 });
+  // an id-less verdict is dated by its clock only: after the request it counts, before it does not
+  assert.equal(at('{"blocking":0}', T + 10).outcome, 'pass');
+  const old = at('{"blocking":0}', T - 5000);
+  assert.equal(old.outcome, 'missing');
+  assert.equal(journal(old).find((j) => j.type === 'verdict').staleBy, 'mtime');
+  // the right id counts even when the file clock lags behind the hook's (a network share)
+  const lagging = at(JSON.stringify({ requestId: id, blocking: 0 }), T - 30_000);
+  assert.equal(lagging.outcome, 'pass');
+  // copied out of prose, with quotes or a trailing period, it is still the same id
+  assert.equal(at(JSON.stringify({ requestId: `${id}.`, blocking: 0 }), T + 10).outcome, 'pass');
+  assert.equal(at(JSON.stringify({ requestId: ` "${id}" `, blocking: 0 }), T + 10).outcome, 'pass');
+  // an empty id is no claim: read like an absent one
+  assert.equal(at(JSON.stringify({ requestId: '', blocking: 0 }), T + 10).outcome, 'pass');
+  // another id is an earlier request, however late it was written
+  const other = at(JSON.stringify({ requestId: 'earlier', blocking: 0 }), T + 10);
+  assert.equal(other.outcome, 'missing');
+  assert.equal(journal(other).find((j) => j.type === 'verdict').staleBy, 'requestId');
+});
+
+test('a stale verdict file does not swallow an outcome recorded with the report verb', () => {
+  const T = 1_700_000_000_000;
+  const s = mk({ phase: 'review', verdictRequestedAt: T, verdictRequestId: 'current', signals: { lastReport: 'pass' } });
+  const r = run(s, { artifacts: { review: '{"requestId":"earlier","blocking":0}' }, artifactAt: { review: T + 10 } }, { now: T + 60_000 });
+  assert.equal(r.outcome, 'pass');
+  assert.ok(r.effects.some((e) => e.type === 'keepArtifact' && e.as === 'review-stale-0.json'), 'still set aside');
+  assert.equal(journal(r).find((j) => j.type === 'verdict').treatedAs, 'report pass');
+  assert.equal(journal(r).find((j) => j.type === 'transition').verdictSrc, 'verb');
+});
+
+test('every prompt that asks for a verdict issues a new request, even in the same phase', () => {
+  const T = 1_700_000_000_000;
+  // a rejected verification, fixed, claimed again from final-verify: a new round, a new id
+  const s = mk({ phase: 'final-verify', verdictRequestedAt: T, verdictRequestId: 'round-1', flags: { cleanedOnce: true }, signals: { claimedDone: true } });
+  const again = run(s, { planText: PLAN_DONE, artifacts: { verify: '{"requestId":"round-1","pass":false}' }, codeFingerprint: 'c2' }, { now: T + 60_000 });
+  assert.equal(again.outcome, 'claim-again');
+  assert.equal(again.state.phase, 'final-verify');
+  assert.notEqual(again.state.verdictRequestId, 'round-1');
+  assert.equal(again.state.verdictRequestedAt, T + 60_000);
+  assert.equal(again.state.verdictTree, 'c2');
+  assert.equal(again.state.counters.finalFails, 1, 'the rejection counts although the claim asked for the next round');
+  assert.ok(again.reason.includes(`"requestId": "${again.state.verdictRequestId}"`), again.reason);
+  // a round-1 verifier that finishes late: another request, not a pass
+  const late = run(again.state, { planText: PLAN_DONE, artifacts: { verify: '{"requestId":"round-1","pass":true}' }, artifactAt: { verify: T + 90_000 }, codeFingerprint: 'c2' }, { now: T + 120_000 });
+  assert.equal(late.outcome, 'missing');
+  assert.ok(!late.types.includes('gitFinish'));
+  // a state from before request ids never hands out an empty one
+  const legacy = run(mk({ phase: 'final-verify', verdictRequestId: null, flags: { cleanedOnce: true }, signals: { claimedDone: true } }), { planText: PLAN_DONE, artifacts: { verify: '{"pass":false}' } });
+  assert.equal(legacy.outcome, 'claim-again');
+  assert.ok(legacy.state.verdictRequestId);
+  assert.ok(!legacy.reason.includes('"requestId": ""'), legacy.reason);
+  const missing = run(mk({ phase: 'review', verdictRequestId: null }), {});
+  assert.equal(missing.outcome, 'missing');
+  assert.ok(missing.state.verdictRequestId && missing.reason.includes(missing.state.verdictRequestId), missing.reason);
+});
+
+test('a hand-edited request clock does not crash the hook', () => {
+  const s = mk({ phase: 'review', verdictRequestedAt: 1e20 });
+  const r = run(s, { artifacts: { review: '{"blocking":0}' }, artifactAt: { review: 5 } });
+  assert.equal(r.outcome, 'missing');
+  assert.equal(journal(r).find((j) => j.type === 'verdict').requestedAt, null);
+});
+
 test('a verdict from an older request is stale even when written after the new request', () => {
   const T = 1_700_000_000_000;
   const s = mk({ phase: 'review', verdictRequestedAt: T, verdictRequestId: 'new-request' });
@@ -308,19 +375,123 @@ test('verify.json pass:true -> git-finish effect (closure happens in finishProje
 });
 
 test('a final pass cannot close work whose completion evidence became invalid', () => {
-  const open = run(mk({ phase: 'final-verify' }), { planText: PLAN, artifacts: { verify: '{"pass":true}' } });
-  assert.equal(open.outcome, 'claim-open');
-  assert.equal(open.state.phase, 'final-verify');
+  const PASS = { verify: '{"pass":true}' };
+  // a step reopened during the verification: back to implement, where it gets its review
+  const open = run(mk({ phase: 'final-verify', flags: { repeated: true } }), { planText: PLAN, artifacts: PASS });
+  assert.equal(open.outcome, 'pass-open');
+  assert.equal(open.state.phase, 'implement');
+  assert.equal(open.state.flags.repeated, false);
+  assert.equal(open.state.counters.finalFails, 0, 'the verifier passed: not a rejection');
   assert.ok(!open.types.includes('gitFinish'));
+  assert.ok(!open.reason.includes('REFUSED'), 'nothing was claimed, so no claim is refused');
+  assert.ok(open.reason.includes('2 unchecked step(s)') && open.reason.includes('FIRST unchecked step'), open.reason);
+  // implement -> review: the reopened step is reviewed, not committed
+  assert.equal(run(open.state, { planText: PLAN, fingerprint: 'x' }).state.phase, 'review');
 
+  // a red suite recorded after the claim
   const red = run(mk({
     phase: 'final-verify',
     options: { testCmd: 'npm test' },
     lastTest: { cmd: 'npm test', exitCode: 1, iteration: 0, fingerprint: 'old' },
-  }), { planText: PLAN_DONE, fingerprint: 'changed', artifacts: { verify: '{"pass":true}' } });
-  assert.equal(red.outcome, 'claim-no-test');
-  assert.equal(red.state.phase, 'final-verify');
+  }), { planText: PLAN_DONE, fingerprint: 'changed', artifacts: PASS });
+  assert.equal(red.outcome, 'pass-stale');
+  assert.equal(red.state.phase, 'implement');
   assert.ok(!red.types.includes('gitFinish'));
+  assert.equal(journal(red).find((j) => j.type === 'transition').gate, 'red-test');
+
+  // the code changed after the request: the pass judged another tree
+  const green = { cmd: 'npm test', exitCode: 0, iteration: 3, fingerprint: 'f1', codeFingerprint: 'c1' };
+  const judged = mk({ phase: 'final-verify', options: { testCmd: 'npm test' }, lastTest: green, verdictTree: 'c1', counters: { iterations: 5 }, flags: { cleanedOnce: true } });
+  const edited = run(judged, { planText: PLAN_DONE, fingerprint: 'f2', codeFingerprint: 'c2', artifacts: PASS });
+  assert.equal(edited.outcome, 'pass-stale');
+  assert.equal(journal(edited).find((j) => j.type === 'transition').gate, 'code-changed');
+  assert.equal(edited.state.counters.staleGates, 1);
+  assert.ok(edited.reason.includes('claim-done') && !edited.reason.includes('REFUSED') && edited.reason.includes('.gitignore'), edited.reason);
+  // ...and the claim that follows proves the current tree and asks for a new verification
+  const reclaim = run({ ...edited.state, signals: { ...edited.state.signals, claimedDone: true }, lastTest: { ...green, iteration: edited.state.counters.iterations, fingerprint: 'f2', codeFingerprint: 'c2' } },
+    { planText: PLAN_DONE, fingerprint: 'f2', codeFingerprint: 'c2' });
+  assert.equal(reclaim.outcome, 'claim-again');
+  assert.equal(reclaim.state.verdictTree, 'c2');
+
+  // the green on record ran on older code: a cleanup that edited code and did not rerun it
+  const untested = run({ ...judged, verdictTree: 'c2' }, { planText: PLAN_DONE, fingerprint: 'f2', codeFingerprint: 'c2', artifacts: PASS });
+  assert.equal(untested.outcome, 'pass-stale');
+  assert.equal(journal(untested).find((j) => j.type === 'transition').gate, 'untested');
+});
+
+test('passes that keep not covering the tree pause for a human; a same-turn claim-done decides', () => {
+  const PASS = { verify: '{"pass":true}' };
+  const green = { cmd: 'npm test', exitCode: 0, iteration: 3, fingerprint: 'f1', codeFingerprint: 'c1' };
+  // the verifier's own runs rewrite a file git does not ignore: every pass sees another tree
+  let s = mk({ phase: 'final-verify', options: { testCmd: 'npm test' }, lastTest: green, verdictTree: 'c1', flags: { cleanedOnce: true } });
+  const outcomes = [];
+  for (let i = 0; i < 4; i++) {
+    const r = run(s, { planText: PLAN_DONE, codeFingerprint: `drift-${i}`, artifacts: PASS });
+    outcomes.push(r.outcome);
+    s = { ...r.state, phase: 'final-verify', verdictTree: 'c1' };
+    if (r.outcome === 'pass-stale-limit') {
+      assert.equal(r.state.signals.paused, true);
+      assert.equal(r.state.phase, 'implement');
+      assert.equal(r.state.counters.staleGates, 0);
+      assert.ok(r.types.includes('writeEscalation'));
+      assert.ok(journal(r).find((j) => j.type === 'transition').why.includes('.gitignore'));
+    }
+  }
+  assert.deepEqual(outcomes, ['pass-stale', 'pass-stale', 'pass-stale', 'pass-stale-limit']);
+  // a rejection breaks the streak
+  const fail = run(mk({ phase: 'final-verify', counters: { staleGates: 2 } }), { artifacts: { verify: '{"pass":false}' } });
+  assert.equal(fail.state.counters.staleGates, 0);
+
+  // a claim-done in the same turn as a pass that cannot close is not ignored: proved, it asks
+  // for the next round now instead of costing one more
+  const both = mk({ phase: 'final-verify', options: { testCmd: 'npm test' }, verdictTree: 'c1', flags: { cleanedOnce: true }, signals: { claimedDone: true }, counters: { iterations: 5 },
+    lastTest: { ...green, iteration: 5, fingerprint: 'f2', codeFingerprint: 'c2' } });
+  const r = run(both, { planText: PLAN_DONE, fingerprint: 'f2', codeFingerprint: 'c2', artifacts: PASS });
+  assert.equal(r.outcome, 'claim-again');
+  assert.equal(r.state.verdictTree, 'c2');
+  assert.ok(journal(r).some((j) => j.type === 'claim' && j.ignored === false));
+});
+
+test('a claim-done refused beside a consumed final verdict lets the verdict route', () => {
+  const red = { cmd: 'npm test', exitCode: 1, iteration: 5, fingerprint: 'f1', codeFingerprint: 'c1' };
+  const base = { phase: 'final-verify', options: { testCmd: 'npm test' }, lastTest: red, verdictTree: 'c1', flags: { cleanedOnce: true }, signals: { claimedDone: true }, counters: { iterations: 5 } };
+  // a rejection, and a claim that cannot pass (red suite): one rejection, counted once
+  const fail = run(mk(base), { planText: PLAN_DONE, fingerprint: 'f1', codeFingerprint: 'c1', artifacts: { verify: '{"pass":false}' } });
+  assert.equal(fail.outcome, 'fail');
+  assert.equal(fail.state.phase, 'implement');
+  assert.equal(fail.state.counters.finalFails, 1);
+  assert.ok(journal(fail).some((j) => j.type === 'claim' && j.ignored && j.why.includes('claim-no-test')));
+  // the next stop does not report a verification outcome missing
+  const next = run(fail.state, { planText: PLAN_DONE, fingerprint: 'f2', codeFingerprint: 'c2' });
+  assert.equal(next.state.phase, 'review');
+  assert.equal(next.state.counters.finalFails, 1);
+  // a pass that cannot close (red suite), and a claim that cannot pass: not a rejection
+  const pass = run(mk(base), { planText: PLAN_DONE, fingerprint: 'f1', codeFingerprint: 'c1', artifacts: { verify: '{"pass":true}' } });
+  assert.equal(pass.outcome, 'pass-stale');
+  assert.equal(pass.state.phase, 'implement');
+  assert.equal(pass.state.counters.finalFails, 0);
+  // a reopened step ends the streak of passes that did not cover the tree
+  const open = run(mk({ ...base, signals: {}, counters: { staleGates: 2 } }), { planText: PLAN, artifacts: { verify: '{"pass":true}' } });
+  assert.equal(open.outcome, 'pass-open');
+  assert.equal(open.state.counters.staleGates, 0);
+});
+
+test('a final pass closes when nothing it judged changed, whatever else did', () => {
+  const PASS = { verify: '{"pass":true}' };
+  const green = { cmd: 'npm test', exitCode: 0, iteration: 3, fingerprint: 'f1', codeFingerprint: 'c1' };
+  // outside git: no snapshot at all, and the suite ran iterations ago (at cleanup)
+  const noGit = mk({ phase: 'final-verify', options: { testCmd: 'npm test' }, lastTest: { ...green, fingerprint: null, codeFingerprint: null }, counters: { iterations: 5 } });
+  const r1 = run(noGit, { planText: PLAN_DONE, fingerprint: null, codeFingerprint: null, artifacts: PASS });
+  assert.equal(r1.outcome, 'pass');
+  assert.ok(r1.types.includes('gitFinish'));
+  // in git: documentation touched during the verification moves the full snapshot, not the code
+  const inGit = mk({ phase: 'final-verify', options: { testCmd: 'npm test' }, lastTest: green, verdictTree: 'c1', counters: { iterations: 5 } });
+  const r2 = run(inGit, { planText: PLAN_DONE, fingerprint: 'f9', codeFingerprint: 'c1', artifacts: PASS });
+  assert.equal(r2.outcome, 'pass');
+  // the hook could not snapshot within its deadline: no evidence of a change
+  assert.equal(run(inGit, { planText: PLAN_DONE, fingerprint: null, codeFingerprint: null, artifacts: PASS }).outcome, 'pass');
+  // a request from before snapshots (no verdictTree): as before, the pass stands
+  assert.equal(run({ ...inGit, verdictTree: null }, { planText: PLAN_DONE, codeFingerprint: 'c9', artifacts: PASS }).outcome, 'pass');
 });
 
 test('a claim-done in the same turn as a clean final verdict does not reopen the verification', () => {
@@ -561,6 +732,16 @@ test('reconcile: uncertain or a command still running pauses; partial continues 
   assert.ok(complete.reason.includes('PHASE: code review'));
   assert.ok(complete.effects.some((e) => e.type === 'dropArtifact' && e.name === 'review.json'));
   // reconciliation comes before everything: a pending claim-done or a verdict on disk waits
+  // a pause in a verdict phase ends the request too: the killed turn's verdict on disk must
+  // not answer for the work the human is about to touch
+  const paused = run(mk({ phase: 'review', verdictRequestedAt: T - 5000, verdictRequestId: 'killed-turn', signals: { interrupted: INTERRUPTED } }), { artifacts: { reconcile: '{"disposition":"uncertain"}' }, codeFingerprint: 'cp' }, { now: T });
+  assert.equal(paused.outcome, 'reconcile-uncertain');
+  assert.notEqual(paused.state.verdictRequestId, 'killed-turn');
+  assert.equal(paused.state.verdictRequestedAt, T);
+  const resumed = { ...paused.state, signals: { ...paused.state.signals, paused: false } };
+  const afterResume = run(resumed, { artifacts: { review: '{"requestId":"killed-turn","blocking":0}' }, artifactAt: { review: T - 1000 } }, { now: T + 3_600_000 });
+  assert.equal(afterResume.outcome, 'missing', 'the killed turn\'s verdict does not advance the step');
+  assert.equal(run(mk({ phase: 'implement', verdictRequestId: 'x', signals: { interrupted: INTERRUPTED } }), { artifacts: { reconcile: '{"disposition":"uncertain"}' } }, { now: T }).state.verdictRequestId, 'x', 'no request to end outside a verdict phase');
   const busy = run(mk({ phase: 'review', signals: { interrupted: INTERRUPTED, claimedDone: true, lastReport: 'pass' } }), { artifacts: { review: '{"blocking":0}' } });
   assert.equal(busy.outcome, 'reconcile-missing');
   assert.equal(busy.state.signals.claimedDone, true, 'nothing decided yet: the signals wait');
@@ -592,6 +773,9 @@ test('every regular transition row is reachable through step()', () => {
   note(run(mk({ phase: 'implement', signals: { claimedDone: true }, flags: { cleanedOnce: true } }), { planText: PLAN_DONE }));
   note(run(mk({ phase: 'cleanup' })));
   note(run(mk({ phase: 'final-verify' }), { artifacts: { verify: '{"pass":true}' } }));
+  note(run(mk({ phase: 'final-verify' }), { planText: PLAN, artifacts: { verify: '{"pass":true}' } }));
+  note(run(mk({ phase: 'final-verify', lastTest: { cmd: 'x', exitCode: 1, iteration: 0 } }), { artifacts: { verify: '{"pass":true}' } }));
+  note(run(mk({ phase: 'final-verify', counters: { staleGates: 3 }, lastTest: { cmd: 'x', exitCode: 1, iteration: 0 } }), { artifacts: { verify: '{"pass":true}' } }));
   note(run(mk({ phase: 'final-verify' }), { artifacts: { verify: '{"pass":false}' } }));
   note(run(mk({ phase: 'final-verify', counters: { finalFails: 3 } }), { artifacts: { verify: '{"pass":false}' } }));
   note(run(mk({ phase: 'final-verify' })));

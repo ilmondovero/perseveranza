@@ -187,12 +187,23 @@ verifica aggiunge una lente security.
   review, `uncertain` o un comando ancora vivo mettono in pausa per un umano. I contatori
   di retry non si azzerano: l'interruzione conta, non regala budget. La nuova sentinella
   concede alla sessione ripristinata un intero intervallo di avvio prima di valutarla di nuovo.
-- **Un verdetto scritto prima della richiesta non vale.** `review.json` o `verify.json`
-  più vecchi dell'istante in cui la fase li ha chiesti (un subagent di un turno ucciso, un
-  file rimasto attraverso un takeover) vengono messi da parte come `review-stale-<n>.json`
-  e la fase richiede il verdetto, una volta.
-- **Ogni verdetto risponde a una richiesta precisa.** Il `requestId` impedisce che un agente
-  avviato da un turno precedente venga accettato solo perché ha scritto il file più tardi.
+- **Ogni verdetto risponde a una richiesta precisa.** Ogni prompt che chiede un verdetto
+  emette una richiesta nuova con il suo `requestId`, che l'agente copia nel file. Un
+  `review.json` o `verify.json` con un id diverso risponde a una richiesta precedente (un
+  subagent di un turno ucciso o di un giro precedente, un file rimasto attraverso un
+  takeover), anche se è stato scritto dopo: viene messo da parte come
+  `review-stale-<n>.json` e la fase richiede il verdetto, una volta. Un verdetto senza id
+  (un pack di prompt più vecchio) vale se scritto dopo la richiesta; con l'id giusto vale
+  anche se l'orologio del file è indietro.
+- **Un pass finale chiude solo ciò che ha giudicato.** Se al pass il piano ha di nuovo step
+  aperti, l'ultimo run registrato della suite non è un verde sul codice giudicato (rosso,
+  assente, o eseguito prima di una pulizia che ha toccato il codice) oppure il codice è
+  cambiato dopo la richiesta di verifica, non si committa nulla e si torna in implement:
+  serve un nuovo claim-done. Il codice è tutto ciò che git non ignora, documentazione
+  esclusa: l'output di build o di test va in `.gitignore`, altrimenti i run del
+  verificatore stesso lo cambiano. Dopo quattro pass che non coprono l'albero, senza
+  bocciature in mezzo, il loop si mette in pausa per un umano. Fuori da git non c'è
+  impronta da confrontare.
 
 ## Comandi
 
@@ -294,6 +305,9 @@ Requisiti: Claude Code e Node.js ≥ 20. Installazione manuale in alternativa al
 | any | claim-again | final-verify | `final-verify`; drops a stale verify.json |
 | cleanup | always | final-verify | `final-verify` |
 | final-verify | pass | git-finish | commit+push within the deadline, archive, disarm, notify |
+| final-verify | pass-open | implement | `verify-pass-open`; pass not applied, nothing committed: plan.md has unchecked steps |
+| final-verify | pass-stale | implement | `verify-pass-stale`; pass not applied, nothing committed: no green suite run on the judged code, or the code changed since the request |
+| final-verify | pass-stale-limit | implement | pause + escalation: passes kept not covering the current tree, with no rejection in between |
 | final-verify | fail | implement | `verify-postfix`; finalFails++; findings kept in verify-<n>.json |
 | final-verify | fail-limit | final-verify | pause + escalation |
 | final-verify | missing | final-verify | `verify-missing-outcome`; asked once |

@@ -38,6 +38,22 @@ export const NOTIFY_TITLE = 'Claude Code - perseveranza';
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const short = (id) => String(id || '').slice(0, 8);
+// a hand-edited clock in state.json must not crash the hook on a journal line
+const iso = (ms) => { const d = new Date(ms); return Number.isFinite(d.getTime()) ? d.toISOString() : null; };
+
+// Every prompt that asks for a verdict issues a new request, also when the phase does not
+// change (claim-again from final-verify, a reconciliation back to review): from then on the
+// verdict of an earlier request carries another id, and one without an id counts only if
+// written after this instant. The code of the moment is what a final pass judged.
+const REQUEST_PROMPTS = new Set(['review-delegate', 'final-verify']);
+function issueRequest(s, now, phase, ctx) {
+  s.verdictRequestedAt = now;
+  s.verdictRequestId = `${now}-${s.counters.iterations + 1}-${phase}`;
+  s.verdictTree = ctx.codeFingerprint ?? null;
+}
+
+// The id as an agent may have copied it out of a prose prompt: quotes or a trailing period.
+const cleanRequestId = (id) => (typeof id === 'string' ? id.trim().replace(/^["'`]+/, '').replace(/["'`.,;:]+$/, '') : null) || null;
 
 function agentRef(name, fallback) {
   return `the ${name} agent (subagent_type "${name}"; when installed as a plugin it is "perseveranza:${name}"; if neither exists, ${fallback})`;
@@ -77,7 +93,6 @@ function buildVars(s, ctx) {
     verifierRef: agentRef('pf-verifier', 'an independent adversarial subagent'),
     reviewModel: MODEL_ROUTING.review[s.complexity],
     verifyModel: MODEL_ROUTING.verify[s.complexity],
-    verdictRequestId: s.verdictRequestId || '',
     testRun,
     retries: s.counters.retries,
     maxRetries: s.limits.maxRetries,
@@ -158,7 +173,7 @@ export function step(input, event = {}, ctx0 = {}) {
       // paused: the silence was a human's choice (escalation, plan approval), not a dead
       // session. Still paused now, or resumed by the verb since the last fire: both count.
       const paused = s.signals.paused === true || s.signals.resumedAt > s.owner.lastFireAt;
-      J({ type: 'gap', since: new Date(seen).toISOString(), ms: now - seen, paused });
+      J({ type: 'gap', since: iso(seen), ms: now - seen, paused });
     }
     s.owner.lastFireAt = now;
     s.signals.resumedAt = 0;
@@ -197,7 +212,7 @@ export function step(input, event = {}, ctx0 = {}) {
 
   // --- consume the signals written by the verbs, then the verdict artifacts ---
   let report = s.signals.lastReport;
-  const claimed = s.signals.claimedDone === true;
+  let claimed = s.signals.claimedDone === true;
   s.signals.lastReport = 'none';
   s.signals.claimedDone = false;
   let verdictSrc = report === 'none' ? null : 'verb';
@@ -206,22 +221,27 @@ export function step(input, event = {}, ctx0 = {}) {
   // A verdict is consumed on read, but not thrown away: it is renamed after the iteration
   // it judged, so the fix phase can reread the findings instead of asking the reviewer again.
   const keptAs = (name) => name.replace(/\.json$/, `-${s.counters.iterations}.json`);
-  // A verdict written BEFORE this phase asked for one answers an earlier request: a subagent
-  // of a turn that was killed and restored, or a file left over across a takeover. It is
-  // kept aside (never read as this iteration's verdict) and the phase asks again, once.
-  // One second of tolerance for coarse file clocks.
+  // A verdict that answers an earlier request is kept aside (never read as this iteration's
+  // verdict): a subagent of a turn that was killed and restored, of an earlier round, or a
+  // file left over across a takeover. Its id says which request it answers: a match is
+  // this one whatever the file clock says (a share whose clock lags), another id is an
+  // earlier one. A verdict without an id (an agent never handed one: an older prompt pack,
+  // a re-delegation after a compaction) falls back to the clock: written before the
+  // request, it is stale. One second of tolerance for coarse file clocks. A stale file is
+  // no verdict, so an outcome recorded with the report verb still stands.
   const LATE_TOLERANCE_MS = 1000;
   const readVerdict = (name, key, parse, summarize) => {
     const at = Number(artifactAt[key]) || 0;
     const v = parse(artifacts[key]);
-    const oldByTime = s.verdictRequestedAt > 0 && at > 0 && at + LATE_TOLERANCE_MS < s.verdictRequestedAt;
-    const oldById = !!s.verdictRequestId && v.ok && v.requestId !== s.verdictRequestId;
+    const id = v.ok ? cleanRequestId(v.requestId) : null;
+    const byId = !!s.verdictRequestId && !!id;
+    const oldById = byId && id !== s.verdictRequestId;
+    const oldByTime = !byId && s.verdictRequestedAt > 0 && at > 0 && at + LATE_TOLERANCE_MS < s.verdictRequestedAt;
     if (oldByTime || oldById) {
       const as = name.replace(/\.json$/, `-stale-${s.counters.iterations}.json`);
       effects.push({ type: 'keepArtifact', name, as });
-      report = 'none';
-      verdictSrc = name;
-      J({ type: 'verdict', artifact: name, stale: true, staleBy: oldById ? 'requestId' : 'mtime', requestId: v.ok ? v.requestId : null, expectedRequestId: s.verdictRequestId, writtenAt: at > 0 ? new Date(at).toISOString() : null, requestedAt: new Date(s.verdictRequestedAt).toISOString(), savedAs: as, treatedAs: 'missing' });
+      if (report === 'none') verdictSrc = name;
+      J({ type: 'verdict', artifact: name, stale: true, staleBy: oldById ? 'requestId' : 'mtime', requestId: id, expectedRequestId: s.verdictRequestId, writtenAt: at > 0 ? iso(at) : null, requestedAt: iso(s.verdictRequestedAt), savedAs: as, treatedAs: report === 'none' ? 'missing' : `report ${report}` });
       return;
     }
     ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs(name)}` };
@@ -261,16 +281,14 @@ export function step(input, event = {}, ctx0 = {}) {
   const go = (outcome, vars = {}, extraEffects = []) => {
     const row = lookup(phase, outcome);
     if (!row) throw new Error(`no transition for ${phase}:${outcome}`);
-    // entering a phase that waits for a verdict: from now on only a file written after this
-    // instant answers it (staying in the phase after a missing outcome keeps the request)
-    if (row.next !== phase && (row.next === 'review' || row.next === 'final-verify')) {
-      s.verdictRequestedAt = now;
-      s.verdictRequestId = `${now}-${s.counters.iterations + 1}-${row.next}`;
-    }
+    // staying in the phase after a missing outcome keeps the request; a state from before
+    // request ids gets one, so no prompt ever hands out an empty id
+    if (REQUEST_PROMPTS.has(row.prompt)) issueRequest(s, now, row.next, ctx);
+    else if ((row.next === 'review' || row.next === 'final-verify') && !s.verdictRequestId) s.verdictRequestId = `${now}-${s.counters.iterations + 1}-${row.next}`;
     s.phase = row.next;
     const reason = say(row.prompt, { ...vars, verdictRequestId: s.verdictRequestId || '' });
     s.counters.iterations += 1;
-    J({ type: 'transition', from: phase, to: s.phase, outcome, report, verdictSrc, claimed, prompt: row.prompt, iteration: s.counters.iterations, ...(vars.testProof ? { testProof: vars.testProof } : {}) });
+    J({ type: 'transition', from: phase, to: s.phase, outcome, report, verdictSrc, claimed, prompt: row.prompt, iteration: s.counters.iterations, ...(vars.testProof ? { testProof: vars.testProof } : {}), ...(vars.gate ? { gate: vars.gate } : {}) });
     return done(outcome, [...extraEffects, { type: 'saveState' }, { type: 'block', reason }]);
   };
 
@@ -287,20 +305,66 @@ export function step(input, event = {}, ctx0 = {}) {
       return pauseForHuman(`${s.counters.finalFails} final verifications failed (limit ${s.limits.maxRetries})`, 'fail-limit');
     }
     s.counters.finalFails += 1;
+    s.counters.staleGates = 0;
     s.flags.repeated = false;
     return go(outcome, { finalFails: s.counters.finalFails });
   };
 
-  // Re-check the evidence at the exit gate too. The tree, plan or recorded test may have
-  // changed while final verification was running; a positive verdict alone must not close
-  // work that no longer satisfies the same conditions that admitted it to verification.
-  const completionBlock = () => {
+  // A final pass judged the tree its request pointed at; it closes the work only if what
+  // admitted the work to the verification still holds. Not the claim's freshness rules: the
+  // suite ran before the request, so "run in this iteration" can never hold at the verdict.
+  // What is checked: no step reopened; the last recorded suite run green, and run on the
+  // code the verifier judged (a cleanup that edited code and did not rerun it is not); and
+  // that code unchanged since the request (documentation aside). No snapshot (outside git,
+  // a hook deadline) is no evidence either way. -> null | { outcome, vars }
+  const exitBlock = () => {
     const openSteps = countOpenSteps(planText);
+    if (openSteps > 0) return { outcome: 'pass-open', vars: { openSteps, gate: 'open-steps' } };
     const t = s.lastTest;
+    const judged = s.verdictTree;
+    if (s.options.testCmd && !t) return { outcome: 'pass-stale', vars: { gate: 'no-test' } };
+    if (t && Number(t.exitCode) !== 0) return { outcome: 'pass-stale', vars: { gate: 'red-test' } };
+    if (t && judged && t.codeFingerprint && t.codeFingerprint !== judged) return { outcome: 'pass-stale', vars: { gate: 'untested' } };
+    const tree = ctx.codeFingerprint ?? null;
+    if (judged && tree != null && tree !== judged) return { outcome: 'pass-stale', vars: { gate: 'code-changed' } };
+    return null;
+  };
+  const verdictPass = phase === 'final-verify' && report === 'pass';
+  const passBlock = verdictPass ? exitBlock() : null;
+  // A pass that keeps not covering the current tree is not the work failing: something keeps
+  // changing it under the verifier (output its own runs rewrite and git does not ignore,
+  // typically). Bounded like the rejections, then a human looks. A rejection or a reopened
+  // step ends the streak.
+  if (passBlock && passBlock.outcome === 'pass-open') s.counters.staleGates = 0;
+  if (passBlock && passBlock.outcome === 'pass-stale') {
+    if (s.counters.staleGates >= s.limits.maxRetries) {
+      s.counters.staleGates = 0;
+      s.phase = 'implement';
+      return pauseForHuman(`${s.limits.maxRetries + 1} final passes, with no rejection in between, did not cover the current work (last: ${passBlock.vars.gate}): something keeps changing the code under the verifier, typically build or test output its own runs rewrite and git does not ignore (add it to .gitignore), or the suite keeps going red. After the fix and resume: run the suite with the test verb and claim-done, which asks for a new final verification (a claim-done of the paused turn was not kept)`, 'pass-stale-limit');
+    }
+    s.counters.staleGates += 1;
+  }
+
+  // --- claim-done: the entrance to the exit ramp. Proofs, not words. ---
+  // A clean final verdict answers the claim that asked for it: a second claim-done in the
+  // same turn (documentation touched up after the pass, typically) must not throw it away
+  // and reopen a whole verification round on a tree that was already approved. A pass that
+  // cannot close is another story: the claim decides, and may ask for the next round now.
+  const passedFinal = verdictPass && !passBlock;
+  if (claimed && passedFinal) J({ type: 'claim', ignored: true, why: 'final verification already passed' });
+  // The claim's proofs: none missing -> null, else the refusal to route.
+  const t = s.lastTest;
+  const green = !!t && Number(t.exitCode) === 0;
+  // Fresh = run in this very iteration, or run on this very tree: the fingerprint is the
+  // stronger evidence, so a green from an earlier iteration still counts when the code did
+  // not change since (documentation changes included: they run in no test).
+  const sameIteration = green && Number(t.iteration) === s.counters.iterations;
+  const claimBlock = () => {
+    const openSteps = countOpenSteps(planText);
     const testRequired = !!(s.options.testCmd || t);
-    const green = !!t && Number(t.exitCode) === 0;
-    const sameIteration = green && Number(t.iteration) === s.counters.iterations;
     const fresh = sameIteration || proof.green;
+    // A recorded snapshot must be revalidated: null means the shell could not recompute it
+    // (deadline, unreadable tree), which is NOT a code change and gets its own instruction.
     const unverifiable = !!t && !!t.fingerprint && ctx.fingerprint == null;
     const stale = green && !!t.fingerprint && !unverifiable && !proof.green;
     if (openSteps > 0) return { outcome: 'claim-open', vars: { openSteps } };
@@ -310,19 +374,25 @@ export function step(input, event = {}, ctx0 = {}) {
     if (testRequired && !fresh) return { outcome: 'claim-no-test', vars: {} };
     return null;
   };
-
-  // --- claim-done: the entrance to the exit ramp. Proofs, not words. ---
-  // A clean final verdict answers the claim that asked for it: a second claim-done in the
-  // same turn (documentation touched up after the pass, typically) must not throw it away
-  // and reopen a whole verification round on a tree that was already approved.
-  const passedFinal = phase === 'final-verify' && report === 'pass';
-  if (claimed && passedFinal) J({ type: 'claim', ignored: true, why: 'final verification already passed' });
+  // A verdict read this turn (a rejection, or a pass that cannot close) was consumed: a claim
+  // refused beside it would leave final-verify with no verdict to read, and the next stop
+  // would report it missing. Then the verdict routes, and its prompt asks for the claim again.
+  const verdictRead = phase === 'final-verify' && (report === 'fail' || !!passBlock);
+  let refusal = claimed && !passedFinal ? claimBlock() : null;
+  if (refusal && verdictRead) {
+    J({ type: 'claim', ignored: true, why: `refused (${refusal.outcome}): the ${report === 'fail' ? 'rejection' : 'final pass not applied'} routes` });
+    claimed = false;
+    refusal = null;
+  }
+  if (claimed && passBlock) J({ type: 'claim', ignored: false, why: `final pass not applied (${passBlock.vars.gate}): the claim decides` });
   if (claimed && !passedFinal) {
-    const t = s.lastTest;
-    const green = !!t && Number(t.exitCode) === 0;
-    const sameIteration = green && Number(t.iteration) === s.counters.iterations;
-    const blocked = completionBlock();
-    if (blocked) return go(blocked.outcome, blocked.vars);
+    if (refusal) return go(refusal.outcome, refusal.vars);
+    // a rejection counts even when a claim-done in the same turn asks for the next round
+    if (phase === 'final-verify' && report === 'fail') {
+      if (s.counters.finalFails >= s.limits.maxRetries) return pauseForHuman(`${s.counters.finalFails} final verifications failed (limit ${s.limits.maxRetries})`, 'fail-limit');
+      s.counters.finalFails += 1;
+      s.counters.staleGates = 0;
+    }
     s.flags.repeated = false;
     s.counters.retries = 0;
     const testProofKind = !t ? 'none' : sameIteration ? 'same-iteration' : proof.docsOnly ? 'docs-only' : 'same-tree';
@@ -385,8 +455,12 @@ export function step(input, event = {}, ctx0 = {}) {
     }
     case 'final-verify': {
       if (report === 'pass') {
-        const blocked = completionBlock();
-        if (blocked) return go(blocked.outcome, blocked.vars);
+        // not a rejection: the verifier passed, so no finalFails; back to implement, where
+        // the next claim-done proves the current tree and asks for a new verification
+        if (passBlock) {
+          s.flags.repeated = false;
+          return go(passBlock.outcome, passBlock.vars);
+        }
         s.phase = 'git-finish';
         s.flags.repeated = false;
         s.counters.iterations += 1;
@@ -433,6 +507,9 @@ function reconcile(s, ctx, { now, phase, J, done, effects }) {
   const pause = (why) => {
     clear();
     s.signals.paused = true;
+    // the verdict a subagent of the killed turn left must not answer for the work the human
+    // is about to touch: whatever is on disk now belongs to an earlier request
+    if (phase === 'review' || phase === 'final-verify') issueRequest(s, now, phase, ctx);
     J({ type: 'reconcile', ok: v.ok, disposition: v.ok ? v.disposition : null, running: v.ok ? v.running : [], outcome: 'reconcile-uncertain', why });
     J({ type: 'transition', from: phase, to: phase, outcome: 'reconcile-uncertain', paused: true, why });
     return done('reconcile-uncertain', [
@@ -461,10 +538,7 @@ function reconcile(s, ctx, { now, phase, J, done, effects }) {
   const row = lookup('*', outcome);
   // a fresh request even when the phase does not change: review.json is dropped below, and a
   // reviewer of the killed turn that writes after that must not pass for the new one
-  if (row.next === 'review') {
-    s.verdictRequestedAt = now;
-    s.verdictRequestId = `${now}-${s.counters.iterations + 1}-${row.next}`;
-  }
+  if (REQUEST_PROMPTS.has(row.prompt)) issueRequest(s, now, row.next, ctx);
   s.phase = row.next;
   s.counters.iterations += 1;
   J({ type: 'reconcile', ok: true, disposition: v.disposition, next: v.next, summary: v.summary, notes: v.notes, savedAs: as, outcome, iteration: s.counters.iterations });

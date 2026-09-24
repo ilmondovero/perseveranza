@@ -68,14 +68,11 @@ export function readState(p) {
 export function writeState(p, state) { mkdirSync(gate(p, ''), { recursive: true }); writeFileSync(gate(p, 'state.json'), JSON.stringify(state, null, 2)); }
 export function patchState(p, fn) { const s = readState(p); fn(s); writeState(p, s); return s; }
 export function writePlan(p, text) { writeFileSync(gate(p, 'plan.md'), text); }
-export function writeArtifact(p, name, obj) {
-  let value = obj;
-  if (obj && typeof obj === 'object' && (name === 'review.json' || name === 'verify.json')) {
-    const requestId = readState(p)?.verdictRequestId;
-    if (requestId && obj.requestId == null) value = { requestId, ...obj };
-  }
-  writeFileSync(gate(p, name), typeof value === 'string' ? value : JSON.stringify(value));
-}
+// Written as given: a verdict without a requestId exercises the clock fallback; the tests
+// that exercise the id take it from the rendered prompt (requestIdFrom).
+export function writeArtifact(p, name, obj) { writeFileSync(gate(p, name), typeof obj === 'string' ? obj : JSON.stringify(obj)); }
+// The request id exactly as the block reason hands it to the delegated agent.
+export function requestIdFrom(reason) { const m = String(reason).match(/"requestId": "([^"]+)"/); return m ? m[1] : null; }
 
 export function cli(p, ...args) {
   const r = spawnSync(NODE, [CLI, ...args], { cwd: p.dir, encoding: 'utf8', env: p.env });

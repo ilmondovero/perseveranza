@@ -54,6 +54,12 @@ test('journal: append/read round trip, unparseable lines survive, history render
   assert.ok(h.includes('plan -> implement | ready'));
   assert.equal(renderHistory(entries, 1).split('\n').length, 1);
   assert.ok(formatEntry({ ts: null, type: 'done', iterations: 3, tokens: 10 }).includes('DONE after 3'));
+  // a stale verdict says why it was set aside: the request it answers, or its clock
+  const byId = formatEntry({ ts: null, type: 'verdict', artifact: 'review.json', stale: true, staleBy: 'requestId', requestId: 'old-1', expectedRequestId: 'new-2', writtenAt: '2026-09-23T22:18:50.000Z', requestedAt: '2026-09-23T22:17:20.000Z', treatedAs: 'missing' });
+  assert.ok(byId.includes('answers request old-1, current request new-2') && !byId.includes('written'), byId);
+  const byTime = formatEntry({ ts: null, type: 'verdict', artifact: 'verify.json', stale: true, staleBy: 'mtime', requestId: null, writtenAt: null, requestedAt: '2026-09-23T22:17:20.000Z', treatedAs: 'missing' });
+  assert.ok(byTime.includes('written unknown, requested 2026-09-23 22:17:20, no request id'), byTime);
+  assert.ok(formatEntry({ ts: null, type: 'transition', from: 'final-verify', to: 'implement', outcome: 'pass-stale', gate: 'code-changed' }).includes('gate=code-changed'));
   assert.equal(readJournal(join(d, 'missing')).length, 0);
 });
 

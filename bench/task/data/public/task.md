@@ -40,12 +40,12 @@ del plugin. Le chiavi principali (le altre in `src/core/prompts.mjs` del repo; i
 |---|---|---|
 | `plan-write` | scrivere il piano (checklist `- [ ] step`) | `{{extPlanHint}}` `{{LOOP}}` |
 | `implement-first` | implementare il primo step | `{{implHint}}` `{{LOOP}}` |
-| `review-delegate` | delegare la review al subagent | `{{reviewerRef}}` `{{reviewModel}}` `{{LOOP}}` |
+| `review-delegate` | delegare la review al subagent | `{{reviewerRef}}` `{{reviewModel}}` `{{verdictRequestId}}` (da tenere: l'agente lo copia in `review.json`) `{{LOOP}}` |
 | `review-fix` | correggere dopo una review bocciata | `{{retries}}` `{{maxRetries}}` `{{implHint}}` `{{extFixHint}}` |
 | `review-advance` | avanzare dopo review passata | `{{commitHint}}` `{{implHint}}` `{{LOOP}}` |
 | `claim-open-steps` / `claim-no-fresh-test` / `claim-stale-test` | claim-done rifiutato | `{{openSteps}}` `{{testRun}}` `{{LOOP}}` |
 | `cleanup` | pulizia pre-verifica | `{{testRun}}` |
-| `final-verify` | verifica finale avversariale | `{{verifierRef}}` `{{verifyModel}}` `{{secHint}}` `{{extVerifyHint}}` `{{LOOP}}` |
+| `final-verify` | verifica finale avversariale | `{{verifierRef}}` `{{verifyModel}}` `{{verdictRequestId}}` (da tenere: l'agente lo copia in `verify.json`) `{{secHint}}` `{{extVerifyHint}}` `{{LOOP}}` |
 | `verify-postfix` | fix dopo bocciatura finale | `{{finalFails}}` `{{maxRetries}}` `{{implHint}}` `{{LOOP}}` |
 
 Vincoli strutturali (imposti dal plugin, non aggirabili): l'header di progresso è sempre

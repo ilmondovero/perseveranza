@@ -183,12 +183,22 @@ verification adds a security lens.
   exists, `complete` goes to review, `uncertain` or a live command pauses for a human. Retry
   counters are not reset: the interruption counts, it buys no budget. The replacement
   watchdog gives the restored session one full startup interval before judging it again.
-- **A verdict written before it was requested does not count.** A `review.json` or
-  `verify.json` older than the instant the phase asked for it (a subagent of a killed turn,
-  a file left across a takeover) is set aside as `review-stale-<n>.json` and the phase asks
-  for the verdict, once.
-- **Every verdict answers one exact request.** Its `requestId` prevents an agent launched by
-  an earlier turn from being accepted merely because it wrote the file later.
+- **Every verdict answers one exact request.** Every prompt that asks for a verdict issues
+  a new request with its `requestId`, which the agent copies into the file. A
+  `review.json` or `verify.json` with another id answers an earlier request (a subagent of
+  a killed turn or of an earlier round, a file left across a takeover), even when written
+  later: it is set aside as `review-stale-<n>.json` and the phase asks for the verdict,
+  once. A verdict without an id (an older prompt pack) counts if written after the
+  request; one with the right id counts even when the file clock lags.
+- **A final pass closes only what it judged.** If at the pass the plan has open steps
+  again, the last recorded suite run is not a green run on the judged code (red, missing,
+  or run before a cleanup that touched the code), or the code changed after the
+  verification was requested, nothing is committed and the loop goes back to implement: a
+  new claim-done is needed. The code is everything git does not ignore, documentation
+  aside: build and test output belongs in `.gitignore`, or the verifier's own runs change
+  it. After four passes that do not cover the tree, with no rejection in between, the loop
+  pauses for a human.
+  Outside git there is no snapshot to compare.
 
 ## Commands
 
@@ -289,6 +299,9 @@ plugin: `node install.mjs` (never both). Caps and timeouts: [docs/loop-budget.md
 | any | claim-again | final-verify | `final-verify`; drops a stale verify.json |
 | cleanup | always | final-verify | `final-verify` |
 | final-verify | pass | git-finish | commit+push within the deadline, archive, disarm, notify |
+| final-verify | pass-open | implement | `verify-pass-open`; pass not applied, nothing committed: plan.md has unchecked steps |
+| final-verify | pass-stale | implement | `verify-pass-stale`; pass not applied, nothing committed: no green suite run on the judged code, or the code changed since the request |
+| final-verify | pass-stale-limit | implement | pause + escalation: passes kept not covering the current tree, with no rejection in between |
 | final-verify | fail | implement | `verify-postfix`; finalFails++; findings kept in verify-<n>.json |
 | final-verify | fail-limit | final-verify | pause + escalation |
 | final-verify | missing | final-verify | `verify-missing-outcome`; asked once |

@@ -27,7 +27,8 @@ export function defaultState(overrides = {}) {
       externals: [],
       lang: 'it',
     },
-    counters: { iterations: 0, retries: 0, finalFails: 0 },
+    // staleGates: final passes in a row that did not cover the current tree (pass-stale)
+    counters: { iterations: 0, retries: 0, finalFails: 0, staleGates: 0 },
     limits: { maxIterations: DEFAULT_MAX_ITERATIONS, maxIterationsExplicit: false, maxRetries: DEFAULT_MAX_RETRIES, maxTokens: null },
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, source: null },
     // resumedAt: when `resume` closed a pause (ms); consumed by the next fire so the gap
@@ -50,6 +51,9 @@ export function defaultState(overrides = {}) {
     // Correlation token copied into the reviewer/verifier verdict. Unlike file timestamps it
     // also rejects an old agent that finishes after a replacement request was issued.
     verdictRequestId: null,
+    // the code fingerprint the request pointed at (null: not computable, e.g. outside git): a
+    // final pass closes only the tree it judged
+    verdictTree: null,
     armedAt: null,
     engineVersion: null,
   };
@@ -86,6 +90,7 @@ export function normalizeState(raw) {
   s.counters.iterations = Math.max(0, num(s.counters.iterations, 0));
   s.counters.retries = Math.max(0, num(s.counters.retries, 0));
   s.counters.finalFails = Math.max(0, num(s.counters.finalFails, 0));
+  s.counters.staleGates = Math.max(0, num(s.counters.staleGates, 0));
   s.limits.maxIterations = num(s.limits.maxIterations, DEFAULT_MAX_ITERATIONS);
   if (s.limits.maxIterations < 1) s.limits.maxIterations = DEFAULT_MAX_ITERATIONS;
   s.limits.maxIterationsExplicit = bool(s.limits.maxIterationsExplicit, false);
@@ -128,6 +133,7 @@ export function normalizeState(raw) {
   } else s.lastTest = null;
   s.verdictRequestedAt = Math.max(0, num(s.verdictRequestedAt, 0));
   s.verdictRequestId = typeof s.verdictRequestId === 'string' && s.verdictRequestId ? s.verdictRequestId : null;
+  s.verdictTree = typeof s.verdictTree === 'string' && s.verdictTree ? s.verdictTree : null;
   s.tree.fingerprint = typeof s.tree.fingerprint === 'string' && s.tree.fingerprint ? s.tree.fingerprint : null;
   s.tree.iteration = Math.max(0, num(s.tree.iteration, 0));
   s.owner.sessionId = typeof s.owner.sessionId === 'string' && s.owner.sessionId ? s.owner.sessionId : null;
