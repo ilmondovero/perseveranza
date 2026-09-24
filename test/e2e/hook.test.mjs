@@ -699,8 +699,10 @@ test('restore.mjs: what Claude Code looks like, the walk starts above the hook, 
   const child = spawn(process.execPath, ['-e', `require('child_process').spawnSync(process.execPath, ['-e', 'setTimeout(()=>{}, 4000)'], { stdio: 'ignore' })`], { stdio: 'ignore' });
   spawned.push(child);
   await new Promise((r) => setTimeout(r, 1200));
-  const grandchild = spawnSync('powershell', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${child.pid} }).ProcessId`], { encoding: 'utf8' }).stdout.trim();
-  if (process.platform === 'win32' && grandchild) {
+  const grandchild = String((process.platform === 'win32'
+    ? spawnSync('powershell', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${child.pid} }).ProcessId`], { encoding: 'utf8' })
+    : spawnSync('pgrep', ['-P', String(child.pid)], { encoding: 'utf8' })).stdout || '').trim().split(/\s+/)[0];
+  if (grandchild) {
     assert.equal(findClaudeProcess(Number(grandchild)), null, 'plain node parents: nothing found');
   }
   assert.equal(processInfo(process.pid).alive, true);

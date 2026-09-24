@@ -75,10 +75,13 @@ export function processInfo(pid) {
     return { alive: true, startedAt: startedAt || null, name: name || '', cmd: cmd || '' };
   }
   try {
-    const line = spawnSync('ps', ['-o', 'lstart=,comm=,args=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 }).stdout.trim();
+    // stat first: a zombie (Z) is a process that already exited and waits for its parent to
+    // reap it. It runs nothing and cannot be signalled away: dead, for every caller here.
+    const line = spawnSync('ps', ['-o', 'stat=,lstart=,comm=,args=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 }).stdout.trim();
     if (!line) return { alive: false };
-    const m = line.match(/^(.{24})\s+(\S+)\s+(.*)$/);
-    return m ? { alive: true, startedAt: m[1].trim(), name: m[2], cmd: m[3] } : { alive: true, startedAt: null, name: '', cmd: '' };
+    const m = line.match(/^(\S+)\s+(.{24})\s+(\S+)\s+(.*)$/);
+    if (m && m[1].startsWith('Z')) return { alive: false };
+    return m ? { alive: true, startedAt: m[2].trim(), name: m[3], cmd: m[4] } : { alive: true, startedAt: null, name: '', cmd: '' };
   } catch { return { alive: false }; }
 }
 
