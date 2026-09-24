@@ -42,9 +42,11 @@ rilascio: in quella forma un progetto fuori da git con `--test` non chiudeva pi�
   ripristinata un intervallo di avvio; se poi la sessione tace senza aver mai raggiunto uno
   Stop, non la rilancia una seconda volta: il pid registrato è quello appena terminato, e
   trovarlo morto non prova niente. Resta l'avviso per l'umano.
-- **Un processo zombie è morto.** Su Linux e macOS `processInfo` leggeva come vivo un
-  processo terminato ma non ancora raccolto dal padre, e il ripristino falliva con "could
-  not terminate". È il motivo per cui la CI su Linux e macOS falliva dal 7 settembre.
+- **Ripristino su Linux e macOS.** `processInfo` leggeva come vivo un processo zombie
+  (terminato ma non ancora raccolto dal padre), e il ripristino falliva con "could not
+  terminate"; su macOS, inoltre, `ps -o comm=` dà il percorso completo troncato a 16
+  caratteri, quindi nessun processo risultava `node` o `claude`: ora si legge `ucomm`.
+  Sono i motivi per cui la CI su Linux e macOS falliva dal 7 settembre.
 - **Test.** I due test e2e del ripristino chiudono sempre i processi che avviano (un
   processo rimasto teneva appesa l'intera suite: le CI cancellate dopo sei ore), e la
   ricerca del processo nipote non chiama più `powershell` fuori da Windows.
