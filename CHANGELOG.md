@@ -3,6 +3,49 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 2.5.3
+
+Tre correzioni (verdetti legati alla loro richiesta, prove ricontrollate alla chiusura,
+tregua per la sessione ripristinata) e la revisione che ne ha trovato i difetti prima del
+rilascio: in quella forma un progetto fuori da git con `--test` non chiudeva più, e il job
+`bench-dry` della CI falliva.
+
+- **Ogni verdetto risponde a una richiesta precisa.** Ogni prompt che chiede un verdetto
+  emette un `requestId` nuovo, anche restando nella stessa fase (un nuovo giro di verifica
+  da `final-verify`, una riconciliazione, una pausa dopo un ripristino), e l'agente lo
+  copia nel file. Un id diverso è una richiesta precedente, anche se scritto dopo: prima
+  un verificatore del giro vecchio che finiva tardi veniva preso per buono. L'id giusto
+  vale anche se l'orologio del file è indietro (share di rete, WSL). Un verdetto senza id
+  (pack di prompt vecchi, riconsegne dopo una compattazione) torna alla regola
+  dell'orario: rifiutarlo sempre, come nella prima stesura, bloccava i pack esistenti e
+  il bench. `status` mostra l'id, `prompts validate` avvisa se un pack non lo passa,
+  `history` dice perché un verdetto è stato scartato. Un file scartato non cancella più
+  l'esito registrato col verbo `report` nello stesso turno.
+- **Un pass finale chiude solo ciò che ha giudicato.** Al pass si ricontrolla: piano
+  ancora tutto spuntato, ultimo verde eseguito sul codice giudicato, codice invariato dalla
+  richiesta di verifica. Non le regole di freschezza del claim-done: il test gira prima
+  della richiesta, quindi "eseguito in questa iterazione" al verdetto non vale mai, ed è
+  per questo che fuori da git non si chiudeva più. Se il pass non copre il lavoro non si
+  committa nulla e si torna in implement con un prompt dedicato (`pass-open`,
+  `pass-stale`), non con un "claim-done RIFIUTATO" per un claim mai fatto.
+- **Cambio di comportamento: l'output di build e di test va in `.gitignore`.** Il codice
+  confrontato è tutto ciò che git non ignora, documentazione esclusa: solo così un file
+  nuovo modificato durante la verifica non viene committato senza essere stato giudicato.
+  Il prezzo: se i run del verificatore riscrivono output non ignorato (coverage, build),
+  ogni pass lo vede come codice cambiato. Dopo quattro pass così, senza bocciature in
+  mezzo, il loop si mette in pausa e spiega cosa ignorare; prima avrebbe chiuso.
+- **Un claim-done nello stesso turno di un verdetto non lo perde più.** Se il claim viene
+  rifiutato, decide il verdetto già consumato: prima il loop restava in `final-verify`
+  senza verdetto da leggere, e una bocciatura veniva contata due volte o un pass diventava
+  una bocciatura. Una bocciatura seguita da un claim-done accettato conta comunque.
+- **Nessun rilancio alla cieca dopo un ripristino.** La sentinella concede alla sessione
+  ripristinata un intervallo di avvio; se poi la sessione tace senza aver mai raggiunto uno
+  Stop, non la rilancia una seconda volta: il pid registrato è quello appena terminato, e
+  trovarlo morto non prova niente. Resta l'avviso per l'umano.
+- **Test.** I due test e2e del ripristino chiudono sempre i processi che avviano: uno di
+  loro fallisce quando la suite gira dentro Claude Code, e il processo rimasto teneva
+  appesa l'intera suite.
+
 ## 2.5.2
 
 Riletta la tabella dei campi frontmatter dei subagent di Claude Code contro i tre agenti del
