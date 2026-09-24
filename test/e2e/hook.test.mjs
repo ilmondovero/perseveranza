@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { project, cli, arm, fire, sessionStart, activity, readActivity, watchdog, readState, writeState, patchState, writePlan, writeArtifact, requestIdFrom, gate, journal, spawnSync, CLI, WATCHDOG, freshDir } from '../helpers/cli.mjs';
 import { spawn } from 'node:child_process';
@@ -803,7 +803,8 @@ test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens
   assert.ok(/interrupted by the watchdog after (19h59m|20h00m)/.test(call.argv[2]), call.argv[2]);
   assert.ok(call.argv[2].includes('pending and never returned (pf-reviewer)'));
   assert.ok(call.argv[2].includes('Phase `implement`'));
-  assert.equal(call.cwd.replace(/\\/g, '/'), p.dir.replace(/\\/g, '/'), 'launched from the project');
+  // real paths: on macOS the temp dir /var/... is /private/var/... seen from the child
+  assert.equal(realpathSync(call.cwd).replace(/\\/g, '/'), realpathSync(p.dir).replace(/\\/g, '/'), 'launched from the project');
   assert.equal(call.child, null, 'the inherited child marker is stripped, so the restored session saves its transcript');
   assert.equal(call.sock, null);
   assert.ok(call.argv[2].includes('RECONCILE FIRST, READ-ONLY'), 'the restored session reconciles before anything else');
