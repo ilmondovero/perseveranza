@@ -40,6 +40,25 @@ test('review: malformed inputs are errors, never a pass', () => {
   }
 });
 
+test('a severity from another scale is mapped and noted; an unknown one is still an error', () => {
+  // seen in a real run: a correct review thrown away for "medium"
+  const r = parseReviewVerdict('{"blocking":0,"findings":[{"severity":"Medium","desc":"a"},{"severity":"low","desc":"b"},{"severity":"medium","desc":"c"}]}');
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.findings.map((f) => f.severity), ['warning', 'suggestion', 'warning']);
+  assert.deepEqual(r.notes, ['severity "medium" read as warning', 'severity "low" read as suggestion']);
+  // "high" is below critical on the usual four-level scale: the declared verdict decides
+  const high = parseReviewVerdict('{"blocking":0,"findings":[{"severity":"high","desc":"x"}]}');
+  assert.equal(high.blocking, 0);
+  assert.equal(high.findings[0].severity, 'warning');
+  // a mapped blocker is a critical, with everything the stricter reading implies
+  assert.equal(parseReviewVerdict('{"blocking":0,"findings":[{"severity":"blocker","desc":"x"}]}').blocking, 1);
+  const v = parseVerifyVerdict('{"pass":true,"findings":[{"severity":"BLOCCANTE","desc":"x"}]}');
+  assert.equal(v.pass, false);
+  assert.ok(v.notes.includes('severity "bloccante" read as critical'), JSON.stringify(v.notes));
+  assert.equal(parseReviewVerdict('{"blocking":0,"findings":[{"severity":"meh","desc":"x"}]}').ok, false);
+  assert.equal(parseReviewVerdict('{"blocking":0,"findings":[{"desc":"no severity"}]}').ok, false);
+});
+
 test('an empty requestId is read like an absent one, not as a malformed verdict', () => {
   assert.equal(parseReviewVerdict('{"requestId":"","blocking":0}').requestId, null);
   assert.equal(parseVerifyVerdict('{"requestId":"  ","pass":true}').requestId, null);

@@ -97,9 +97,10 @@ giudici; il watchdog e il takeover della 2.4–2.5 sono nati da qui.
 
 ### 3.2 Severità tolleranti (0,2 g)
 
-- `src/core/verdicts.mjs`: `high`/`blocker`/`bloccante` → `critical`, `medium`/`major`/
-  `maggiore` → `warning`, `low`/`minor`/`info`/`minore` → `suggestion`; una nota nel journal
-  quando la mappa interviene. Una severità ancora sconosciuta resta un errore (esito
+- `src/core/verdicts.mjs`: `blocker`/`bloccante` → `critical`, `high`/`medium`/`major`/
+  `maggiore` → `warning` (`high` non è `critical`: nella scala a quattro livelli sta sotto, e
+  un `critical` rovescerebbe il verdetto dichiarato), `low`/`minor`/`info`/`minore` →
+  `suggestion`; una nota nel journal quando la mappa interviene. Una severità ancora sconosciuta resta un errore (esito
   mancante), come oggi.
 - **[scelta]** Niente "riparazione" del JSON malformato: un verdetto che non si legge con
   certezza non è un pass. L'escape non valido resta un esito mancante, chiesto una volta.

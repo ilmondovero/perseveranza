@@ -6,6 +6,20 @@
 // When the declared verdict and the findings disagree, the STRICTER reading wins.
 
 export const SEVERITIES = ['critical', 'warning', 'suggestion'];
+// The scales judges reach for when they do not copy ours (seen in real runs: "medium"). A
+// verdict right on the merits is not thrown away for a synonym; the mapping is noted. What
+// stays unknown is still an error: a verdict read with doubt is not a verdict.
+// Only a word that means "it blocks" becomes critical. "high" does not: on the common
+// critical/high/medium/low scale it sits below critical, and a critical overrides the
+// declared blocking/pass (stricter reading), so reading it as critical would turn a pass
+// the judge declared into a fail. As a warning, the judge's own blocking/pass decides.
+export const SEVERITY_ALIASES = {
+  blocker: 'critical', blocking: 'critical', bloccante: 'critical', critico: 'critical', critica: 'critical',
+  high: 'warning', major: 'warning', medium: 'warning', moderate: 'warning', important: 'warning',
+  alta: 'warning', alto: 'warning', maggiore: 'warning', media: 'warning', medio: 'warning', avviso: 'warning', grave: 'warning',
+  low: 'suggestion', minor: 'suggestion', info: 'suggestion', note: 'suggestion', nit: 'suggestion', nitpick: 'suggestion', trivial: 'suggestion', optional: 'suggestion',
+  bassa: 'suggestion', basso: 'suggestion', minore: 'suggestion', suggerimento: 'suggestion',
+};
 
 function parseJson(text) {
   if (typeof text !== 'string' || !text.trim()) return { error: 'empty' };
@@ -13,17 +27,21 @@ function parseJson(text) {
 }
 
 function validateFindings(raw) {
-  if (raw == null) return { findings: [] };
+  if (raw == null) return { findings: [], notes: [] };
   if (!Array.isArray(raw)) return { error: 'findings is not an array' };
   const findings = [];
+  const mapped = new Map();
   for (let i = 0; i < raw.length; i++) {
     const f = raw[i];
     if (!f || typeof f !== 'object') return { error: `finding #${i} is not an object` };
-    const severity = String(f.severity ?? '').toLowerCase();
-    if (!SEVERITIES.includes(severity)) return { error: `finding #${i}: unknown severity "${f.severity}" (allowed: ${SEVERITIES.join(', ')})` };
+    const declared = String(f.severity ?? '').trim().toLowerCase();
+    const severity = SEVERITIES.includes(declared) ? declared : SEVERITY_ALIASES[declared];
+    if (!severity) return { error: `finding #${i}: unknown severity "${f.severity}" (allowed: ${SEVERITIES.join(', ')})` };
+    if (severity !== declared) mapped.set(declared, severity);
     findings.push({ severity, desc: String(f.desc ?? f.description ?? ''), file: f.file != null ? String(f.file) : null });
   }
-  return { findings };
+  const notes = [...mapped].map(([from, to]) => `severity "${from}" read as ${to}`);
+  return { findings, notes };
 }
 
 // An empty id carries no claim about the request: read like an absent one (the machine then
@@ -48,7 +66,7 @@ export function parseReviewVerdict(text) {
   if (f.error) return { ok: false, error: f.error };
   const req = validateRequestId(v.requestId);
   if (req.error) return { ok: false, error: req.error };
-  const notes = [];
+  const notes = [...f.notes];
   const crit = criticalCount(f.findings);
   let effective = blocking;
   if (crit > blocking) {
@@ -91,7 +109,7 @@ export function parseVerifyVerdict(text) {
   if (f.error) return { ok: false, error: f.error };
   const req = validateRequestId(v.requestId);
   if (req.error) return { ok: false, error: req.error };
-  const notes = [];
+  const notes = [...f.notes];
   let pass = v.pass;
   const crit = criticalCount(f.findings);
   if (pass && crit > 0) {
