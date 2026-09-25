@@ -1,158 +1,179 @@
 # Piano corto, giudici in parallelo — piano di modifica
 
-Proposta: meno passi nel piano, ciascuno più grande e coeso, e al posto di un solo
-revisore (e di un solo verificatore finale) **più giudici in parallelo nello stesso
-turno**, ciascuno con una lente diversa. Obiettivo: meno giri sequenziali di review, la
-stessa severità (o maggiore) per giro, a parità circa di tempo reale.
-
-Questo documento è da approvare prima di scrivere codice. Le decisioni marcate
+Proposta di partenza: meno passi nel piano, e più giudici in parallelo nello stesso turno
+al posto di un solo revisore e di un solo verificatore finale. Questa versione del piano
+parte dai **dati dei run reali** (sezione 1) e ne ricava cosa conviene fare, in che
+ordine, e cosa no. Da approvare prima di scrivere codice; le decisioni marcate
 **[scelta]** hanno un'alternativa scartata, con il motivo.
 
-## 1. Invarianti che non cambiano
+## 1. Cosa dicono i dati
 
-- Il routing resta nella tabella delle transizioni: i giudici multipli cambiano **come si
-  calcola l'esito** di `review` e `final-verify`, non dove va il loop.
-- Prove, non parole: ogni verdetto è un file JSON consumato alla lettura, legato alla sua
-  richiesta dal `requestId` (introdotto in 2.5.x, commit `6a16f55`).
-- Lettura più severa: basta un giudice con un problema bloccante per tornare al fix.
-- Un esito mancante è chiesto una volta, poi conta come bocciatura.
-- Default retrocompatibile: senza opzioni il loop si comporta come oggi (un giudice).
+Fonti: i 9 run archiviati in `~/.perseveranza/runs` con un journal (4 progetti, motore
+2.0.0–2.5.0, 182 iterazioni, 96 passi di piano, 129 ore di calendario); le trascrizioni
+di sessione e dei subagent in `~/.claude/projects`; il pannello di giudici di
+`pi-workflows` (10 blocchi rivisti da due giudici di famiglie diverse, 18 pannelli reali).
 
-## 2. Piano corto
+**Review per passo: non è lì che si perdono i giri.**
 
-Solo prompt e un'opzione, nessuna logica nuova.
+- 35 passi arrivati al pass: 22 (63%) al primo giro, 10 (29%) al secondo, 3 al terzo o
+  oltre.
+- Gli esiti di review *mancanti* (23) superano le bocciature vere (17), ma quasi tutti
+  vengono da un run con il motore 2.0.2 (16 da solo), prima dell'hook delle attività e
+  del controllo `implement-idle`; dalla 2.1 in poi sono 1–2 per run.
+- Due verdetti validi nel merito sono stati buttati dal parser: una severità `medium`
+  (ammesse: critical, warning, suggestion) e un JSON con un escape non valido.
 
-- `plan-write` (default e `packs/it.json`): chiedere **pochi passi grandi e coesi**, ognuno
-  un'unità verificabile da sola; niente passi preparatori separati dal loro uso.
-- Nuova opzione `arm --max-steps N` (default: nessun tetto). Se il piano supera N passi,
-  lo Stop della fase `plan` chiede una volta di raggrupparlo (nuova riga
-  `plan: too-long -> plan`, prompt `plan-regroup`), poi accetta comunque: mai bloccato in
-  `plan`, come per `no-plan`.
-- Il budget adattivo (`adaptiveMax`, 8 + 3 per passo) resta com'è: meno passi, budget
-  più basso, ed è giusto così perché i giri di review sono meno.
+**Verifica finale: è lì che il lavoro viene fermato davvero.**
 
-## 3. Giudici in parallelo
+- Ogni run recente (2.1+) arrivato alla verifica finale è stato bocciato almeno una volta,
+  dopo che tutte le review per passo erano passate.
+- I difetti trovati sono veri e gravi: un tetto di spesa che diventa illimitato in
+  silenzio sotto un guasto (fail-open), una ReDoS introdotta dal lavoro, una regressione
+  introdotta da un fix del giro precedente, documentazione d'ingresso rimasta falsa.
+- In un run Claude ha affiancato di sua iniziativa un `security-reviewer` al verificatore:
+  l'unico caso di giudici davvero in parallelo (per il resto al massimo una delega aperta
+  alla volta; le deleghe "in più" a `pf-reviewer` sono rilanci in sequenza o review che
+  Claude si fa da solo durante il fix).
 
-### 3.1 Configurazione
+**Costo: i giudici pesano poco, e il budget ne vede la metà.**
 
-`arm --judges <lenti>` e `arm --verifiers <lenti>`, liste separate da virgola. Default:
-`review` → `general`, `final-verify` → `general` (identico a oggi). Lenti proposte:
+| chi | token di output | contesto letto (input + cache) |
+|---|---|---|
+| sessione principale | 52% | 46% |
+| executor (`pf-executor` e simili) | 27% | 30% |
+| reviewer per passo | 14% | 14% |
+| verificatore finale | 6% | 9% |
 
-| lente | cosa guarda |
-|---|---|
-| `general` | il prompt di oggi (correttezza, casi limite, regressioni, sicurezza, test) |
-| `correctness` | logica, casi limite, input ostili, regressioni |
-| `tests` | adeguatezza dei test, esegue test mirati, cerca casi non coperti |
-| `security` | segreti, input non fidati, injection, path traversal (oggi `hint-security`) |
+- Il budget in token (`src/shell/transcript.mjs`) legge solo la trascrizione principale:
+  **circa metà della spesa reale non viene contata**. Le trascrizioni dei subagent sono in
+  `~/.claude/projects/<progetto>/<sessione>/subagents/agent-*.jsonl`, con accanto un
+  `.meta.json` che porta `agentType` e `model` (verificato su questi run).
+- Due lenti in più nella sola verifica finale costerebbero circa +12% dell'output di un
+  run; due lenti in più in ogni review per passo circa +28%.
 
-**[scelta]** Lenti diverse, non N copie dello stesso giudice: N giudici identici
-trovano quasi le stesse cose e moltiplicano i falsi positivi senza allargare la
-copertura. Alternativa scartata: `--judges 3` con prompt identico.
+**Giudici diversi trovano cose diverse (`pi-workflows`).**
 
-Con complessità `high` la lente `security` si aggiunge da sola al verificatore finale
-(oggi è un hint nel prompt unico).
+- Due giudici di famiglie di modelli diverse: su 117 problemi distinti, solo il 12% è
+  stato trovato da entrambi. Diversi difetti importanti li ha visti uno solo mentre l'altro
+  dava lo stesso codice per "corretto" (poi corretti nei commit).
+- Ma con l'unanimità **tutti** i 10 blocchi sarebbero stati bocciati, e metà dei
+  disaccordi erano sulla severità dello stesso problema: senza una regola che distingua
+  "bloccante" da "da segnalare" il pannello blocca sempre.
+- C'è rumore: bloccanti mai tradotti in un fix, un giudice che si contraddice. E i
+  fornitori esterni falliscono spesso (errori, limiti di output, 503): il backoff arrivava
+  a 7 minuti su 9 di un ciclo.
 
-### 3.2 File dei verdetti
+**Fuori tema, ma da segnalare:** 7 run su 9 finiscono con un `disarm` a mano, spesso il
+giorno dopo, con il loop fermo a metà (in review o in verifica). Non è un problema dei
+giudici; il watchdog e il takeover della 2.4–2.5 sono nati da qui.
 
-- `review-<lente>.json` e `verify-<lente>.json` in `.omc-loop/`, stesso formato di oggi
-  più il campo `lens`. Con la sola lente `general` il file resta `review.json` /
-  `verify.json`: i pack e il bench attuali continuano a funzionare.
-- Un `requestId` per giro, uguale per tutte le lenti; il campo `lens` dice quale giudice
-  risponde. **[scelta]** Un id per giro, non uno per lente: più semplice da passare nel
-  prompt, e l'id lega già il verdetto al giro; la lente è nel nome del file e nel campo.
+## 2. Cosa ne segue
 
-### 3.3 Macchina (`src/core/machine.mjs`)
+1. **Più lenti nella verifica finale, non nella review per passo.** È il punto dove i
+   difetti veri sfuggono, costa poco (6% oggi) e il tempo reale non cambia se i giudici
+   girano in parallelo. Nella review per passo il 63% dei passi passa al primo giro e il
+   costo si moltiplicherebbe per il numero di passi.
+2. **Blocca solo il `critical`.** Con più giudici la regola "basta un `pass: false`"
+   bloccherebbe quasi sempre (dato `pi-workflows`). Un giudice boccia solo con almeno un
+   finding `critical`; i `warning` di tutti arrivano a Claude ma non bloccano.
+3. **Il budget in token deve contare i subagent**, a prescindere dai giudici.
+4. **Parser più tollerante sulle severità**: un verdetto giusto non va buttato per un
+   sinonimo.
+5. **Piano corto: solo prompt, e solo se il bench lo conferma.** I dati non dicono che i
+   passi siano troppi; dicono che i giri si perdono altrove.
 
-- `state.verdictLenses`: le lenti attese per la richiesta in corso, fissate da
-  `issueRequest` in base alla fase.
-- `readVerdict` diventa `readVerdicts`: legge un file per lente, applica a ciascuno le
-  regole di freschezza di oggi (id, poi orologio), e combina:
-  - **review**: `blocking` = somma dei bloccanti effettivi; esito `pass` solo se tutte le
-    lenti hanno scritto e sono a 0;
-  - **final-verify**: `pass` solo se tutte le lenti hanno `pass: true`;
-  - i findings di tutte le lenti finiscono in un solo `review-<n>.json` /
-    `verify-<n>.json` (ogni finding con la sua lente), così il fix li rilegge in un posto
-    solo; i file per lente sono conservati come oggi.
-- **Verdetti parziali**: se manca una lente, l'esito è `missing` e il prompt
-  `*-missing-outcome` elenca **solo le lenti mancanti** da rilanciare. Le lenti già
-  arrivate restano valide per quel giro (non si rilanciano). Al secondo giro con lenti
-  mancanti: `missing-twice`, come oggi.
-  **[scelta]** Rigore, non quorum: un giudice che non risponde non è un voto favorevole.
-  Alternativa scartata: maggioranza, che trasformerebbe un giudice caduto in un pass.
-- Il verbo `report pass|fail` resta come ripiego per il caso di un solo giudice; con più
-  lenti vale solo per le lenti mancanti (`report pass --lens tests`).
-- Tabella delle transizioni: **nessuna riga nuova** per i giudici; solo `plan: too-long`
-  (sezione 2).
+## 3. Fase 1 (circa 2 giorni)
 
-### 3.4 Shell (`src/shell/stop.mjs`)
+### 3.1 Budget in token con i subagent (0,5 g)
 
-- Legge `review-*.json` / `verify-*.json` per le lenti attese (non per glob libero: un
-  file di una lente non richiesta viene messo da parte come stale, non letto).
-- `effects.mjs`: `keepArtifact` per ogni file di lente.
+- `src/shell/transcript.mjs`: oltre alla trascrizione principale, somma l'`usage` dei
+  file `subagents/agent-*.jsonl` della stessa sessione (cartella `<sessione>/subagents`
+  accanto a `<sessione>.jsonl`), filtrati per timestamp dall'arm come oggi.
+- `usage` nel journal e nel `summary.json` distingue `main` e `subagents` (e, dal
+  `.meta.json`, il tipo di agente): la ripartizione della sezione 1 diventa un dato del
+  run, non un'analisi a mano.
+- Se la cartella non c'è (versioni di Claude Code diverse): si torna alla sola
+  trascrizione principale, come oggi, e il journal lo dice.
 
-### 3.5 Prompt e agenti
+### 3.2 Severità tolleranti (0,2 g)
 
-- `review-delegate` e `final-verify`: "delega **nello stesso messaggio, in primo piano**,
-  un giudice per ciascuna lente: {{lensList}}", con per ogni lente il file da scrivere e
-  l'id. Nuovi placeholder `lensList` / `lensFiles`, aggiunti a `PROMPT_VARS` e a
-  `PROMPT_EXPECTED`.
-- **[scelta]** Stessi agenti `pf-reviewer` / `pf-verifier` con la lente passata nel
-  prompt, non un agente per lente: meno file da mantenere, e il test di packaging sugli
-  agenti resta com'è. Il testo degli agenti spiega come applicare una lente e come
-  riempire `lens`.
-- Traduzione in `packs/it.json` di tutte le chiavi nuove (il test di completezza lo
-  impone).
+- `src/core/verdicts.mjs`: `high`/`blocker`/`bloccante` → `critical`, `medium`/`major`/
+  `maggiore` → `warning`, `low`/`minor`/`info`/`minore` → `suggestion`; una nota nel journal
+  quando la mappa interviene. Una severità ancora sconosciuta resta un errore (esito
+  mancante), come oggi.
+- **[scelta]** Niente "riparazione" del JSON malformato: un verdetto che non si legge con
+  certezza non è un pass. L'escape non valido resta un esito mancante, chiesto una volta.
 
-### 3.6 Budget in token
+### 3.3 Verifica finale con più lenti (1–1,5 g)
 
-Oggi `src/shell/transcript.mjs` legge solo la trascrizione della sessione principale:
-i token dei subagent non contano. Con N giudici per giro la sottostima cresce di N volte.
+- `arm --verifiers <lenti>`: default `general` (identico a oggi). Con complessità `high` il
+  default diventa `correctness,security,tests`.
+- Lenti: `correctness` (logica, casi limite, input ostili, regressioni introdotte dai fix),
+  `security` (oggi `hint-security`), `tests` (esegue test mirati, cerca casi non coperti,
+  controlla che le affermazioni dei commenti e della documentazione siano vere: nei run è
+  saltata fuori documentazione falsa due volte).
+- File: `verify-<lente>.json` (con la sola `general`: `verify.json`, come oggi), stesso
+  `requestId` per il giro, campo `lens`.
+- Macchina (`machine.mjs`): `state.verdictLenses` fissato da `issueRequest`; la lettura
+  combina le lenti:
+  - **pass** del giro solo se tutte le lenti hanno scritto e **nessuna ha un finding
+    `critical`**;
+  - una lente che dichiara `pass: false` senza nessun `critical` non blocca: il suo verdetto
+    viene letto come pass con `warning`, e il journal lo annota;
+  - i findings di tutte le lenti vanno in un solo `verify-<n>.json`, ciascuno con la sua
+    lente, così il fix li rilegge in un posto solo.
+- Lenti mancanti: `missing` chiede **solo quelle**, le altre restano valide per il giro; la
+  seconda volta è `missing-twice`, come oggi. **[scelta]** Rigore, non quorum: un giudice
+  che non risponde non è un voto a favore.
+- Il gate di uscita (2.5.3: piano spuntato, verde sul codice giudicato, codice invariato)
+  resta identico e si applica al pass combinato.
+- Prompt `final-verify` (en/it): "delega **nello stesso messaggio e in primo piano** un
+  verificatore per lente", con per ogni lente il file e l'id; placeholder `lensList` in
+  `PROMPT_VARS` e `PROMPT_EXPECTED`. Stesso agente `pf-verifier`, con la lente nel prompt.
+- `status` mostra le lenti attese e quelle arrivate.
+- **Nessuna riga nuova** nella tabella delle transizioni: cambia come si calcola l'esito
+  di `final-verify`, non dove va il loop.
 
-- Leggere anche le trascrizioni dei subagent della sessione. **Da verificare sulla
-  versione di Claude Code installata** dove stanno (file separati accanto alla
-  trascrizione principale, oppure righe `isSidechain` nella stessa): lo verifico su un run
-  reale prima di scrivere il parser, come fatto per il ripristino.
-- Se non sono leggibili in modo affidabile: il budget in token resta com'è e la
-  documentazione dice chiaramente che non conta i subagent.
+### 3.4 Test
 
-## 4. Rischi
+- Unit: combinazione per lente (critical blocca, `pass:false` senza critical non blocca),
+  lenti parziali e mancanti due volte, lente non attesa messa da parte, id per giro,
+  severità tolleranti, `usage` con i subagent.
+- E2e: un giro di verifica con tre lenti attraverso l'hook reale, con l'id letto dal
+  prompt; una lente mancante.
+- Packaging: chiavi nuove nel pack italiano; `lensList` atteso.
+- Bench: `dry_loop` scrive un verdetto per lente quando il run è armato con più lenti.
+
+## 4. Fase 2 (solo con i numeri)
+
+Da decidere dopo la fase 1, misurando con il bench (`bench/`, più ripetizioni) e con i
+nuovi `usage` per agente nei run reali:
+
+- **Piano corto**: variante del prompt `plan-write` (pochi passi grandi e coesi,
+  eventualmente `--max-steps N`) confrontata sul bench per iterazioni, token e difetti
+  trovati dalla verifica finale.
+- **Più lenti nella review per passo**: solo se la verifica finale con più lenti continua
+  a trovare difetti che una review per passo con quella lente avrebbe preso prima.
+- **Un giudice di un'altra famiglia di modelli con voto**: oggi i modelli esterni (`ask`)
+  in verifica finale danno solo un parere. I dati di `pi-workflows` dicono che la diversità
+  di famiglia trova difetti unici, ma anche che i fornitori esterni falliscono spesso: da
+  valutare con un fallback che non blocchi il loop su un 503.
+
+## 5. Rischi
 
 | rischio | mitigazione |
 |---|---|
-| Costo in token circa N volte per giro | default a un giudice; lenti scelte per progetto; budget in token corretto (3.6) |
-| Più falsi positivi con la lettura più severa, quindi più giri di fix | "bloccante" solo per findings `critical`, ribadito nel prompt di ogni lente; findings deduplicati per file e riga nel prompt di fix |
-| Giudici lanciati in background: il turno finisce senza verdetti | prompt esplicito "in primo piano, nello stesso messaggio"; il caso resta coperto da `missing` (chiesto una volta, poi bocciatura) |
-| Due giudici scrivono lo stesso file | un file per lente, nome fissato dal prompt; un file di lente non attesa è stale |
-| Pack di prompt utente che non conoscono le lenti | con la sola lente `general` nulla cambia; con più lenti, `prompts validate` avvisa se mancano `{{lensList}}` / `{{verdictRequestId}}` |
+| Più giudici, più rumore e più giri di fix | blocca solo il `critical`; i `warning` informano |
+| Giudici lanciati in background: il turno finisce senza verdetti | prompt "in primo piano, nello stesso messaggio"; `missing` chiede solo le lenti mancanti |
+| Costo | lenti multiple solo in verifica finale e di default solo con complessità `high`; il budget conta finalmente i subagent |
+| Formato delle trascrizioni dei subagent non documentato | lettura best-effort con ripiego sulla sola trascrizione principale, dichiarato nel journal |
 
-## 5. Test
+## 6. Da decidere prima di partire
 
-- **Unit** (`test/unit/machine.test.mjs`): combinazione `pass`/`fail` per lente, verdetti
-  parziali (manca una lente, poi due volte), verdetto di una lente non attesa, id per
-  giro, lettura più severa, `report --lens`; `plan: too-long` chiesto una volta.
-- **Unit** (`verdicts.test.mjs`): campo `lens` valido/non valido.
-- **E2e** (`test/e2e/hook.test.mjs`): un giro completo con due lenti in review e due in
-  verifica attraverso l'hook reale, con l'id letto dal prompt reso; un giro con una lente
-  mancante.
-- **Packaging**: chiavi nuove nel pack italiano; placeholder attesi; agenti.
-- **Bench**: `dry_loop` scrive un verdetto per lente quando il run è armato con più lenti.
-- **Transizioni**: la tabella dei README rigenerata (`npm run explain -- --markdown`).
-
-## 6. Passi e stima
-
-| passo | contenuto | stima |
-|---|---|---|
-| 1 | piano corto: prompt, `--max-steps`, riga `plan: too-long`, test | 0,5 g |
-| 2 | macchina e shell: lenti attese, lettura e combinazione dei verdetti, parziali, `report --lens`, test unit | 1 g |
-| 3 | prompt (en/it), agenti, `arm --judges/--verifiers`, `status` con le lenti in attesa, e2e | 0,5 g |
-| 4 | budget in token dei subagent (dopo la verifica su un run reale) | 0,5 g |
-| 5 | docs (README it/en, `commands/perseveranza.md`), CHANGELOG, versione | 0,5 g |
-
-Totale indicativo: 3 giorni. I passi 1 e 4 sono indipendenti dagli altri.
-
-## 7. Da decidere prima di partire
-
-1. Lenti di default quando si passa solo `--judges` senza lista: proposta
-   `correctness,tests` in review e `correctness,tests,security` in verifica.
-2. Il tetto `--max-steps`: solo un'opzione, oppure un default (proposta: nessun default).
-3. Il budget in token dei subagent (passo 4): dentro questa modifica o separato.
+1. Il default delle lenti in verifica finale con complessità `high`
+   (`correctness,security,tests`) va bene, o le lenti multiple devono essere solo su
+   richiesta?
+2. La regola "blocca solo il `critical`" vale anche per il verificatore singolo di oggi
+   (oggi un `pass: false` senza critical boccia)? Proposta: sì, per coerenza, ma è un cambio
+   di comportamento da mettere nel CHANGELOG.
+3. L'ordine: proposta 3.1 e 3.2 subito (indipendenti, utili comunque), poi 3.3.
