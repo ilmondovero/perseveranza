@@ -19,7 +19,9 @@ export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE
   lines.push(`  steps:       ${c.done}/${c.total} done${c.open ? ` (${c.open} open)` : ''}`);
   lines.push(`  iterations:  ${s.counters.iterations}/${iterationCap(s)}${s.limits.maxIterationsExplicit ? '' : ' (adaptive)'}`);
   const spent = tokensSpent(s.usage);
-  lines.push(`  tokens:      ${spent ? formatTokens(spent) : 'not measured'}${s.limits.maxTokens ? ` / ${formatTokens(s.limits.maxTokens)}` : ''}`);
+  lines.push(`  tokens:      ${spent ? formatTokens(spent) : 'not measured'}${s.limits.maxTokens ? ` / ${formatTokens(s.limits.maxTokens)}` : ''}${spent && s.usage.source === 'transcript' ? ' (main transcript only)' : ''}${spent && s.usage.partial ? ' (partial)' : ''}`);
+  const agents = spent && s.usage.byAgent ? Object.entries(s.usage.byAgent).map(([k, v]) => [k, tokensSpent(v)]).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]) : [];
+  if (agents.length > 1) lines.push(`  by agent:    ${agents.map(([k, n]) => `${k} ${formatTokens(n)}`).join(', ')}`);
   lines.push(`  retries:     ${s.counters.retries}/${s.limits.maxRetries} review fixes, ${s.counters.finalFails}/${s.limits.maxRetries} final rejections`);
   lines.push(`  signals:     report=${s.signals.lastReport}${s.signals.claimedDone ? ', claim-done pending' : ''}`);
   lines.push(`  last test:   ${s.lastTest ? `${s.lastTest.cmd} -> exit ${s.lastTest.exitCode} (iteration ${s.lastTest.iteration}${s.lastTest.fingerprint ? ', tree ' + s.lastTest.fingerprint.slice(0, 8) : ''})${s.lastTest.failed && s.lastTest.failed.length ? ` failed: ${s.lastTest.failed.slice(0, 5).join(', ')}${s.lastTest.failed.length > 5 ? ', ...' : ''}` : ''}` : 'none'}`);

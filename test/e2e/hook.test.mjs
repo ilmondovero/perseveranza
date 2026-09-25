@@ -163,6 +163,35 @@ test('token usage is measured and shown in the header when a transcript exists',
   assert.equal(r.state.usage.source, 'transcript');
 });
 
+test('token usage counts the subagent transcripts of the session, by agent kind', () => {
+  const p = project();
+  arm(p, 't', ['--budget-tokens', '100000']);
+  const transcript = join(p.dir, 'sess.jsonl');
+  const line = (id, i, o) => JSON.stringify({ type: 'assistant', timestamp: '2099-01-01T00:00:00Z', message: { id, usage: { input_tokens: i, output_tokens: o } } });
+  writeFileSync(transcript, line('m', 1000, 200));
+  const subs = join(p.dir, 'sess', 'subagents');
+  mkdirSync(subs, { recursive: true });
+  writeFileSync(join(subs, 'agent-1.jsonl'), line('r', 300, 100));
+  writeFileSync(join(subs, 'agent-1.meta.json'), JSON.stringify({ agentType: 'perseveranza:pf-reviewer' }));
+  const r = fire(p, { transcript_path: transcript, session_id: 'owner' });
+  assert.equal(r.state.usage.source, 'transcript+subagents');
+  assert.equal(r.state.usage.inputTokens + r.state.usage.outputTokens, 1600);
+  assert.equal(r.state.usage.byAgent['perseveranza:pf-reviewer'].outputTokens, 100);
+  assert.ok(existsSync(gate(p, 'usage-cache.json')));
+  const status = cli(p, 'status').out;
+  assert.ok(status.includes('by agent:') && status.includes('perseveranza:pf-reviewer'), status);
+  assert.ok(cli(p, 'history').out.includes('subagents 400 in 1 transcript(s)'));
+  // another session in the same repo: its transcripts are not read, the owner's cache stays
+  const cacheBefore = readFileSync(gate(p, 'usage-cache.json'), 'utf8');
+  const other = join(p.dir, 'other.jsonl');
+  writeFileSync(other, line('o', 5, 5));
+  mkdirSync(join(p.dir, 'other', 'subagents'), { recursive: true });
+  writeFileSync(join(p.dir, 'other', 'subagents', 'agent-9.jsonl'), line('z', 5, 5));
+  fire(p, { transcript_path: other, session_id: 'intruder' });
+  assert.equal(readFileSync(gate(p, 'usage-cache.json'), 'utf8'), cacheBefore);
+  assert.equal(readState(p).usage.outputTokens, 300);
+});
+
 test('session scoping through the real hook', () => {
   const p = project();
   arm(p);

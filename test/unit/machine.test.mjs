@@ -657,6 +657,25 @@ test('usage from the shell is merged and journaled', () => {
   assert.ok(journal(r).some((j) => j.type === 'usage' && j.spent === 150));
 });
 
+test('usage with subagents: the split is kept, the journal says what the budget saw', () => {
+  const usage = { inputTokens: 10, outputTokens: 90, source: 'transcript+subagents', partial: true,
+    byAgent: { main: { inputTokens: 5, outputTokens: 40 }, 'perseveranza:pf-reviewer': { inputTokens: 5, outputTokens: 50 } },
+    subagents: { files: 1, inputTokens: 5, outputTokens: 50 } };
+  const r = run(mk(), { usage });
+  assert.equal(r.state.usage.byAgent['perseveranza:pf-reviewer'].outputTokens, 50);
+  const j = journal(r).find((e) => e.type === 'usage');
+  assert.deepEqual([j.spent, j.subagents, j.subagentFiles, j.partial, j.source], [100, 55, 1, true, 'transcript+subagents']);
+  // the next reading without subagents (folder gone) drops the stale split
+  const next = run(r.state, { usage: { inputTokens: 10, outputTokens: 40, source: 'transcript', byAgent: { main: { inputTokens: 10, outputTokens: 40 } }, subagents: null, partial: false } });
+  assert.equal(next.state.usage.subagents, undefined);
+  assert.equal(next.state.usage.partial, undefined);
+  assert.deepEqual(Object.keys(next.state.usage.byAgent), ['main']);
+  // a reading replaces the previous one: no split left over that the totals do not match
+  const bare = run(r.state, { usage: { inputTokens: 1, outputTokens: 1 } });
+  assert.equal(bare.state.usage.byAgent, undefined);
+  assert.equal(bare.state.usage.partial, undefined);
+});
+
 test('unknown phase: restart from plan', () => {
   const r = run(mk({ phase: 'weird' }));
   assert.equal(r.outcome, 'unknown-phase');

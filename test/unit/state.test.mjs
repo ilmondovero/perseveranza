@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultState, normalizeState, loadState, isV1State, migrateV1, SCHEMA_VERSION, PHASES } from '../../src/core/state.mjs';
+import { defaultState, normalizeState, normalizeUsage, loadState, isV1State, migrateV1, SCHEMA_VERSION, PHASES } from '../../src/core/state.mjs';
 
 test('defaultState has schema v2 and sane defaults', () => {
   const s = defaultState();
@@ -105,4 +105,19 @@ test('owner: transcript path and Claude Code process are normalised (2.4.0 field
   assert.equal(junk.owner.claudePid, 0);
   assert.equal(junk.owner.claudeStartedAt, null);
   assert.equal(normalizeState({ phase: 'plan' }).owner.claudePid, 0);
+});
+
+test('usage is coerced, not trusted: numbers, a bounded split, no stray keys', () => {
+  const byAgent = { main: { inputTokens: '5', outputTokens: -3 }, bad: 7 };
+  for (let i = 0; i < 30; i++) byAgent[`a${i}`] = { outputTokens: 1 };
+  const u = normalizeUsage({ inputTokens: 'x', outputTokens: 4, source: 7, byAgent, subagents: { files: '2', outputTokens: 1 }, partial: 'yes', junk: 1 });
+  assert.equal(u.inputTokens, 0);
+  assert.equal(u.source, null);
+  assert.deepEqual(u.byAgent.main, { inputTokens: 5, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 });
+  assert.ok(!('bad' in u.byAgent));
+  assert.equal(Object.keys(u.byAgent).length, 16);
+  assert.equal(u.subagents.files, 2);
+  assert.equal(u.partial, undefined);
+  assert.equal(u.junk, undefined);
+  assert.deepEqual(normalizeState({ usage: { byAgent: [] } }).usage.byAgent, undefined);
 });

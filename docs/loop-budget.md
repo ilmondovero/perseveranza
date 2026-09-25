@@ -26,9 +26,15 @@ readable), plus timeouts. This page gathers every cap and switch in one place.
 
 An iteration is the unit of spend: every injected phase (plan, implement, review, fix,
 verification...) consumes one. Token usage is read from the transcript path that Claude
-Code passes to the Stop hook, summing the assistant messages since the arm time; it shows
-in the injected header and in `status`, and is stored in the run summary. It is
-**best-effort**: if the transcript cannot be read the token cap simply does not apply.
+Code passes to the Stop hook, summing the assistant messages since the arm time (each API
+message once, though Claude Code writes it on several lines), plus the transcripts of the
+session's subagents (`<session>/subagents/agent-*.jsonl`: reviewers, verifiers,
+executors, about half of a run's spend). It shows in the injected header and in `status`
+(with the split by agent kind), and is stored in the run summary. It is **best-effort**: if
+the transcript cannot be read the token cap simply does not apply; without the subagents
+folder only the main transcript is counted, and `status` and `history` say so. A finished
+subagent is read once per run (`.omc-loop/usage-cache.json`); a reading cut short by the
+hook's time limit keeps the last known values and is journaled as partial.
 
 ## Kill switch
 

@@ -14,7 +14,7 @@ import { notify } from './notify.mjs';
 import { archiveRun, archiveFailureNote } from './archive.mjs';
 import { loadPromptLayers } from './packs.mjs';
 import { treeFingerprints } from './git.mjs';
-import { readTranscriptUsage } from './transcript.mjs';
+import { readSessionUsage } from './transcript.mjs';
 import { readLife } from './life.mjs';
 import { spawnWatchdog } from './watchdog.mjs';
 import { findClaudeProcess } from './restore.mjs';
@@ -86,7 +86,12 @@ function main() {
   // tells the phases whether the recorded green still holds, and shows a stop that changed
   // nothing. null = could not be computed (not a repo, deadline): never read as "changed".
   const fps = treeFingerprints(cwd, { deadline: DEADLINE });
-  const usage = evt && typeof evt.transcript_path === 'string' ? readTranscriptUsage(evt.transcript_path, s.armedAt) : null;
+  // not for a session that does not own the loop: the machine touches nothing for it, and its
+  // transcripts would only evict the owner's cache
+  const foreign = s.owner.sessionId && evt && typeof evt.session_id === 'string' && evt.session_id && evt.session_id !== s.owner.sessionId;
+  const usage = !foreign && evt && typeof evt.transcript_path === 'string'
+    ? readSessionUsage(evt.transcript_path, s.armedAt, { cachePath: join(paths.gateDir, 'usage-cache.json'), deadline: DEADLINE })
+    : null;
   maybeSpawnRefresh(env);
   const ctx = {
     LOOP: loopCommand(ROOT),

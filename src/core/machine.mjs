@@ -26,7 +26,7 @@ import { parseReviewVerdict, parseVerifyVerdict, parseReconcile } from './verdic
 import { lookup } from './transitions.mjs';
 import { canContinue, adaptiveMax, tokensSpent } from './budget.mjs';
 import { renderPrompt } from './prompts.mjs';
-import { PHASES, COMPLEXITIES } from './state.mjs';
+import { PHASES, COMPLEXITIES, normalizeUsage } from './state.mjs';
 import { DEFAULT_STALE_MS, releaseOpen } from './staleness.mjs';
 import { renderProgress } from '../hud/render.mjs';
 
@@ -179,11 +179,14 @@ export function step(input, event = {}, ctx0 = {}) {
     s.signals.resumedAt = 0;
   }
 
-  // --- token usage from the transcript (best-effort, measured by the shell) ---
+  // --- token usage from the transcripts, subagents included (best-effort, measured by the shell) ---
   if (ctx.usage && typeof ctx.usage === 'object') {
     const before = tokensSpent(s.usage);
-    s.usage = { ...s.usage, ...ctx.usage, source: ctx.usage.source || 'transcript' };
-    J({ type: 'usage', spent: tokensSpent(s.usage), delta: tokensSpent(s.usage) - before });
+    // a reading replaces the previous one: a split or a "partial" it does not carry is stale
+    s.usage = normalizeUsage({ ...ctx.usage, source: ctx.usage.source || 'transcript' });
+    J({ type: 'usage', spent: tokensSpent(s.usage), delta: tokensSpent(s.usage) - before, source: s.usage.source,
+      ...(s.usage.subagents ? { subagents: tokensSpent(s.usage.subagents), subagentFiles: s.usage.subagents.files } : {}),
+      ...(s.usage.partial ? { partial: true } : {}) });
   }
 
   // --- the tree as the hook sees it now, against the one at the previous stop ---

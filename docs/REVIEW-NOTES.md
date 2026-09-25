@@ -182,7 +182,12 @@ history of decisions is in `../CHANGELOG.md`; the design the v2 comes from is in
 - Adaptive `maxIterations` (`8 + 3 × steps`, cap 60) is set once, on the plan → implement
   transition, only when `--max` was not explicit (`limits.maxIterationsExplicit`).
 - Token usage (`shell/transcript.mjs`) is best-effort: assistant entries' `message.usage`
-  since `armedAt`. Unreadable → `null` → iterations only. Never make the loop depend on it.
+  since `armedAt`, once per `message.id` (the last line wins: one message is written as
+  several lines, input repeated, output growing), main transcript plus
+  `<session>/subagents/agent-*.jsonl` (agent kind from `agent-*.meta.json`). No
+  subagents folder → main transcript only (`source: 'transcript'`). Per-file cache keyed
+  by size, mtime and arm time; past the hook deadline the cached values stand in
+  (`partial`). Unreadable → `null` → iterations only. Never make the loop depend on it.
 
 ## Prompt pack (`src/core/prompts.mjs`, `src/shell/packs.mjs`)
 

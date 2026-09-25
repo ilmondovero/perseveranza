@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, appendFileSync, utimesSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { parseTranscriptUsage } from '../../src/shell/transcript.mjs';
+import { parseTranscriptUsage, readSessionUsage, capAgents } from '../../src/shell/transcript.mjs';
 import { parseTimeoutMs, summarizeExternalOpinions, boolEnv } from '../../src/shell/util.mjs';
 import { appendJournal, readJournal, renderHistory, formatEntry } from '../../src/shell/journal.mjs';
 import { loadPromptLayers } from '../../src/shell/packs.mjs';
@@ -28,6 +28,104 @@ test('transcript usage: sums assistant usage after the arm time, null when nothi
   assert.deepEqual(parseTranscriptUsage(lines, null).inputTokens, 16);
   assert.equal(parseTranscriptUsage('', null), null);
   assert.equal(parseTranscriptUsage('{"type":"user"}', null), null);
+});
+
+test('transcript usage: one API message written as several lines counts once, with its last usage', () => {
+  // real layout: one line per content block, input and cache repeated, output growing
+  const msg = (id, out, extra = {}) => JSON.stringify({ type: 'assistant', timestamp: '2030-01-01T00:00:00Z', ...extra, message: { id, usage: { input_tokens: 2, output_tokens: out, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50 } } });
+  const text = [msg('m1', 8), msg('m1', 8), msg('m1', 237), msg('m2', 5), msg('m2', 40)].join('\n');
+  assert.deepEqual(parseTranscriptUsage(text), { inputTokens: 4, outputTokens: 277, cacheReadTokens: 2000, cacheCreationTokens: 100 });
+  const side = [msg('m1', 10), msg('s1', 99, { isSidechain: true })].join('\n');
+  assert.equal(parseTranscriptUsage(side).outputTokens, 109);
+  assert.equal(parseTranscriptUsage(side, null, { skipSidechain: true }).outputTokens, 10, 'counted from the subagent file instead');
+});
+
+test('session usage: subagent transcripts are counted by agent kind, cached, and fall back to the main one', () => {
+  const dir = tmp();
+  const line = (id, i, o) => JSON.stringify({ type: 'assistant', timestamp: '2030-01-01T00:00:00Z', message: { id, usage: { input_tokens: i, output_tokens: o } } });
+  const main = join(dir, 'sess.jsonl');
+  writeFileSync(main, line('a', 10, 100));
+  const since = '2025-01-01T00:00:00Z';
+  // no subagents folder: the main transcript alone, as before, and it says so
+  const alone = readSessionUsage(main, since);
+  assert.equal(alone.source, 'transcript');
+  assert.equal(alone.outputTokens, 100);
+  assert.equal(alone.subagents, null);
+
+  const subs = join(dir, 'sess', 'subagents');
+  mkdirSync(subs, { recursive: true });
+  writeFileSync(join(subs, 'agent-r1.jsonl'), [line('r', 1, 20), line('r', 1, 30)].join('\n'));
+  writeFileSync(join(subs, 'agent-r1.meta.json'), JSON.stringify({ agentType: 'perseveranza:pf-reviewer', model: 'opus' }));
+  writeFileSync(join(subs, 'agent-v1.jsonl'), line('v', 2, 7));
+  writeFileSync(join(subs, 'agent-v1.meta.json'), '{not json');
+  writeFileSync(join(subs, 'agent-old.jsonl'), line('o', 500, 500));
+  utimesSync(join(subs, 'agent-old.jsonl'), new Date('2024-01-01'), new Date('2024-01-01')); // last written before the arm
+  writeFileSync(join(subs, 'notes.txt'), 'ignored');
+  const cachePath = join(dir, 'usage-cache.json');
+  const u = readSessionUsage(main, since, { cachePath });
+  assert.equal(u.source, 'transcript+subagents');
+  assert.deepEqual([u.inputTokens, u.outputTokens], [13, 137]);
+  assert.deepEqual(u.subagents, { files: 2, inputTokens: 3, outputTokens: 37, cacheReadTokens: 0, cacheCreationTokens: 0 });
+  assert.deepEqual(Object.keys(u.byAgent).sort(), ['main', 'perseveranza:pf-reviewer', 'subagent']);
+  assert.equal(u.byAgent['perseveranza:pf-reviewer'].outputTokens, 30);
+  assert.equal(u.partial, false);
+  assert.ok(existsSync(cachePath));
+
+  // out of time: unchanged files come from the cache, a grown one keeps its last value
+  const late = { cachePath, deadline: 0 };
+  assert.deepEqual(readSessionUsage(main, since, late), u);
+  appendFileSync(join(subs, 'agent-v1.jsonl'), '\n' + line('v2', 1, 1000));
+  const partial = readSessionUsage(main, since, late);
+  assert.equal(partial.partial, true);
+  assert.equal(partial.outputTokens, 137, 'a lower bound, never a guess');
+  const full = readSessionUsage(main, since, { cachePath });
+  assert.equal(full.outputTokens, 1137);
+  assert.equal(full.partial, false);
+  // a cache of another session or arm is not reused
+  const other = readSessionUsage(main, '2025-06-01T00:00:00Z', late);
+  assert.equal(other.partial, true);
+  assert.equal(other.outputTokens, 100);
+  writeFileSync(cachePath, '{"transcript":' + JSON.stringify(main) + ',"files":{"agent-r1.jsonl":{"usage":null}}}');
+  assert.equal(readSessionUsage(main, since, { cachePath }).outputTokens, 1137, 'a malformed cache entry is read again');
+  assert.equal(readSessionUsage(join(dir, 'missing.jsonl'), since), null);
+  // nothing changed: the cache is not rewritten (the gate folder may be synced)
+  readSessionUsage(main, since, { cachePath });
+  utimesSync(cachePath, new Date('2020-01-01'), new Date('2020-01-01'));
+  readSessionUsage(main, since, { cachePath });
+  assert.equal(statSync(cachePath).mtime.getFullYear(), 2020);
+});
+
+test('session usage: agent kinds are names from a file, never keys of the breakdown itself', () => {
+  const dir = tmp();
+  const line = (id, o) => JSON.stringify({ type: 'assistant', timestamp: '2030-01-01T00:00:00Z', message: { id, usage: { input_tokens: 0, output_tokens: o } } });
+  const main = join(dir, 's.jsonl');
+  writeFileSync(main, line('m', 1));
+  const subs = join(dir, 's', 'subagents');
+  mkdirSync(subs, { recursive: true });
+  ['main', '__proto__', 'constructor'].forEach((type, i) => {
+    writeFileSync(join(subs, `agent-${i}.jsonl`), line(`x${i}`, 10));
+    writeFileSync(join(subs, `agent-${i}.meta.json`), JSON.stringify({ agentType: type }));
+  });
+  const u = readSessionUsage(main, null);
+  assert.equal(u.byAgent.main.outputTokens, 1, 'the session row is not merged with an agent named "main"');
+  assert.equal(u.byAgent['agent:main'].outputTokens, 10);
+  assert.equal(Object.getOwnPropertyDescriptor(u.byAgent, '__proto__').value.outputTokens, 10);
+  assert.equal(u.byAgent.constructor.outputTokens, 10);
+  assert.equal(Object.prototype.outputTokens, undefined);
+  assert.equal(u.outputTokens, 31);
+});
+
+test('session usage: the split by agent kind is bounded, the rest summed as "other"', () => {
+  const by = { main: { inputTokens: 1, outputTokens: 1 } };
+  for (let i = 0; i < 20; i++) by[`a${i}`] = { inputTokens: 0, outputTokens: 100 - i };
+  const c = capAgents(by, 12);
+  assert.equal(Object.keys(c).length, 12);
+  assert.equal(c.main.outputTokens, 1);
+  assert.equal(c.a0.outputTokens, 100);
+  assert.ok(!('a10' in c));
+  assert.equal(c.other.outputTokens, [10, 11, 12, 13, 14, 15, 16, 17, 18, 19].reduce((s, i) => s + 100 - i, 0));
+  const few = capAgents({ main: { inputTokens: 1, outputTokens: 1 }, x: { inputTokens: 1, outputTokens: 1 } }, 12);
+  assert.deepEqual(Object.keys(few), ['main', 'x']);
 });
 
 test('util: parseTimeoutMs, boolEnv, summarizeExternalOpinions', () => {

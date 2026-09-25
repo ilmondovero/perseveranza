@@ -207,7 +207,7 @@ The options of `/perseveranza`:
 | option | effect |
 |---|---|
 | `--max N` | iteration cap (otherwise adaptive: `8 + 3 × steps`, at most 60) |
-| `--budget-tokens N` | token cap, measured from the session transcript |
+| `--budget-tokens N` | token cap, measured from the session transcript and those of its subagents |
 | `--max-retries N` | fixes granted per step before the pause (default 3) |
 | `--commit` | atomic commit after every validated step |
 | `--test "cmd"` | the suite (if you do not pass it, Claude finds it) |

@@ -67,7 +67,7 @@ export function formatEntry(e) {
     case 'verdict': return `${ts} | verdict ${e.artifact}: ${e.stale ? `STALE (${staleWhy(e)}) -> ${e.treatedAs}` : e.error ? `ERROR ${e.error} -> ${e.treatedAs}` : (e.artifact === 'review.json' ? `blocking=${e.blocking}` : `pass=${e.pass}`)}${e.notes && e.notes.length ? ` (${e.notes.join('; ')})` : ''}${e.savedAs ? ` -> ${e.savedAs}` : ''}`;
     case 'test': return `${ts} | test exit=${e.exitCode} it${e.iteration} ${e.cmd}${e.reused ? ` (green reused${e.docsOnly ? ', only docs changed' : ''}, not rerun)` : ''}${e.failed && e.failed.length ? ` failed: ${e.failed.join(', ')}` : ''}${e.flaky ? ` FLAKY: ${e.flaky}` : ''}`;
     case 'ask': return `${ts} | ask ${e.provider}${e.model ? `/${e.model}` : ''} slot=${e.slot} ${e.ok ? 'ok' : 'ERROR'}`;
-    case 'usage': return `${ts} | usage ${e.spent} tokens (+${e.delta})`;
+    case 'usage': return `${ts} | usage ${e.spent} tokens (${e.delta < 0 ? '' : '+'}${e.delta})${e.subagents != null ? `, subagents ${e.subagents} in ${e.subagentFiles} transcript(s)` : e.source === 'transcript' ? ', main transcript only' : ''}${e.partial ? ', PARTIAL (hook out of time)' : ''}`;
     case 'budget': return e.adaptive ? `${ts} | budget adaptive: ${e.steps} steps -> max ${e.maxIterations}` : `${ts} | budget ${e.reason}: ${e.detail}`;
     case 'session': return `${ts} | session ${e.event} ${e.from ? `${e.from} -> ` : ''}${e.to || ''}${e.ageMs != null ? ` (silent for ${formatAge(e.ageMs)})` : ''}`.trimEnd();
     case 'activity': return `${ts} | ${e.event === 'delegate' ? `delegated to ${e.agent}` : e.event === 'subagent-stop' ? `subagent ${e.agent} finished` : e.event === 'refused' ? `REFUSED ${e.tool} (${e.why})` : `activity ${e.tool || ''}`}`;

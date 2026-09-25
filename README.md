@@ -212,7 +212,7 @@ Le opzioni di `/perseveranza`:
 | opzione | effetto |
 |---|---|
 | `--max N` | tetto di iterazioni (altrimenti adattivo: `8 + 3 × step`, massimo 60) |
-| `--budget-tokens N` | tetto di token, misurati dalla trascrizione della sessione |
+| `--budget-tokens N` | tetto di token, misurati dalla trascrizione della sessione e da quelle dei suoi subagent |
 | `--max-retries N` | fix concessi per step prima della pausa (default 3) |
 | `--commit` | commit atomico dopo ogni step validato |
 | `--test "cmd"` | la suite (se non la passi, Claude la individua) |

@@ -75,6 +75,24 @@ function deepMerge(base, patch) {
 
 const num = (v, def) => (Number.isFinite(Number(v)) ? Number(v) : def);
 const bool = (v, def) => (typeof v === 'boolean' ? v : def);
+const USAGE_KEYS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'];
+const tokenCounts = (o) => Object.fromEntries(USAGE_KEYS.map((k) => [k, Math.max(0, num(o && o[k], 0))]));
+const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+const MAX_USAGE_AGENTS = 16;
+
+// state.usage: the totals the budget reads, plus the split by agent kind and
+// the subagents' share. Coerced here, not trusted: it comes from files Claude Code writes.
+export function normalizeUsage(raw) {
+  const u = isObj(raw) ? raw : {};
+  const out = { ...tokenCounts(u), source: typeof u.source === 'string' ? u.source.slice(0, 40) : null };
+  if (isObj(u.byAgent)) {
+    out.byAgent = Object.fromEntries(Object.entries(u.byAgent).filter(([, v]) => isObj(v)).slice(0, MAX_USAGE_AGENTS)
+      .map(([k, v]) => [String(k).slice(0, 80), tokenCounts(v)]));
+  }
+  if (isObj(u.subagents)) out.subagents = { files: Math.max(0, num(u.subagents.files, 0)), ...tokenCounts(u.subagents) };
+  if (u.partial === true) out.partial = true;
+  return out;
+}
 
 // Fill defaults and coerce types on a v2 object. Never throws on odd input.
 export function normalizeState(raw) {
@@ -97,7 +115,7 @@ export function normalizeState(raw) {
   s.limits.maxRetries = num(s.limits.maxRetries, DEFAULT_MAX_RETRIES);
   if (s.limits.maxRetries < 1) s.limits.maxRetries = DEFAULT_MAX_RETRIES;
   s.limits.maxTokens = s.limits.maxTokens == null ? null : Math.max(0, num(s.limits.maxTokens, 0)) || null;
-  for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens']) s.usage[k] = Math.max(0, num(s.usage[k], 0));
+  s.usage = normalizeUsage(s.usage);
   s.signals.lastReport = ['pass', 'fail'].includes(s.signals.lastReport) ? s.signals.lastReport : 'none';
   s.signals.claimedDone = bool(s.signals.claimedDone, false);
   s.signals.paused = bool(s.signals.paused, false);

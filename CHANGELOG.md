@@ -3,6 +3,39 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## Non rilasciato
+
+Due pezzi della fase 1 di `docs/PIANO-GIUDICI-PARALLELI.md`, indipendenti dai giudici in
+parallelo e utili comunque.
+
+La misura dei token cambia in due modi opposti. **Cambio di comportamento:** lo stesso
+`--budget-tokens` non vale più la stessa quantità di lavoro. Il nuovo totale va da un terzo
+a oltre quattro volte il vecchio: sulle sessioni reali con subagent la mediana è circa 0,6,
+e più di due su tre scendono. Conviene rivedere il tetto guardando la ripartizione in `status`.
+
+- **Ogni messaggio si conta una volta.** Claude Code scrive un messaggio dell'API su più
+  righe (una per blocco di contenuto), che ripetono l'`usage`: l'input sempre, l'output
+  quasi sempre. Il budget le sommava tutte, e la cifra della sessione era circa il doppio
+  del reale (su 50 trascrizioni: 4,7M di output contati contro 2,3M veri). Ora ogni
+  `message.id` conta una volta, con l'ultima riga.
+- **Il budget in token conta anche i subagent.** Reviewer, verificatori ed executor
+  scrivono trascrizioni loro (`<sessione>/subagents/agent-*.jsonl`) che il budget non
+  leggeva: nei run archiviati erano circa metà della spesa. Ora si sommano a quella della
+  sessione, dall'arm in poi, e `status` mostra la ripartizione per tipo di agente (dal
+  `.meta.json` accanto a ogni trascrizione), conservata anche nel `summary.json` del
+  run. Il formato delle trascrizioni dei subagent è di Claude Code, non documentato: senza
+  la cartella si conta la sola sessione, come prima, e `status`/`history` lo dicono. Un
+  subagent finito si legge una volta per run (`.omc-loop/usage-cache.json`); se l'hook
+  finisce il tempo valgono gli ultimi valori letti e il journal marca la lettura come
+  parziale. Una sessione che non guida il loop non legge nulla.
+- **Severità tolleranti nei verdetti.** Un verdetto giusto nel merito veniva buttato per un
+  sinonimo (in un run reale: `"severity": "medium"`). Ora `blocker`/`bloccante` si leggono
+  `critical`; `high`/`medium`/`major`/`alta`/`maggiore` `warning`; `low`/`minor`/`info`/`nit`/
+  `minore` `suggestion`; il journal annota la mappatura. `high` non diventa `critical`: nella
+  scala critical/high/medium/low sta sotto, e un `critical` rovescia il `blocking`/`pass`
+  dichiarato dal giudice. Una severità ancora sconosciuta resta un
+  errore (esito mancante), come prima: un verdetto letto con un dubbio non è un verdetto.
+
 ## 2.5.3
 
 Tre correzioni (verdetti legati alla loro richiesta, prove ricontrollate alla chiusura,
