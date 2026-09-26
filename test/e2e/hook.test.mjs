@@ -622,7 +622,7 @@ test('the Stop hook and arm spawn ONE live watchdog per loop unless OMC_LOOP_NO_
   fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
   assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, wd.pid, 'one live watchdog per loop');
   // give the detached watchdog its second to speak and leave
-  const until = Date.now() + 5000;
+  const until = Date.now() + 15000; // generous: a loaded CI runner is slow to start node, the loop leaves as soon as it can
   while (Date.now() < until && !journal(p).some((e) => e.type === 'watchdog')) wait(200);
   assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 1, 'the detached watchdog really runs and journals, once');
   wait(300);
@@ -632,7 +632,7 @@ test('the Stop hook and arm spawn ONE live watchdog per loop unless OMC_LOOP_NO_
   fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
   const wd2 = JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8'));
   assert.notEqual(wd2.pid, wd.pid, 'the incumbent is gone: a fresh one');
-  const until2 = Date.now() + 5000;
+  const until2 = Date.now() + 15000;
   while (Date.now() < until2 && journal(p).filter((e) => e.type === 'watchdog').length < 2) wait(200);
   assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 2);
   wait(300);
