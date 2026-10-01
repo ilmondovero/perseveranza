@@ -92,6 +92,24 @@ test('the agents exist with the expected front matter', () => {
   assert.ok(/^effort: high$/m.test(readLf(join(ROOT, AGENT_FILES.find((a) => a.endsWith('pf-verifier.md'))))));
 });
 
+test('the advisor agent ships: consultative, read-only, one free-text file, no verdict', () => {
+  const a = AGENT_FILES.find((f) => f.endsWith('pf-advisor.md'));
+  assert.ok(a, 'pf-advisor.md in the manifest (install copies it, uninstall removes it)');
+  const text = readLf(join(ROOT, a));
+  const fm = text.slice(4, text.indexOf('\n---\n', 4));
+  assert.ok(/^name: pf-advisor$/m.test(fm));
+  assert.ok(/^tools: Read, Grep, Glob, Bash, Write$/m.test(fm));
+  assert.ok(/^model: inherit$/m.test(fm));
+  assert.ok(/^effort: high$/m.test(fm));
+  assert.ok(text.includes('.omc-loop/advisor-<slot>-<n>.md'));
+  assert.ok(text.includes('No JSON, no request id, no verdict'));
+  assert.ok(text.includes('NOT allowed to modify'));
+  for (const section of ['Diagnosis / critique', 'The 3 main risks', 'What I would change', 'What I could not verify']) assert.ok(text.includes(section), section);
+  // the command and both READMEs tell about it
+  assert.ok(readLf(join(ROOT, COMMAND_FILES[0])).includes('pf-advisor'));
+  for (const readme of ['README.md', 'README.en.md']) assert.ok(readLf(join(ROOT, readme)).includes('pf-advisor'), readme);
+});
+
 test('the README transition tables are generated from the code (both languages)', () => {
   const md = toMarkdown();
   for (const readme of ['README.md', 'README.en.md']) {
@@ -122,6 +140,30 @@ test('packs/it.json is a complete, valid override of the defaults', () => {
   // the operative verbs must survive translation
   assert.ok(v.overrides['review-advance'].includes('{{LOOP}} claim-done'));
   assert.ok(v.overrides['plan-write'].includes('{{LOOP}} complexity low|medium|high'));
+});
+
+test('the final verification by lenses: prompts in both languages hand out the lens list and the id', () => {
+  assert.deepEqual(PROMPT_EXPECTED['final-verify-lenses'], ['verdictRequestId', 'lensList']);
+  assert.ok(PROMPT_EXPECTED['verify-missing-lenses'].includes('lensList'));
+  const it = validatePack(JSON.parse(readFileSync(join(ROOT, 'packs', 'it.json'), 'utf8'))).overrides;
+  for (const key of ['final-verify-lenses', 'verify-missing-lenses', 'hint-lens', 'hint-verify-recheck', 'lens-general', 'lens-correctness', 'lens-security', 'lens-tests']) {
+    assert.equal(typeof DEFAULT_PROMPTS[key], 'string', `default ${key}`);
+    assert.equal(typeof it[key], 'string', `it ${key}`);
+  }
+  for (const prompts of [DEFAULT_PROMPTS, it]) {
+    assert.ok(prompts['final-verify-lenses'].includes('{{lensList}}') && prompts['final-verify-lenses'].includes('{{priorVerifyHint}}'));
+    assert.ok(prompts['final-verify'].includes('{{priorVerifyHint}}'), 'the single verifier rechecks the rejected rounds too');
+    assert.ok(prompts['verify-missing-lenses'].includes('{{missingLenses}}') && prompts['verify-missing-lenses'].includes('{{LOOP}} report fail') && !prompts['verify-missing-lenses'].includes('{{LOOP}} report pass'), 'a pass is never self-declared with lenses missing');
+    assert.ok(prompts['hint-lens'].includes('{{lensFile}}') && prompts['hint-lens'].includes('{{verdictRequestId}}'));
+  }
+  // a pack written before the lenses is warned about nothing it could not know
+  const old = validatePack({ prompts: { 'final-verify': 'Verify with {{verdictRequestId}}.' } });
+  assert.deepEqual(old.missingPlaceholders, []);
+  const lensless = validatePack({ prompts: { 'final-verify-lenses': 'Verify {{verdictRequestId}}.' } });
+  assert.deepEqual(lensless.missingPlaceholders, [{ key: 'final-verify-lenses', placeholder: 'lensList' }]);
+  // the verifier agent knows the lens files
+  const verifier = readLf(join(ROOT, AGENT_FILES.find((a) => a.endsWith('pf-verifier.md'))));
+  assert.ok(verifier.includes('## Lenses') && verifier.includes('.omc-loop/verify-<lens>.json') && verifier.includes('"lens": "<your lens>"'));
 });
 
 test('install.mjs copies exactly the manifest, registers the hook, and uninstalls cleanly', () => {
@@ -162,6 +204,8 @@ test('install.mjs copies exactly the manifest, registers the hook, and uninstall
   const u = spawnSync(process.execPath, [join(ROOT, 'install.mjs'), '--claude-dir', cdir, '--uninstall'], { encoding: 'utf8' });
   assert.equal(u.status, 0, u.stdout + u.stderr);
   assert.ok(!existsSync(join(cdir, 'perseveranza')));
+  for (const a of AGENT_FILES) assert.ok(!existsSync(join(cdir, 'agents', a.split('/').pop())), `${a} removed`);
+  assert.ok(AGENT_FILES.includes('agents/pf-advisor.md'));
   const after = JSON.parse(readFileSync(join(cdir, 'settings.json'), 'utf8')).hooks;
   for (const spec of HOOK_SPECS) assert.equal(after[spec.event].length, 0, `${spec.event}: the list existed (install created it): kept, emptied`);
   // a settings.json that never had SessionStart does not gain an empty one on uninstall

@@ -1,6 +1,6 @@
 ---
 description: Arm the perseveranza feedback loop (plan -> implement -> review -> adversarial final verification) and start the task
-argument-hint: <task description> [--max N] [--commit] [--external off] [--check] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--lang en]
+argument-hint: <task description> [--max N] [--commit] [--external off] [--check] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--verifiers lenses] [--advisor on|off] [--advisor-model name] [--lang en]
 ---
 
 Enable "perseveranza" mode for the task below and start working on it.
@@ -13,7 +13,7 @@ Steps to run NOW, in order:
 
 1. If the text above contains flags (`--max N`, `--commit`, `--external off`, `--check`,
    `--test "cmd"`, `--no-git-finish`, `--no-push`, `--approve-plan`, `--budget-tokens N`,
-   `--lang xx`),
+   `--verifiers <lenses>`, `--advisor on|off`, `--advisor-model <name>`, `--lang xx`),
    REMOVE them from the task description and pass them to the command; otherwise keep the
    defaults. Escape double quotes inside the task. If the project has a test suite and the
    user did not pass `--test`, find it yourself (package.json, Makefile, pytest...) and pass
@@ -33,7 +33,12 @@ Steps to run NOW, in order:
    = no automatic commit+push at the end; `--no-push` = local commit only at the end;
    `--approve-plan` = after the plan phase the loop PAUSES presenting the plan to the user
    and restarts only when they run `resume`; `--budget-tokens N` = token cap in addition to
-   the iteration cap; `--max N` = iteration cap, otherwise adaptive from the number of steps.)
+   the iteration cap; `--max N` = iteration cap, otherwise adaptive from the number of steps;
+   `--verifiers correctness,security,tests` = the final verification split into lenses, one
+   verifier per lens, among general, correctness, security, tests (default auto: those three
+   at complexity high, otherwise the single general verifier); `--advisor off` = no internal
+   advisor (default on); `--advisor-model <name>` = its model (default `OMC_ADVISOR_MODEL`,
+   else opus).)
    If the command says the loop is ALREADY armed, do not force it: show the user
    `status` and ask whether to `disarm` first.
 
@@ -49,7 +54,13 @@ Steps to run NOW, in order:
 
    node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" ask <provider> plan -- "<task + plan>"
 
-   and integrate the well-founded remarks. Then assess the task complexity and record it:
+   and integrate the well-founded remarks. If arm printed `Internal advisor: on` and there is
+   no external model (or none of them gives a usable answer), ask the `pf-advisor` agent
+   (`perseveranza:pf-advisor` from the plugin) with the model arm printed, in a clean context,
+   for a critique of task + plan: it writes `.omc-loop/advisor-plan-0.md` and changes nothing.
+   Integrate only the well-founded remarks and write in `.omc-loop/notes.md` why you
+   discarded the others; a missing, empty or failed opinion is NOT a finding and does NOT
+   block: proceed on your own judgement and note that it is missing. Then assess the task complexity and record it:
 
    node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" complexity low|medium|high
 
@@ -88,8 +99,12 @@ How the loop works (feedback):
   green on record. The verb records which tests failed; a red that does not reproduce on the
   same tree is journaled as non-reproducible (a flaky test: do not chase it as a bug).
 - With `--commit`, after every passed review you commit the validated step (atomic commit).
-- If a fix fails twice, the next phase includes an independent diagnosis from an external
-  model (if detected).
+- If a fix fails twice (or the final verification rejects the work twice), the next phase
+  includes an independent diagnosis from an external model (if detected) and from the internal
+  advisor `pf-advisor` (the fallback when no external answers; off with `--advisor off`). The
+  advisor gets every attempt that already failed on the step, must not propose one again, and
+  says whether the step itself is ill-posed: then rewrite the step in `plan.md` before
+  retrying. It advises, it never routes: a missing opinion blocks nothing.
 - When ALL steps are ticked and the project is complete: run the test verb and, in the same
   response,
   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" claim-done
@@ -132,7 +147,7 @@ Rules:
 - At every new step, if its complexity clearly differs from the recorded one, update it
   with the `complexity` verb before implementing.
 - The review uses the `pf-reviewer` agent, the final verification `pf-verifier`, high
-  complexity implementation `pf-executor` (shipped with the plugin; `perseveranza:pf-*` from
+  complexity implementation `pf-executor`, the second opinion `pf-advisor` (shipped with the plugin; `perseveranza:pf-*` from
   the plugin or the plain name from a manual install; fall back to generic subagents if
   absent). Pass them step/plan, touched files and diff in the prompt (if huge: list +
   excerpts): they start from an empty context, do not make them dig.

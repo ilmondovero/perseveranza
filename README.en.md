@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-2.5.3-blue)
+![version](https://img.shields.io/badge/version-2.6.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -77,15 +77,15 @@ Perseveranza is built on three principles:
 ```mermaid
 flowchart TD
     START(["/perseveranza «task»"]) --> PLAN
-    PLAN["<b>plan</b><br/>explore the code → checklist<br/>plan critique by an external model<br/>record the complexity"] --> IMPL
+    PLAN["<b>plan</b><br/>explore the code → checklist<br/>plan critique: external model<br/>or internal advisor pf-advisor<br/>record the complexity"] --> IMPL
     IMPL["<b>implement</b><br/>one checklist step"] --> REV
     REV["<b>review</b><br/>pf-reviewer agent, clean context<br/>verdict in review.json"] -- "blocking > 0" --> FIX
-    FIX["<b>fix</b> · same step, re-reviewed<br/>from the 2nd failure: external diagnosis"] --> REV
+    FIX["<b>fix</b> · same step, re-reviewed<br/>from the 2nd failure: external diagnosis<br/>and/or internal advisor"] --> REV
     REV -- "blocking = 0" --> NEXT{"steps left?"}
     NEXT -- "yes" --> IMPL
     NEXT -- "no → fresh green test<br/>+ claim-done" --> CLEAN
     CLEAN["<b>cleanup</b> · once"] --> VERIFY
-    VERIFY["<b>adversarial final verification</b><br/>pf-verifier agent tries to falsify<br/>+ external model + security lens<br/>verdict in verify.json"] -- "pass" --> DONE
+    VERIFY["<b>adversarial final verification</b><br/>pf-verifier agent tries to falsify<br/>+ external model + security lens<br/>verdict in verify.json<br/>(or one per lens)"] -- "pass" --> DONE
     VERIFY -- "fail" --> POSTFIX["post-verification fix"] --> IMPL
     FIX -. "fixes exhausted" .-> PAUSE
     VERIFY -. "rejections exhausted" .-> PAUSE
@@ -99,17 +99,17 @@ flowchart TD
 
 | phase | who | what it produces |
 |---|---|---|
-| **plan** | Claude, after exploring the code | `plan.md` as a checklist, complexity recorded |
+| **plan** | Claude, after exploring the code; critique by an external model or by `pf-advisor` | `plan.md` as a checklist, complexity recorded |
 | **implement** | Claude (or `pf-executor` with opus when complexity is high) | one step, with its edge cases |
 | **review** | `pf-reviewer`, clean context, model by complexity | `review.json` with `requestId`, `blocking` and findings |
-| **fix** | Claude, on the same step | the fix, which goes back to review |
+| **fix** | Claude, on the same step; from the 2nd attempt with the opinion of `pf-advisor` | the fix, which goes back to review |
 | **cleanup** | Claude, once | dead code and duplication removed, docs updated |
-| **final verification** | `pf-verifier`, assuming the work is wrong | `verify.json` with `requestId`, `pass` and findings |
+| **final verification** | `pf-verifier`, assuming the work is wrong, one per lens | `verify.json` (or one `verify-<lens>.json` per lens) with `requestId`, `pass` and findings |
 | **closure** | the Stop hook, not Claude | commit, push, run archive, notification |
 
 The reviewers' model follows the complexity Claude records: `haiku` / `sonnet` / `opus`
-for the review, `sonnet` / `opus` / `opus` for the final verification; with `high` the
-verification adds a security lens.
+for the review, `sonnet` / `opus` / `opus` for the final verification. With `high` the
+final verification splits into three lenses working side by side (see below).
 
 ## The guarantees
 
@@ -190,6 +190,37 @@ verification adds a security lens.
   later: it is set aside as `review-stale-<n>.json` and the phase asks for the verdict,
   once. A verdict without an id (an older prompt pack) counts if written after the
   request; one with the right id counts even when the file clock lags.
+- **The final verification can look through several lenses.** With `--verifiers correctness,security,tests`
+  (and by default at complexity `high`) Claude delegates in one message, in the foreground,
+  one verifier per lens: `correctness` (logic, edge cases, hostile inputs, regressions the
+  fixes introduced), `security` (secrets, untrusted input, injection, path traversal),
+  `tests` (targeted tests, uncovered cases, comments and documentation that tell the truth).
+  Each writes `verify-<lens>.json` with the same `requestId`. The round passes only when every
+  lens wrote and none has a `critical` finding; a `pass: false` without a critical is a pass
+  with warnings, noted in the journal, unless a finding is `high`/`major` (that blocks). A missing lens is asked for alone, the others stay
+  valid; the second time it is a rejection. The findings of every lens end up, each with its
+  lens, in one `verify-<n>.json`. A `verify.json` for the round (a custom prompt pack that does not know the lenses)
+  covers every lens that has no file of its own, and rejects the round if it rejects
+  (`lens-fallback` in the journal). With the `general` lens alone (the
+  default up to complexity `medium`) everything stays as it was: one verifier, `verify.json`.
+- **Every rejection makes the next round stronger.** The `verify-<n>.json` of the last three
+  rejected rounds enter the prompt of the next verification: every verifier must check that
+  those defects are fixed and that the fixes introduced no regression.
+- **A second opinion even without external models.** The `pf-advisor` agent (clean context,
+  read-only on the source, model `opus` by default) steps in where a second opinion really
+  helps: before the plan is delivered, and when the same error comes back (from the 2nd fix
+  after a rejected review, from the 2nd rejection of the final verification). With external
+  models detected it is the fallback when none answers; without them it is the second
+  opinion. It writes one free-text file, `.omc-loop/advisor-<slot>-<n>.md` (critique, three
+  risks, what it would change, what it could not check): no JSON, no verdict. On a fix it
+  gets every attempt that already failed on the same step (`review-<n>.json`,
+  `verify-<n>.json`), must not propose again an approach that already failed, and says
+  whether the problem is the step itself: then Claude rewrites the step in `plan.md` before
+  retrying. It is consultative: it never routes the loop, and a missing, empty or failed
+  opinion is not a finding and blocks nothing (Claude notes it in `notes.md`). The journal
+  records every hint (`advisor-hint`: slot and reason `no-external`/`fallback`/`off`) so
+  its use can be measured; `status` shows `Advisor: on (opus)` or `off`. `--advisor off`
+  turns it off, `--advisor-model` or `OMC_ADVISOR_MODEL` pick the model.
 - **A final pass closes only what it judged.** If at the pass the plan has open steps
   again, the last recorded suite run is not a green run on the judged code (red, missing,
   or run before a cleanup that touched the code), or the code changed after the
@@ -212,7 +243,10 @@ The options of `/perseveranza`:
 | `--commit` | atomic commit after every validated step |
 | `--test "cmd"` | the suite (if you do not pass it, Claude finds it) |
 | `--approve-plan` | pause after the plan: you approve with `resume` |
+| `--verifiers <lenses>` | final verification lenses among `general`, `correctness`, `security`, `tests` (default `auto`: the last three at complexity `high`, otherwise `general`) |
 | `--external off` | no comparison with external models |
+| `--advisor off` | no internal advisor (default `on`) |
+| `--advisor-model <name>` | model of the internal advisor (default `OMC_ADVISOR_MODEL`, else `opus`) |
 | `--check` | probe the detected providers now: start only with those that answer |
 | `--no-git-finish` / `--no-push` | no commit+push at the end / local commit only |
 | `--lang en` | instructions in English (default: Italian) |

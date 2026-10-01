@@ -24,22 +24,32 @@ export const DEFAULT_PROMPTS = {
   'hint-ext-plan': ` Then ask an external model for an independent critique of the plan with {{askHint}}, passing task and plan; integrate the well-founded remarks (opinions are saved in .omc-loop/external-plan-*.md).`,
   'hint-ext-fix': ` Before retrying, ask an external model for an independent diagnosis with {{askHint}}, describing the problem that keeps failing{{extFraming}}; the diagnosis is saved in .omc-loop/external-fix-*.md.`,
   'hint-ext-verify': ` In addition to the subagent, ask one or more external models to falsify the work with {{askHint}}, passing plan and diff{{extFraming}}. Weigh their findings (saved in .omc-loop/external-verify-*.md); a policy refusal, an error or a provider timeout is NOT a finding: if no external model answers, proceed on the subagent's verdict alone (the closure notes it in the commit).`,
+  'hint-advisor-fallback': `If no external model gives a usable answer (refusal, error, timeout, empty reply): `,
+  'hint-advisor-plan': ` {{advisorFallback}}Before stopping, ask {{advisorRef}} with model={{advisorModel}} (clean context, read-only) for an independent critique of the plan, passing in the prompt the task and the full plan: it writes its opinion (critique, the 3 main risks, what it would change, what it could not check) to .omc-loop/advisor-plan-{{advisorN}}.md and changes nothing. Integrate only the well-founded remarks and explain in .omc-loop/notes.md why you discarded the others. The advisor is consultative: a missing or empty opinion, or an error, is NOT a finding and does NOT block: proceed on your own judgement and note in .omc-loop/notes.md that the opinion is missing.`,
+  'hint-advisor-fix': ` {{advisorFallback}}Before retrying, ask {{advisorRef}} with model={{advisorModel}} (clean context, read-only) for an independent diagnosis, passing in the prompt: the task, the plan step, the diff, the latest findings, and EVERY earlier failed attempt on this step ({{priorAttempts}}). Tell it NOT to propose again an approach that already failed, and to say whether the problem is the plan (the step is ill-posed) rather than the implementation. It writes its opinion to .omc-loop/advisor-fix-{{advisorN}}.md and changes nothing. If it says the step is ill-posed, rewrite that step in .omc-loop/plan.md first (it stays '- [ ]') and then retry on the rewritten step. Integrate only the well-founded remarks and explain in .omc-loop/notes.md why you discarded the others. The advisor is consultative: a missing or empty opinion, or an error, is NOT a finding and does NOT block: proceed on your own judgement and note in .omc-loop/notes.md that the opinion is missing.`,
+  'hint-advisor-verify-fix': ` {{advisorFallback}}Before fixing, ask {{advisorRef}} with model={{advisorModel}} (clean context, read-only) for an independent diagnosis, passing in the prompt: the task, the full plan, the total diff, the latest findings, and EVERY earlier rejected verification ({{priorAttempts}}). Tell it NOT to propose again a fix that already failed, and to say whether the problem is the plan (a step is ill-posed) rather than the implementation. It writes its opinion to .omc-loop/advisor-fix-{{advisorN}}.md and changes nothing. If it says a step is ill-posed, rewrite that step in .omc-loop/plan.md (reopened, '- [ ]') before fixing. Integrate only the well-founded remarks and explain in .omc-loop/notes.md why you discarded the others. The advisor is consultative: a missing or empty opinion, or an error, is NOT a finding and does NOT block: proceed on your own judgement and note in .omc-loop/notes.md that the opinion is missing.`,
   'hint-security': ` Include a security lens: secrets in code, untrusted input, injection, path traversal.`,
   'hint-commit': ` Then commit the step you just validated as an atomic commit, following the repo's conventions.`,
   'hint-test-green': ` Test proof: the full suite is GREEN for the current work tree, recorded by the test verb at iteration {{testIteration}}{{docsOnlyNote}}. Do NOT rerun it and tell every subagent NOT to: run only the tests targeted at what changes. {{testRun}} reruns the suite only if the code changed since (a run outside the verb proves nothing to the loop).`,
   'hint-test-docs-only': ` (only documentation changed since)`,
   'hint-test-none': ` Test proof: no green full-suite run is recorded for the current work tree. Do not run the full suite at every step and tell subagents to run only targeted tests; the full suite is the gate at claim-done. When you do run it, use {{testRun}}: it is recorded and reused as long as the code does not change, while a run outside the verb proves nothing to the loop.`,
   'hint-verdict-file': ` The findings are saved in {{verdictFile}}: reread them there, do not ask the reviewer again.`,
+  'hint-verify-recheck': ` Earlier rounds of this verification rejected the work: their findings are in {{priorVerifyFiles}}. Every verifier must check explicitly that each of those defects is really fixed, and that the fixes introduced no regression.`,
+  'hint-lens': ` [lens {{lens}}: writes .omc-loop/{{lensFile}} with requestId {{verdictRequestId}} and "lens": "{{lens}}"; mandate: {{mandate}}]`,
+  'lens-general': `the whole adversarial mandate: correctness and edge cases, security, tests, and the plan realised in full`,
+  'lens-correctness': `logic, edge cases, hostile inputs, and regressions introduced by the fixes`,
+  'lens-security': `secrets in code, untrusted input, injection, path traversal, permissions`,
+  'lens-tests': `run targeted tests, look for the cases the tests do not cover, and check that what comments and documentation claim is true`,
 
   // --- plan ---
-  'plan-write': `PHASE: plan. .omc-loop/plan.md is missing. FIRST explore the relevant code (modules involved, existing patterns, current tests), THEN write the plan as a markdown checklist ('- [ ] step') with small, verifiable steps — but do NOT split into micro-steps what is one cohesive change (e.g. a helper together with ALL its call sites): every step opens a full review round, so group what only makes sense when verified together.{{extPlanHint}} Then assess the task complexity HONESTLY (a small, well-isolated change is often low, not medium by default) and record it with: {{LOOP}} complexity low|medium|high (it routes the models of the next phases). Finally stop.`,
+  'plan-write': `PHASE: plan. .omc-loop/plan.md is missing. FIRST explore the relevant code (modules involved, existing patterns, current tests), THEN write the plan as a markdown checklist ('- [ ] step') with small, verifiable steps — but do NOT split into micro-steps what is one cohesive change (e.g. a helper together with ALL its call sites): every step opens a full review round, so group what only makes sense when verified together.{{extPlanHint}}{{advPlanHint}} Then assess the task complexity HONESTLY (a small, well-isolated change is often low, not medium by default) and record it with: {{LOOP}} complexity low|medium|high (it routes the models of the next phases). Finally stop.`,
   'plan-approval': `PHASE: plan approval (--approve-plan). The plan is written and the loop is PAUSED. Present the plan to the user NOW (goal, the numbered steps, main choices and risks) and explain that to approve it and start the implementation they must run: {{LOOP}} resume (they may edit .omc-loop/plan.md by hand first). Do NOT start implementing and do NOT run resume yourself: approval belongs to the user.`,
   'implement-idle': `PHASE: implement (nothing changed). The work tree is byte-for-byte what it was at your previous stop and no test was recorded: the step was NOT implemented. Typical cause: a delegated subagent was still running when your turn ended, or you stopped before writing anything. Do not send nothing to review: finish the current step now (wait for the subagent, check its result on disk) and stop only when the changes exist. If the step truly needs no change, write why in .omc-loop/notes.md and stop: the review follows.`,
   'implement-first': `PHASE: implement. Open .omc-loop/plan.md and implement the FIRST unchecked step.{{implHint}}{{testHint}} Cover EVERYTHING the step promises, including the edge cases and hostile inputs already described in the spec or in code comments (not just the common case): a review that finds a missing case costs a whole extra round. Do NOT tick the box now: it is ticked only after the review passes. If you need input from the user: run {{LOOP}} pause and then ask.`,
 
   // --- review ---
   'review-delegate': `PHASE: code review. Delegate to {{reviewerRef}} with model={{reviewModel}} (clean context) the review of the step just implemented, passing in the prompt: the plan step, the list of touched files, the diff (if huge: file list + relevant excerpts), and verdict request ID {{verdictRequestId}}.{{testHint}} It checks: correctness, edge cases, regressions, security, adequacy of tests. The agent MUST write the verdict to .omc-loop/review.json as {"requestId": "{{verdictRequestId}}", "blocking": <number of blocking issues>, "findings": [{"severity": "critical|warning|suggestion", "desc": "...", "file": "path:line"}]}: that file routes the loop. Do NOT fix anything in this phase: fixes belong to the fix phase, where they get re-reviewed. Only if the agent could not write the file, record the outcome yourself with: {{LOOP}} report pass or: {{LOOP}} report fail. Do NOT edit .omc-loop/state.json by hand.`,
-  'review-fix': `PHASE: fix (attempt {{retries}}/{{maxRetries}}). The review left open problems: fix ALL of them staying on the same plan step and run the relevant tests.{{verdictHint}}{{implHint}}{{testHint}}{{extFixHint}} Do NOT tick the step.`,
+  'review-fix': `PHASE: fix (attempt {{retries}}/{{maxRetries}}). The review left open problems: fix ALL of them staying on the same plan step and run the relevant tests.{{verdictHint}}{{implHint}}{{testHint}}{{extFixHint}}{{advFixHint}} Do NOT tick the step.`,
   'review-advance': `PHASE: implement. Review passed: tick the completed step in .omc-loop/plan.md ('- [x]') and append 2-3 lines to .omc-loop/notes.md (decisions taken, traps met).{{commitHint}} If unchecked steps remain, implement the NEXT one; if its complexity clearly differs from the recorded one, update it first with: {{LOOP}} complexity low|medium|high.{{implHint}} If you lost the thread, re-read .omc-loop/plan.md and .omc-loop/notes.md.{{testHint}} If instead ALL steps are ticked and the project is complete: FIRST run the suite through the test verb ({{testRun}}: it skips the run when a green for this tree is already recorded) to get a green proof for the current tree (a claim-done without it is refused and costs a whole round), and IN THE SAME RESPONSE run: {{LOOP}} claim-done (it triggers the final verification). If you need input from the user: {{LOOP}} pause and then ask.`,
   'review-missing-outcome': `PHASE: code review (outcome missing). You did not record the review outcome. Finish it if needed (an agent you delegate to again gets the verdict request ID {{verdictRequestId}} and copies it into review.json), then run NOW: {{LOOP}} report pass or: {{LOOP}} report fail. A second missing outcome counts as a failed review.`,
 
@@ -49,9 +59,11 @@ export const DEFAULT_PROMPTS = {
   'claim-stale-test': `claim-done REFUSED: the code changed after the last green test run, so that proof is stale. Run again NOW: {{testRun}} and, if green, rerun {{LOOP}} claim-done IN THE SAME RESPONSE without touching the code in between.`,
   'claim-unverifiable-tree': `claim-done REFUSED: the last green test carries a snapshot of the work tree, but the Stop hook could not recompute it within its deadline (or could not read the tree). This is NOT a code change. Usual cause: large untracked directories that git does not ignore (build output, node_modules, data, caches): add them to .gitignore, and make sure git works in this project. Then run again: {{testRun}} and, if green, rerun {{LOOP}} claim-done IN THE SAME RESPONSE.`,
   'cleanup': `PHASE: pre-verification cleanup. You declared the project complete: before the final gate do a cleanup pass WITHOUT adding features: remove dead code and duplication, simplify where behaviour stays the same, align style with the rest of the repo, update README/docstrings if behaviour changed. After the cleanup prove the tests are still green with: {{testRun}} (it does not rerun the suite when only documentation changed, or nothing did).{{testHint}} The final verification starts at the next stop.`,
-  'final-verify': `PHASE: adversarial final verification. You declared the project complete: now it must be falsified. Delegate to {{verifierRef}} with model={{verifyModel}} (clean context) the verification, passing in the prompt the full plan, the total diff (if huge: file list + relevant excerpts), and verdict request ID {{verdictRequestId}}: it must assume the work is WRONG, build edge cases and hostile inputs, REALLY run targeted tests and the build, and check every claim against actual execution.{{testHint}}{{secHint}}{{extVerifyHint}} Do NOT fix anything in this phase. The agent MUST write the verdict to .omc-loop/verify.json as {"requestId": "{{verdictRequestId}}", "pass": true|false, "findings": [{"severity": "critical|warning", "desc": "...", "file": "path:line"}]}: that file routes the loop. Only if it could not write it, record the outcome yourself with: {{LOOP}} report pass or: {{LOOP}} report fail`,
-  'verify-postfix': `PHASE: post-verification fix (rejection {{finalFails}}/{{maxRetries}}). The final verification found defects: fix them all and reopen the affected steps in .omc-loop/plan.md ('- [ ]').{{verdictHint}}{{implHint}}{{testHint}} When everything is complete and tested again, run {{testRun}} and then: {{LOOP}} claim-done`,
+  'final-verify': `PHASE: adversarial final verification. You declared the project complete: now it must be falsified. Delegate to {{verifierRef}} with model={{verifyModel}} (clean context) the verification, passing in the prompt the full plan, the total diff (if huge: file list + relevant excerpts), and verdict request ID {{verdictRequestId}}: it must assume the work is WRONG, build edge cases and hostile inputs, REALLY run targeted tests and the build, and check every claim against actual execution.{{testHint}}{{secHint}}{{priorVerifyHint}}{{extVerifyHint}} Do NOT fix anything in this phase. The agent MUST write the verdict to .omc-loop/verify.json as {"requestId": "{{verdictRequestId}}", "pass": true|false, "findings": [{"severity": "critical|warning", "desc": "...", "file": "path:line"}]}: that file routes the loop. Only if it could not write it, record the outcome yourself with: {{LOOP}} report pass or: {{LOOP}} report fail`,
+  'final-verify-lenses': `PHASE: adversarial final verification, by lenses. You declared the project complete: now it must be falsified. In ONE message and in the FOREGROUND (not in the background: the turn must not end before every verdict is written), delegate one verifier per lens to {{verifierRef}} with model={{verifyModel}} (clean context each), passing each one the full plan, the total diff (if huge: file list + relevant excerpts), its lens, its file and verdict request ID {{verdictRequestId}}:{{lensList}} Every verifier must assume the work is WRONG within its lens, build edge cases and hostile inputs, REALLY run targeted tests and the build, and check every claim against actual execution.{{testHint}}{{secHint}}{{priorVerifyHint}}{{extVerifyHint}} Do NOT fix anything in this phase. Each agent MUST write ITS OWN file as {"requestId": "{{verdictRequestId}}", "lens": "<its lens>", "pass": true|false, "findings": [{"severity": "critical|warning", "desc": "...", "file": "path:line"}]}: together those files route the loop, and only a critical finding rejects the work. If the agents could not write them, only a rejection can be recorded by hand ({{LOOP}} report fail): a pass is never self-declared here, it needs every lens file`,
+  'verify-postfix': `PHASE: post-verification fix (rejection {{finalFails}}/{{maxRetries}}). The final verification found defects: fix them all and reopen the affected steps in .omc-loop/plan.md ('- [ ]').{{verdictHint}}{{implHint}}{{testHint}}{{advFixHint}} When everything is complete and tested again, run {{testRun}} and then: {{LOOP}} claim-done`,
   'verify-missing-outcome': `PHASE: final verification (outcome missing). You did not record the verification outcome. Finish it if needed (an agent you delegate to again gets the verdict request ID {{verdictRequestId}} and copies it into verify.json), then run NOW: {{LOOP}} report pass or: {{LOOP}} report fail. A second missing outcome counts as a rejection.`,
+  'verify-missing-lenses': `PHASE: final verification (lenses missing). The verdicts of the lens(es) {{missingLenses}} are missing for request {{verdictRequestId}}; the lenses that already wrote stay valid for this round: do NOT ask them again. In ONE message and in the FOREGROUND delegate to {{verifierRef}} with model={{verifyModel}} only the missing ones:{{lensList}} Each one writes its own file with that requestId and its lens. Only a rejection can be recorded by hand ({{LOOP}} report fail): a pass is never self-declared here, it needs every lens file. A second missing outcome counts as a rejection.`,
   'verify-pass-open': `PHASE: implement. The final verification passed, but .omc-loop/plan.md has {{openSteps}} unchecked step(s): nothing was committed. Implement the FIRST unchecked step now; each step goes through its review as usual.{{implHint}}{{testHint}} When ALL steps are ticked, run {{testRun}} and IN THE SAME RESPONSE: {{LOOP}} claim-done (a new final verification follows).`,
   'verify-pass-stale': `PHASE: implement. The final verification passed, but that pass does not cover the current work, so nothing was committed: the code changed after the verification was requested, or the last recorded suite run is not a green run on the code the verifier judged (red, missing, or run on older code). Code is not changed during a verification: a fix belongs here. If nobody edited the code, look for build or test output that git does not ignore (the verifier's own runs rewrite it) and add it to .gitignore. Make the suite green on the current tree with {{testRun}} and IN THE SAME RESPONSE run: {{LOOP}} claim-done (a new final verification of the current tree follows).{{testHint}}`,
 
@@ -93,18 +105,28 @@ export const PROMPT_VARS = {
   'hint-ext-plan': ['askHint'],
   'hint-ext-fix': ['askHint', 'extFraming'],
   'hint-ext-verify': ['askHint', 'extFraming'],
+  'hint-advisor-fallback': [],
+  'hint-advisor-plan': ['advisorFallback', 'advisorRef', 'advisorModel', 'advisorN'],
+  'hint-advisor-fix': ['advisorFallback', 'advisorRef', 'advisorModel', 'advisorN', 'priorAttempts'],
+  'hint-advisor-verify-fix': ['advisorFallback', 'advisorRef', 'advisorModel', 'advisorN', 'priorAttempts'],
   'hint-security': [],
   'hint-commit': [],
   'hint-test-green': ['testIteration', 'docsOnlyNote', 'testRun'],
   'hint-test-docs-only': [],
   'hint-test-none': ['testRun'],
   'hint-verdict-file': ['verdictFile'],
-  'plan-write': ['extPlanHint', 'LOOP'],
+  'hint-verify-recheck': ['priorVerifyFiles'],
+  'hint-lens': ['lens', 'lensFile', 'verdictRequestId', 'mandate'],
+  'lens-general': [],
+  'lens-correctness': [],
+  'lens-security': [],
+  'lens-tests': [],
+  'plan-write': ['extPlanHint', 'advPlanHint', 'LOOP'],
   'plan-approval': ['LOOP'],
   'implement-first': ['implHint', 'testHint', 'LOOP'],
   'implement-idle': [],
   'review-delegate': ['reviewerRef', 'reviewModel', 'verdictRequestId', 'testHint', 'LOOP'],
-  'review-fix': ['retries', 'maxRetries', 'verdictHint', 'implHint', 'testHint', 'extFixHint'],
+  'review-fix': ['retries', 'maxRetries', 'verdictHint', 'implHint', 'testHint', 'extFixHint', 'advFixHint'],
   'review-advance': ['commitHint', 'implHint', 'testHint', 'testRun', 'LOOP'],
   'review-missing-outcome': ['verdictRequestId', 'LOOP'],
   'claim-open-steps': ['openSteps', 'LOOP'],
@@ -112,9 +134,11 @@ export const PROMPT_VARS = {
   'claim-stale-test': ['testRun', 'LOOP'],
   'claim-unverifiable-tree': ['testRun', 'LOOP'],
   'cleanup': ['testRun', 'testHint'],
-  'final-verify': ['verifierRef', 'verifyModel', 'verdictRequestId', 'testHint', 'secHint', 'extVerifyHint', 'LOOP'],
-  'verify-postfix': ['finalFails', 'maxRetries', 'verdictHint', 'implHint', 'testHint', 'testRun', 'LOOP'],
+  'final-verify': ['verifierRef', 'verifyModel', 'verdictRequestId', 'testHint', 'secHint', 'priorVerifyHint', 'extVerifyHint', 'LOOP'],
+  'final-verify-lenses': ['verifierRef', 'verifyModel', 'verdictRequestId', 'lensList', 'testHint', 'secHint', 'priorVerifyHint', 'extVerifyHint', 'LOOP'],
+  'verify-postfix': ['finalFails', 'maxRetries', 'verdictHint', 'implHint', 'testHint', 'advFixHint', 'testRun', 'LOOP'],
   'verify-missing-outcome': ['verdictRequestId', 'LOOP'],
+  'verify-missing-lenses': ['missingLenses', 'verdictRequestId', 'verifierRef', 'verifyModel', 'lensList', 'LOOP'],
   'verify-pass-open': ['openSteps', 'implHint', 'testHint', 'testRun', 'LOOP'],
   'verify-pass-stale': ['testHint', 'testRun', 'LOOP'],
   'phase-recovered': [],
@@ -152,6 +176,8 @@ export const PROMPT_KEYS = Object.keys(DEFAULT_PROMPTS);
 export const PROMPT_EXPECTED = {
   'review-delegate': ['verdictRequestId'],
   'final-verify': ['verdictRequestId'],
+  'final-verify-lenses': ['verdictRequestId', 'lensList'],
+  'verify-missing-lenses': ['lensList'],
 };
 
 const PLACEHOLDER = /\{\{([a-zA-Z0-9_-]+)\}\}/g;
@@ -169,6 +195,17 @@ export function renderPrompt(key, vars = {}, layers = []) {
   if (typeof tpl !== 'string') return '';
   return tpl.replace(PLACEHOLDER, (m, name) =>
     Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : m);
+}
+
+// Where a key's template comes from: the index of the first layer that has it, the number of
+// layers for a shipped default, Infinity for no template at all. A pack that customises the
+// single-verifier prompt and knows nothing of the lenses outranks the default lens prompt:
+// the machine then keeps the pack's wording (and reads its verify.json as the whole round).
+export function templateLayer(key, layers = []) {
+  const list = Array.isArray(layers) ? layers : [layers];
+  const i = list.findIndex((layer) => layer && typeof layer[key] === 'string');
+  if (i >= 0) return i;
+  return typeof DEFAULT_PROMPTS[key] === 'string' ? list.length : Infinity;
 }
 
 // Validate a parsed pack object. Never throws.

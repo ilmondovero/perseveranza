@@ -11,6 +11,8 @@
 //   { type: 'dropArtifact', name }           delete .omc-loop/<name> (a stale verdict, never read)
 //   { type: 'keepArtifact', name, as }        rename .omc-loop/<name> to <as> (a verdict consumed on
 //                                            read stays readable by the fix phase and the archive)
+//   { type: 'writeArtifact', name, content }  write .omc-loop/<name> atomically (the findings of a
+//                                            final verification by lenses, merged in one file)
 //   { type: 'notify', title, message }       desktop notification (best-effort)
 //   { type: 'writeEscalation', why }         hand-off document for a human
 //   { type: 'gitFinish', retry }             commit+push (shell then calls finishProject)
@@ -25,8 +27,8 @@ import { countOpenSteps, stepCounts } from './plan.mjs';
 import { parseReviewVerdict, parseVerifyVerdict, parseReconcile } from './verdicts.mjs';
 import { lookup } from './transitions.mjs';
 import { canContinue, adaptiveMax, tokensSpent } from './budget.mjs';
-import { renderPrompt } from './prompts.mjs';
-import { PHASES, COMPLEXITIES, normalizeUsage } from './state.mjs';
+import { renderPrompt, templateLayer } from './prompts.mjs';
+import { PHASES, COMPLEXITIES, LENSES, MAX_PRIOR_VERIFIES, MAX_PRIOR_REVIEWS, DEFAULT_ADVISOR_MODEL, normalizeUsage, effectiveLenses, singleLens } from './state.mjs';
 import { DEFAULT_STALE_MS, releaseOpen } from './staleness.mjs';
 import { renderProgress } from '../hud/render.mjs';
 
@@ -45,15 +47,29 @@ const iso = (ms) => { const d = new Date(ms); return Number.isFinite(d.getTime()
 // change (claim-again from final-verify, a reconciliation back to review): from then on the
 // verdict of an earlier request carries another id, and one without an id counts only if
 // written after this instant. The code of the moment is what a final pass judged.
-const REQUEST_PROMPTS = new Set(['review-delegate', 'final-verify']);
+const REQUEST_PROMPTS = new Set(['review-delegate', 'final-verify', 'final-verify-lenses']);
 function issueRequest(s, now, phase, ctx) {
   s.verdictRequestedAt = now;
   s.verdictRequestId = `${now}-${s.counters.iterations + 1}-${phase}`;
   s.verdictTree = ctx.codeFingerprint ?? null;
+  // the lenses are fixed with the request, not at arm: the complexity may have changed since
+  s.verdictLenses = phase === 'final-verify' ? effectiveLenses(s) : [];
 }
 
+// The lenses of the current final verification round. A state from before the lenses (or a
+// round requested without them) is the single verifier of old.
+const roundLenses = (s) => (Array.isArray(s.verdictLenses) && s.verdictLenses.length ? s.verdictLenses : ['general']);
+export const lensFileName = (lens) => `verify-${lens}.json`;
+// A lens round stays open (its verdicts on disk, valid for the same request) only while the
+// loop keeps asking for the same request: a missing lens, or a claim refused in the phase.
+const LENS_ROUND_OPEN = new Set(['missing', 'claim-open', 'claim-no-test', 'claim-stale', 'claim-unverifiable']);
+
+// One second of tolerance for coarse file clocks, when a verdict without an id is dated by
+// its file (the Stop hook and `status` apply the same rule).
+export const LATE_TOLERANCE_MS = 1000;
+
 // The id as an agent may have copied it out of a prose prompt: quotes or a trailing period.
-const cleanRequestId = (id) => (typeof id === 'string' ? id.trim().replace(/^["'`]+/, '').replace(/["'`.,;:]+$/, '') : null) || null;
+export const cleanRequestId = (id) => (typeof id === 'string' ? id.trim().replace(/^["'`]+/, '').replace(/["'`.,;:]+$/, '') : null) || null;
 
 function agentRef(name, fallback) {
   return `the ${name} agent (subagent_type "${name}"; when installed as a plugin it is "perseveranza:${name}"; if neither exists, ${fallback})`;
@@ -78,6 +94,20 @@ function buildVars(s, ctx) {
       ? P('hint-test-green', { testIteration: s.lastTest.iteration, docsOnlyNote: proof.docsOnly ? P('hint-test-docs-only') : '', testRun })
       : P('hint-test-none', { testRun });
   const verdictHint = ctx.verdictFile ? P('hint-verdict-file', { verdictFile: ctx.verdictFile }) : '';
+  // The internal advisor: consultative, never routing. With external models it is the
+  // fallback when none answers; without them it is the second opinion itself.
+  // -> { text, reason } with reason no-external | fallback | off (journaled by the caller)
+  const advisor = (key, files, pattern) => {
+    if (s.options.advisor === false) return { text: '', reason: 'off' };
+    const text = P(key, {
+      advisorFallback: externals.length ? P('hint-advisor-fallback') : '',
+      advisorRef: agentRef('pf-advisor', 'a generic subagent with a clean context, read-only on the source'),
+      advisorModel: s.options.advisorModel || DEFAULT_ADVISOR_MODEL,
+      advisorN: s.counters.iterations + 1,
+      priorAttempts: files.length ? files.map((n) => `.omc-loop/${n}`).join(', ') : `.omc-loop/${pattern}`,
+    });
+    return { text, reason: externals.length ? 'fallback' : 'no-external' };
+  };
   return {
     LOOP,
     P,
@@ -87,7 +117,15 @@ function buildVars(s, ctx) {
     extPlanHint: externals.length ? P('hint-ext-plan', { askHint: askHint('plan') }) : '',
     extFixHint: externals.length ? P('hint-ext-fix', { askHint: askHint('fix'), extFraming }) : '',
     extVerifyHint: externals.length ? P('hint-ext-verify', { askHint: askHint('verify'), extFraming }) : '',
+    // filled by the transitions that consult the advisor (and journal it); empty elsewhere
+    advPlanHint: '',
+    advFixHint: '',
+    advisorPlan: () => advisor('hint-advisor-plan', [], ''),
+    advisorFix: () => advisor('hint-advisor-fix', s.priorReviews || [], 'review-*.json'),
+    advisorVerifyFix: () => advisor('hint-advisor-verify-fix', s.priorVerifies || [], 'verify-*.json'),
     secHint: high ? P('hint-security') : '',
+    // antifragile: the defects of the rejected rounds are rechecked by name, not rediscovered
+    priorVerifyHint: s.priorVerifies.length ? P('hint-verify-recheck', { priorVerifyFiles: s.priorVerifies.map((n) => `.omc-loop/${n}`).join(', ') }) : '',
     commitHint: s.options.commitSteps ? P('hint-commit') : '',
     reviewerRef: agentRef('pf-reviewer', 'a generic code-reviewer subagent'),
     verifierRef: agentRef('pf-verifier', 'an independent adversarial subagent'),
@@ -130,7 +168,18 @@ export function step(input, event = {}, ctx0 = {}) {
   const planExists = ctx.planExists === true;
   const proj = ctx.projectName || 'project';
   const phase = s.phase;
-  const done = (outcome, extra = []) => ({ state: s, effects: [...effects, ...extra], outcome });
+  // a final verification by lenses: what this fire read of the round (see readFinal)
+  // n: the iteration that read the round, which names its files even when they are kept at
+  // the end of the fire (after the transition counted the next iteration)
+  const lensRound = { expected: [], files: [], covered: {}, missing: [], pending: false, consumed: false, n: s.counters.iterations };
+  let consumeLenses = () => {};
+  const done = (outcome, extra = []) => {
+    // the round ends with this outcome: the lens verdicts still on disk are kept and merged
+    if (lensRound.pending && !LENS_ROUND_OPEN.has(outcome)) {
+      consumeLenses(outcome === 'missing-twice' || outcome === 'fail-limit' ? 'missing-twice' : report !== 'none' ? `report-${report}` : 'superseded');
+    }
+    return { state: s, effects: [...effects, ...extra], outcome };
+  };
 
   J({ type: 'fire', session: short(event.sessionId), payloadKeys: Array.isArray(event.payloadKeys) ? event.payloadKeys : [], stopHookActive: event.stopHookActive === true });
 
@@ -232,19 +281,22 @@ export function step(input, event = {}, ctx0 = {}) {
   // a re-delegation after a compaction) falls back to the clock: written before the
   // request, it is stale. One second of tolerance for coarse file clocks. A stale file is
   // no verdict, so an outcome recorded with the report verb still stands.
-  const LATE_TOLERANCE_MS = 1000;
-  const readVerdict = (name, key, parse, summarize) => {
-    const at = Number(artifactAt[key]) || 0;
-    const v = parse(artifacts[key]);
+  const staleOf = (v, at) => {
     const id = v.ok ? cleanRequestId(v.requestId) : null;
     const byId = !!s.verdictRequestId && !!id;
     const oldById = byId && id !== s.verdictRequestId;
     const oldByTime = !byId && s.verdictRequestedAt > 0 && at > 0 && at + LATE_TOLERANCE_MS < s.verdictRequestedAt;
-    if (oldByTime || oldById) {
+    return { id, stale: oldById || oldByTime, staleBy: oldById ? 'requestId' : 'mtime' };
+  };
+  const readVerdict = (name, key, parse, summarize) => {
+    const at = Number(artifactAt[key]) || 0;
+    const v = parse(artifacts[key]);
+    const st = staleOf(v, at);
+    if (st.stale) {
       const as = name.replace(/\.json$/, `-stale-${s.counters.iterations}.json`);
       effects.push({ type: 'keepArtifact', name, as });
       if (report === 'none') verdictSrc = name;
-      J({ type: 'verdict', artifact: name, stale: true, staleBy: oldById ? 'requestId' : 'mtime', requestId: id, expectedRequestId: s.verdictRequestId, writtenAt: at > 0 ? iso(at) : null, requestedAt: iso(s.verdictRequestedAt), savedAs: as, treatedAs: report === 'none' ? 'missing' : `report ${report}` });
+      J({ type: 'verdict', artifact: name, stale: true, staleBy: st.staleBy, requestId: st.id, expectedRequestId: s.verdictRequestId, writtenAt: at > 0 ? iso(at) : null, requestedAt: iso(s.verdictRequestedAt), savedAs: as, treatedAs: report === 'none' ? 'missing' : `report ${report}` });
       return;
     }
     ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs(name)}` };
@@ -258,14 +310,162 @@ export function step(input, event = {}, ctx0 = {}) {
       J({ type: 'verdict', artifact: name, error: v.error, treatedAs: 'missing' });
     }
   };
-  if (phase === 'review' && artifacts.review != null) readVerdict('review.json', 'review', parseReviewVerdict, (v) => (v.blocking === 0 ? 'pass' : 'fail'));
-  else if (phase === 'final-verify' && artifacts.verify != null) readVerdict('verify.json', 'verify', parseVerifyVerdict, (v) => (v.pass ? 'pass' : 'fail'));
+  const readVerify = () => readVerdict('verify.json', 'verify', parseVerifyVerdict, (v) => (v.pass ? 'pass' : 'fail'));
+  // the findings of a rejected round, for the next round to recheck (the newest last)
+  const remember = (name) => { s.priorVerifies = [...s.priorVerifies.filter((n) => n !== name), name].slice(-MAX_PRIOR_VERIFIES); };
+  const rememberVerify = () => { if (verdictSrc === 'verify.json' && report === 'fail') remember(keptAs('verify.json')); };
+
+  // The end of a round read by the rules below: every file it read is kept (verify-<x>-<n>.json,
+  // an unreadable one as verify-<x>-invalid-<n>.json, verify.json as verify-main-<n>.json) and
+  // every finding goes, with its lens and its file, into one verify-<n>.json: the fix rereads
+  // one file, not four. `pass` there is the outcome of the round; blockedBy says who rejected.
+  consumeLenses = (result) => {
+    if (lensRound.consumed || !lensRound.files.length) return;
+    lensRound.consumed = true;
+    lensRound.pending = false;
+    const n = lensRound.n;
+    const merged = `verify-${n}.json`;
+    const findings = [];
+    const files = {};
+    for (const f of lensRound.files) {
+      const base = f.name === 'verify.json' ? 'verify-main' : f.name.replace(/\.json$/, '');
+      const as = `${base}${f.ok ? '' : '-invalid'}-${n}.json`;
+      files[f.name] = as;
+      effects.push({ type: 'keepArtifact', name: f.name, as });
+      if (!f.ok) { J({ type: 'verdict', artifact: f.name, lens: f.lens, error: f.error, savedAs: as, treatedAs: 'missing lens' }); continue; }
+      J({ type: 'verdict', artifact: f.name, lens: f.lens, pass: !f.blocks, declaredPass: f.v.declaredPass, ...(f.unexpected ? { unexpected: true } : {}), findings: f.v.findings.length, notes: f.notes, savedAs: as, details: f.v.findings });
+      for (const x of f.v.findings) findings.push({ ...x, lens: f.lens, from: f.name });
+    }
+    const blockedBy = lensRound.files.filter((f) => f.blocks).map((f) => f.name);
+    const doc = { requestId: s.verdictRequestId, result, pass: result === 'pass' || result === 'report-pass', lenses: { expected: lensRound.expected, covered: lensRound.covered, missing: lensRound.missing }, blockedBy, files, findings };
+    effects.push({ type: 'writeArtifact', name: merged, content: `${JSON.stringify(doc, null, 2)}\n` });
+    ctx = { ...ctx, verdictFile: `.omc-loop/${merged}` };
+    if ((result === 'fail' || result === 'missing-twice' || result === 'report-fail') && findings.length) remember(merged);
+  };
+
+  // The final verification, by a few uniform rules (in this order):
+  // 1. Every verdict file in the gate is read: verify.json and verify-<lens>.json. Each one is
+  //    valid for this round (the current request id; or no id, written after the request),
+  //    stale (another request, or written before it: set aside now, never read), or
+  //    unreadable (malformed: never a pass; it stays on disk until the round ends).
+  // 2. A valid file that blocks rejects the round, whatever its name and whatever arrived.
+  //    verify.json, and verify-general.json in a round of the single verifier, block by the
+  //    single verifier's rule (pass:false). A lens file blocks with a critical finding, or a
+  //    declared pass:false over findings marked high/major (the judge's rejection is not lost
+  //    in a synonym); pass:false over plain warnings is a pass with warnings.
+  // 3. An expected lens is covered only by its own valid file. A valid verify.json covers the
+  //    expected lenses that have no file at all; a lens whose file is unreadable is covered by
+  //    nobody: it stays missing, and only the missing lenses are asked for again.
+  // 4. verify.json means the same whatever else arrived: it is never set aside while valid.
+  // 5. In a round of the single verifier, verify-general.json is the same verifier's file.
+  // 6. A valid file of a lens the round did not ask for blocks by rule 2, otherwise it is only
+  //    noted; it covers nothing (no quorum).
+  // 7. With lenses still missing, `report fail` rejects; `report pass` covers nothing in a
+  //    round by lenses (no pass with a lens missing: a self-declared pass is no proof). The
+  //    single verifier keeps its old rule: the verb counts unless its file is unreadable.
+  // The single verifier with nothing but verify.json is read exactly as before the lenses.
+  const readFinal = () => {
+    const lenses = roundLenses(s);
+    const single = singleLens(lenses);
+    const raw = artifacts.verifyLenses && typeof artifacts.verifyLenses === 'object' ? artifacts.verifyLenses : {};
+    const rawAt = artifactAt.verifyLenses && typeof artifactAt.verifyLenses === 'object' ? artifactAt.verifyLenses : {};
+    if (single && LENSES.every((l) => raw[l] == null)) {
+      if (artifacts.verify != null) { readVerify(); rememberVerify(); }
+      return;
+    }
+    const n = s.counters.iterations;
+    lensRound.expected = lenses;
+    const stale = [];
+    // 1. classify every file
+    const found = [['verify.json', 'general', artifacts.verify, artifactAt.verify], ...LENSES.map((l) => [lensFileName(l), l, raw[l], rawAt[l]])];
+    for (const [name, lens, text, atRaw] of found) {
+      if (text == null) continue;
+      const at = Number(atRaw) || 0;
+      const v = parseVerifyVerdict(text);
+      const st = staleOf(v, at);
+      if (st.stale) {
+        const as = name.replace(/\.json$/, `-stale-${n}.json`);
+        effects.push({ type: 'keepArtifact', name, as });
+        stale.push(name);
+        J({ type: 'verdict', artifact: name, lens, stale: true, staleBy: st.staleBy, requestId: st.id, expectedRequestId: s.verdictRequestId, writtenAt: at > 0 ? iso(at) : null, requestedAt: iso(s.verdictRequestedAt), savedAs: as, treatedAs: 'no file' });
+        continue;
+      }
+      if (!v.ok) { lensRound.files.push({ name, lens, ok: false, error: v.error }); continue; }
+      // 2. does it block, by the rule of where it comes from
+      const singleRule = name === 'verify.json' || (single && lens === 'general');
+      const critical = v.findings.filter((f) => f.severity === 'critical').length;
+      const strong = v.declaredPass === false ? v.strongWarnings || 0 : 0;
+      const blocks = singleRule ? !v.pass : critical > 0 || strong > 0;
+      const unexpected = name !== 'verify.json' && !(single ? lens === 'general' : lenses.includes(lens));
+      const notes = [...v.notes];
+      if (v.lens && v.lens !== lens && name !== 'verify.json') notes.push(`declares lens "${v.lens}": read as ${lens} (the file decides)`);
+      if (unexpected) notes.push(`a lens this round did not ask for (expected: ${lenses.join(', ')}): ${blocks ? 'it blocks, so it rejects the round' : 'only noted, it covers nothing'}`);
+      if (!singleRule && strong && !critical) notes.push(`pass=false over ${strong} finding(s) marked high/major: the judge's rejection blocks`);
+      if (!singleRule && v.declaredPass === false && !blocks) notes.push('pass=false without a critical finding: read as a pass with warnings');
+      lensRound.files.push({ name, lens, ok: true, v, blocks, singleRule, unexpected, critical, notes });
+    }
+    // 3. coverage of the expected lenses
+    const own = (l) => (single ? ['verify.json', 'verify-general.json'] : [lensFileName(l)]);
+    const main = single ? null : lensRound.files.find((f) => f.name === 'verify.json' && f.ok);
+    const unreadable = [];
+    for (const l of lenses) {
+      const mine = lensRound.files.filter((f) => own(l).includes(f.name));
+      const good = mine.find((f) => f.ok);
+      if (good) lensRound.covered[l] = good.name;
+      else if (mine.length) unreadable.push(l);
+      else if (main) lensRound.covered[l] = 'verify.json';
+    }
+    lensRound.missing = lenses.filter((l) => !lensRound.covered[l]);
+    const byMain = lenses.filter((l) => lensRound.covered[l] === 'verify.json' && !single);
+    if (byMain.length) J({ type: 'lens-fallback', requestId: s.verdictRequestId, expected: lenses, covers: byMain, pass: main.v.pass, why: 'a verify.json for this round covers the lenses that wrote no file' });
+    // decision: a block rejects; every lens covered passes; otherwise the round stays open
+    const blockedBy = lensRound.files.filter((f) => f.blocks).map((f) => f.name);
+    let decided = blockedBy.length ? 'fail' : lensRound.missing.length ? null : 'pass';
+    if (!decided && report !== 'none') {
+      if (!single && report === 'pass') {
+        J({ type: 'note', text: `report pass ignored: lens(es) ${lensRound.missing.join(', ')} missing, and a self-declared pass covers no lens` });
+        report = 'none';
+      } else if (single && unreadable.length) report = 'none';
+    }
+    if (decided) {
+      report = decided;
+      verdictSrc = 'verify-lenses';
+      consumeLenses(decided);
+    } else if (lensRound.files.length) {
+      // the round stays open: its files stay on disk, valid for this request, until it ends
+      lensRound.pending = true;
+      if (s.flags.repeated || report !== 'none') ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs('verify.json')}` };
+    }
+    const okFiles = lensRound.files.filter((f) => f.ok);
+    J({ type: 'lenses', requestId: s.verdictRequestId, expected: lenses,
+      arrived: lenses.filter((l) => lensRound.covered[l] && lensRound.covered[l] !== 'verify.json' || (single && lensRound.covered[l])),
+      ...(byMain.length ? { fallback: true, covers: byMain } : {}),
+      missing: lensRound.missing, invalid: lensRound.files.filter((f) => !f.ok).map((f) => f.name), stale,
+      unexpected: okFiles.filter((f) => f.unexpected).map((f) => f.name),
+      critical: Object.fromEntries(okFiles.map((f) => [f.name, f.critical])),
+      softFails: okFiles.filter((f) => !f.singleRule && !f.blocks && f.v.declaredPass === false).map((f) => f.name),
+      blockedBy, result: decided || (lensRound.files.length ? 'partial' : 'none') });
+  };
+
+  if (phase === 'review' && artifacts.review != null) {
+    readVerdict('review.json', 'review', parseReviewVerdict, (v) => (v.blocking === 0 ? 'pass' : 'fail'));
+    // a rejection of this step, kept for the advisor of the next fixes (every attempt, not the last)
+    if (verdictSrc === 'review.json' && report === 'fail') {
+      const kept = keptAs('review.json');
+      s.priorReviews = [...(Array.isArray(s.priorReviews) ? s.priorReviews : []).filter((n) => n !== kept), kept].slice(-MAX_PRIOR_REVIEWS);
+    }
+  } else if (phase === 'final-verify') readFinal();
 
   if (!COMPLEXITIES.includes(s.complexity)) s.complexity = 'medium';
   const V = buildVars(s, ctx);
   const proof = testProof(s, ctx);
   const H = () => header(s, ctx, planText);
   const say = (key, vars = {}) => `${H()} ${V.P(key, { ...V, ...vars })}`;
+  // an advisor hint about to be emitted: journaled, so how much it serves can be measured
+  const advise = (slot, h) => {
+    J({ type: 'advisor-hint', slot, reason: h.reason, ...(h.reason === 'off' ? {} : { model: s.options.advisorModel }), iteration: s.counters.iterations + 1 });
+    return h.text;
+  };
 
   // pause and hand off to a human: no iteration is spent
   const pauseForHuman = (why, outcome) => {
@@ -280,6 +480,23 @@ export function step(input, event = {}, ctx0 = {}) {
     ]);
   };
 
+  // The final verification by lenses has its own wording, the routing is the table's: the same
+  // rows render the lens prompts. A pack that customises the single-verifier prompt and has no
+  // lens version of it keeps its wording; its verify.json is then read as the whole round.
+  const lensPrompt = (row) => {
+    const none = { key: row.prompt, lensVars: {} };
+    if (row.next !== 'final-verify' || (row.prompt !== 'final-verify' && row.prompt !== 'verify-missing-outcome')) return none;
+    const lenses = roundLenses(s);
+    if (singleLens(lenses)) return none;
+    const key = row.prompt === 'final-verify' ? 'final-verify-lenses' : 'verify-missing-lenses';
+    const layers = ctx.overrides || [];
+    if (templateLayer(key, layers) > templateLayer(row.prompt, layers)) return none;
+    const asked = key === 'verify-missing-lenses' && lensRound.missing.length ? lensRound.missing : lenses;
+    const lensList = asked.map((lens) => V.P('hint-lens', { lens, lensFile: lensFileName(lens), verdictRequestId: s.verdictRequestId || '', mandate: V.P(`lens-${lens}`) })).join('');
+    // the security lens replaces the security hint of the single verifier
+    return { key, lensVars: { lensList, missingLenses: asked.join(', '), secHint: lenses.includes('security') ? '' : V.secHint } };
+  };
+
   // regular transition: look the row up, set the phase, render the instruction
   const go = (outcome, vars = {}, extraEffects = []) => {
     const row = lookup(phase, outcome);
@@ -289,9 +506,10 @@ export function step(input, event = {}, ctx0 = {}) {
     if (REQUEST_PROMPTS.has(row.prompt)) issueRequest(s, now, row.next, ctx);
     else if ((row.next === 'review' || row.next === 'final-verify') && !s.verdictRequestId) s.verdictRequestId = `${now}-${s.counters.iterations + 1}-${row.next}`;
     s.phase = row.next;
-    const reason = say(row.prompt, { ...vars, verdictRequestId: s.verdictRequestId || '' });
+    const { key, lensVars } = lensPrompt(row);
+    const reason = say(key, { ...vars, ...lensVars, verdictRequestId: s.verdictRequestId || '' });
     s.counters.iterations += 1;
-    J({ type: 'transition', from: phase, to: s.phase, outcome, report, verdictSrc, claimed, prompt: row.prompt, iteration: s.counters.iterations, ...(vars.testProof ? { testProof: vars.testProof } : {}), ...(vars.gate ? { gate: vars.gate } : {}) });
+    J({ type: 'transition', from: phase, to: s.phase, outcome, report, verdictSrc, claimed, prompt: key, iteration: s.counters.iterations, ...(vars.testProof ? { testProof: vars.testProof } : {}), ...(vars.gate ? { gate: vars.gate } : {}) });
     return done(outcome, [...extraEffects, { type: 'saveState' }, { type: 'block', reason }]);
   };
 
@@ -301,7 +519,8 @@ export function step(input, event = {}, ctx0 = {}) {
     }
     s.counters.retries += 1;
     s.flags.repeated = false;
-    return go(outcome, { retries: s.counters.retries, extFixHint: s.counters.retries >= 2 ? V.extFixHint : '' });
+    const again = s.counters.retries >= 2;
+    return go(outcome, { retries: s.counters.retries, extFixHint: again ? V.extFixHint : '', advFixHint: again ? advise('fix', V.advisorFix()) : '' });
   };
   const verifyFailed = (outcome) => {
     if (s.counters.finalFails >= s.limits.maxRetries) {
@@ -310,7 +529,9 @@ export function step(input, event = {}, ctx0 = {}) {
     s.counters.finalFails += 1;
     s.counters.staleGates = 0;
     s.flags.repeated = false;
-    return go(outcome, { finalFails: s.counters.finalFails });
+    // the same defect back after a fix: the external diagnosis and the advisor, as for a review
+    const again = s.counters.finalFails >= 2;
+    return go(outcome, { finalFails: s.counters.finalFails, advFixHint: again ? `${V.extFixHint}${advise('verify-fix', V.advisorVerifyFix())}` : '' });
   };
 
   // A final pass judged the tree its request pointed at; it closes the work only if what
@@ -425,7 +646,7 @@ export function step(input, event = {}, ctx0 = {}) {
         return go('ready');
       }
       s.flags.repeated = true;
-      return go('no-plan');
+      return go('no-plan', { advPlanHint: advise('plan', V.advisorPlan()) });
     }
     case 'implement': {
       // The tree is byte-for-byte what it was at the previous stop and no test ran: the step
@@ -442,6 +663,7 @@ export function step(input, event = {}, ctx0 = {}) {
     case 'review': {
       if (report === 'pass') {
         s.counters.retries = 0;
+        s.priorReviews = [];
         s.flags.repeated = false;
         return go('pass');
       }

@@ -5,7 +5,7 @@
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { gatePaths, ROOT, loopCommand } from './paths.mjs';
-import { loadState } from '../core/state.mjs';
+import { loadState, LENSES } from '../core/state.mjs';
 import { step } from '../core/machine.mjs';
 import { DEFAULT_STALE_MS } from '../core/staleness.mjs';
 import { executeEffects } from './effects.mjs';
@@ -78,7 +78,17 @@ function main() {
   const artifacts = {};
   const artifactAt = {};
   if (s.phase === 'review') { artifacts.review = readArtifact('review.json'); artifactAt.review = artifactMtime('review.json'); }
-  if (s.phase === 'final-verify') { artifacts.verify = readArtifact('verify.json'); artifactAt.verify = artifactMtime('verify.json'); }
+  if (s.phase === 'final-verify') {
+    artifacts.verify = readArtifact('verify.json'); artifactAt.verify = artifactMtime('verify.json');
+    // one verdict per lens (verify-<lens>.json): read with the same tolerance, the machine
+    // decides which ones this round asked for
+    artifacts.verifyLenses = {};
+    artifactAt.verifyLenses = {};
+    for (const lens of LENSES) {
+      artifacts.verifyLenses[lens] = readArtifact(`verify-${lens}.json`);
+      artifactAt.verifyLenses[lens] = artifactMtime(`verify-${lens}.json`);
+    }
+  }
   if (s.signals.interrupted) artifacts.reconcile = readArtifact('reconcile.json');
   const packs = loadPromptLayers({ gateDir: paths.gateDir, env, lang: s.options.lang, root: ROOT });
   for (const err of packs.errors) appendJournal(paths.gateDir, { type: 'prompt-pack', source: err.source, error: err.error });

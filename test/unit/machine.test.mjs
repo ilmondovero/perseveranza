@@ -361,7 +361,10 @@ test('cleanup -> final-verify with the security lens only for high complexity', 
   assert.equal(r.state.phase, 'final-verify');
   assert.ok(r.reason.includes('model=opus'));
   assert.ok(!r.reason.includes('security lens'));
-  assert.ok(run(mk({ phase: 'cleanup', complexity: 'high' })).reason.includes('security lens'));
+  // high complexity: the single verifier gets the security hint; by default (2.6) the round is
+  // split into lenses, and the security lens is one of them
+  assert.ok(run(mk({ phase: 'cleanup', complexity: 'high', options: { verifiers: ['general'] } })).reason.includes('security lens'));
+  assert.ok(run(mk({ phase: 'cleanup', complexity: 'high' })).reason.includes('[lens security: writes .omc-loop/verify-security.json'));
   assert.ok(run(mk({ phase: 'cleanup', complexity: 'low' })).reason.includes('model=sonnet'));
 });
 

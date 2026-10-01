@@ -3,10 +3,89 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
-## Non rilasciato
+## 2.6.0
 
-Due pezzi della fase 1 di `docs/PIANO-GIUDICI-PARALLELI.md`, indipendenti dai giudici in
-parallelo e utili comunque.
+La fase 1 di `docs/PIANO-GIUDICI-PARALLELI.md`: la verifica finale con più lenti, e due
+pezzi indipendenti dai giudici in parallelo e utili comunque (token con i subagent,
+severità tolleranti).
+
+**Cambio di comportamento:** con complessità `high` la verifica finale non è più un
+verificatore solo con l'accenno alla sicurezza, ma tre verificatori in parallelo
+(`correctness`, `security`, `tests`). Chi vuole il comportamento di prima arma con
+`--verifiers general`.
+
+- **Verifica finale con più lenti.** `arm --verifiers <lenti>` sceglie tra `general`,
+  `correctness`, `security`, `tests` (una lente sconosciuta è un errore che elenca quelle
+  ammesse); senza, `auto`: le ultime tre con complessità `high`, altrimenti `general`. La
+  lista si fissa quando il giro viene richiesto, non all'arm: la complessità può cambiare
+  nel frattempo. Il prompt chiede di delegare nello stesso messaggio e in primo piano un
+  verificatore per lente, ciascuno con il suo file (`verify-<lente>.json`), lo stesso id
+  richiesta e il mandato della lente; la lente `security` sostituisce l'accenno alla
+  sicurezza del verificatore singolo, e `tests` controlla anche che commenti e
+  documentazione dicano il vero (nei run reali è saltata fuori documentazione falsa due
+  volte). `pf-verifier` sa scrivere il file della sua lente.
+- **Come si combina il giro: poche regole uniformi.** Nessuna riga nuova nella tabella delle
+  transizioni: cambia come si calcola l'esito di `final-verify`, non dove va il loop. Il gate
+  di uscita (piano spuntato, verde sul codice giudicato, codice invariato) è lo stesso di
+  prima e si applica al pass del giro.
+  1. Si leggono tutti i file di verdetto della cartella (`verify.json` e i `verify-<lente>.json`).
+     Ognuno è valido per il giro (id della richiesta corrente, o senza id ma scritto dopo la
+     richiesta), vecchio (un'altra richiesta, o scritto prima: messo da parte subito, mai
+     letto) o illeggibile (malformato: mai un pass; resta su disco finché il giro è aperto).
+  2. Un file valido che blocca boccia il giro, qualunque nome abbia e qualunque lente sia
+     arrivata. `verify.json`, e `verify-general.json` nel giro del verificatore singolo,
+     bloccano con la regola di sempre (`pass: false`); un file di lente blocca con un finding
+     `critical`, o con un `pass: false` dichiarato sopra findings scritti `high`/`major` (vedi
+     sotto). Un critical vince sempre: aggiungere una lente che passa non trasforma mai una
+     bocciatura in un pass.
+  3. Una lente attesa è coperta solo dal suo file valido. Un `verify.json` valido copre le
+     lenti attese che non hanno nessun file (pack di prompt personalizzati o vecchi, agenti
+     che non hanno letto le lenti: `lens-fallback` nel journal; meglio un giro meno fine che
+     un loop bloccato). Una lente con il file illeggibile non la copre nessuno: resta
+     mancante. Le lenti mancanti si chiedono da sole (`verify-missing-lenses`), le altre
+     restano valide per lo stesso giro; la seconda volta è una bocciatura. Rigore, non
+     quorum: un giudice che non risponde non è un voto a favore.
+  4. `verify.json` vuol dire la stessa cosa qualunque cosa sia arrivata: se boccia, boccia
+     anche con tutte le lenti scritte; se passa, copre solo le lenti senza file. Valido, non
+     viene mai messo da parte.
+  5. Nel giro del verificatore singolo `verify-general.json` vale come `verify.json`.
+  6. Un file valido di una lente non chiesta boccia se blocca, altrimenti è solo annotato;
+     non copre niente.
+  7. **[deviazione]** In un giro a lenti `report pass` non copre le lenti mancanti (resta un
+     esito mancante, e il journal lo dice): nessun pass con una lente mancante, e un pass
+     dichiarato non è una prova. `report fail` boccia come sempre. Il verificatore singolo
+     resta com'era: il verbo vale, salvo che il suo file sia illeggibile.
+  8. Chiuso il giro, ogni file letto è conservato (`verify-<lente>-<n>.json`,
+     `verify-main-<n>.json` per `verify.json`, `-invalid-` per un illeggibile) e tutti i
+     findings, ciascuno con la sua lente e il file da cui viene (`from`), finiscono in un solo
+     `verify-<n>.json` (scritto in modo atomico): il fix rilegge un file, non quattro.
+     `pass` lì coincide con l'esito del giro, `blockedBy` dice chi ha bocciato, e il journal
+     non elenca mai il file che boccia tra i "pass con warning".
+  Il verificatore singolo con il solo `verify.json` si legge esattamente come prima.
+- **[scelta] Il `pass: false` di una lente sopra findings `high`/`major` blocca.** Le
+  severità `high`, `major`, `grave`, `alta`, `alto`, `maggiore` si leggono `warning`, e in un
+  giro a lenti un `pass: false` con soli warning non blocca: così lo stesso verdetto bocciava
+  come `verify.json` e passava come `verify-security.json`, e la bocciatura dichiarata dal
+  giudice spariva in silenzio. Ora una lente che dichiara `pass: false` e ha almeno un
+  finding scritto con una di quelle parole blocca il giro, con una nota nel journal. Resta la
+  decisione di progetto: `pass: false` con soli `warning`/`suggestion` canonici (o con
+  `medium`, `low` e gli altri alias più deboli) è un pass con warning; e un `pass: true`
+  sopra un `high` resta un pass, perché `high` non è `critical`.
+- **Un pack che personalizza il prompt del verificatore singolo** e non quello per lenti
+  tiene il suo testo; il suo `verify.json` copre il giro per la regola 3.
+- **Ogni bocciatura rende più forte il giro dopo.** Il loop ricorda i `verify-<n>.json` degli
+  ultimi tre giri bocciati, e il prompt della verifica successiva (singola o per lenti)
+  chiede a ogni verificatore di controllare che quei difetti siano risolti e che i fix non
+  abbiano introdotto regressioni.
+- **Dati per imparare dai run.** Il journal registra a ogni giro le lenti attese, arrivate,
+  mancanti, scartate e i critical per lente; `history` li rende leggibili. `status` mostra
+  le lenti scelte, e in verifica finale quelle attese e arrivate. Il bench `--dry-run`
+  scrive un verdetto per lente quando è armato con più lenti (`BENCH_VERIFIERS`), e la CI lo
+  prova.
+- **[scelta] Il verificatore singolo non cambia.** Con la sola lente `general` tutto resta
+  come prima: `verify.json`, e un `pass: false` senza critical è ancora una bocciatura (la
+  lettura più severa). Estendere a lui la regola "blocca solo il critical" (decisione 6.2
+  del piano) è rimandato: sarebbe un cambio di comportamento da misurare prima sui run.
 
 La misura dei token cambia in due modi opposti. **Cambio di comportamento:** lo stesso
 `--budget-tokens` non vale più la stessa quantità di lavoro. Il nuovo totale va da un terzo
@@ -35,6 +114,39 @@ e più di due su tre scendono. Conviene rivedere il tetto guardando la ripartizi
   scala critical/high/medium/low sta sotto, e un `critical` rovescia il `blocking`/`pass`
   dichiarato dal giudice. Una severità ancora sconosciuta resta un
   errore (esito mancante), come prima: un verdetto letto con un dubbio non è un verdetto.
+
+Un advisor interno per il caso "nessun modello esterno disponibile", e per i momenti in cui
+un secondo parere serve davvero: prima di consegnare il piano, e quando lo stesso errore si
+ripresenta. La verifica finale resta coperta dalle lenti.
+
+- **Nuovo agente `pf-advisor`.** Contesto pulito, sola lettura sul sorgente, `effort: high`.
+  Scrive un solo file di testo libero, `.omc-loop/advisor-<slot>-<n>.md` (`plan` o `fix`):
+  diagnosi o critica, i tre rischi principali, cosa cambierebbe, cosa non ha potuto
+  verificare. Niente JSON, niente `requestId`, niente verdetto: non instrada. Lo installano
+  il plugin e `install.mjs` (che lo rimuove alla disinstallazione).
+- **Dove interviene.** Nel piano: con modelli esterni resta la critica esterna e l'advisor è
+  il ripiego se nessuno risponde; senza esterni è lui il secondo parere. Nel fix dopo una
+  review bocciata, dal 2º tentativo; nel fix dopo la verifica finale, dalla 2ª bocciatura
+  (prima senza alcun parere: ora con la diagnosi esterna, se c'è, e con l'advisor). Nuovi
+  hint `hint-advisor-plan`, `hint-advisor-fix`, `hint-advisor-verify-fix` (più
+  `hint-advisor-fallback`, la clausola "se nessun esterno risponde"), in inglese e in
+  `packs/it.json`; nuove variabili `advPlanHint` in `plan-write` e `advFixHint` in
+  `review-fix` e `verify-postfix`.
+- **Impara dai tentativi falliti.** Il loop ricorda i `review-<n>.json` bocciati dello step
+  corrente (`priorReviews`, azzerato quando lo step passa) e l'advisor del fix li riceve
+  tutti, come i `verify-<n>.json` delle verifiche bocciate: non deve riproporre un approccio
+  già fallito e dice se il problema è di piano. Se lo è, Claude riscrive lo step in
+  `plan.md` prima di riprovare. Nessuna transizione nuova.
+- **Antifragile.** Consultivo: un parere mancante, vuoto o in errore non è un finding e non
+  blocca; Claude integra solo le osservazioni fondate e motiva in `notes.md` quelle scartate
+  (o annota che il parere manca). Le transizioni, i retry e le pause sono gli stessi con
+  l'advisor acceso o spento.
+- **Opzioni e misura.** `arm --advisor on|off` (default `on`) e `arm --advisor-model <nome>`
+  (default `OMC_ADVISOR_MODEL`, altrimenti `opus`; un nome non valido è un errore, nella
+  variabile d'ambiente è ignorato con un avviso). Uno `state.json` di prima si carica con i
+  default. Il journal registra ogni hint (`advisor-hint`, con slot e motivo `no-external`,
+  `fallback` o `off`), anche quello del piano iniziale all'arm; `status` mostra
+  `Advisor: on (opus)` o `off`.
 
 ## 2.5.3
 

@@ -51,15 +51,18 @@ _ARGS, _ = _ap.parse_known_args()
 
 ROOT = Path(os.environ["PERSEVERANZA_ROOT"])  # plugin repo: loop CLI + contamination guard
 LOOP_MJS = ROOT / "src" / "cli" / "omc-loop.mjs"
-DATASET = Path(_ARGS.dataset_dir) if _ARGS.dataset_dir else ROOT / "bench" / "task" / "data" / "public"
+# absolute: the loops run with cwd = their work dir, so a relative path would point elsewhere
+DATASET = (Path(_ARGS.dataset_dir) if _ARGS.dataset_dir else ROOT / "bench" / "task" / "data" / "public").resolve()
 MINITASKS = DATASET / "minitasks"
-WORKROOT = Path(_ARGS.working_dir) if _ARGS.working_dir else Path.cwd()
+WORKROOT = (Path(_ARGS.working_dir) if _ARGS.working_dir else Path.cwd()).resolve()
 EXPECTED = ["t1-slugify", "t2-bugfix", "t3-refactor"]
 
 MODEL = os.environ.get("BENCH_LOOP_MODEL", "sonnet")
 TIMEOUT_S = int(os.environ.get("BENCH_LOOP_TIMEOUT_S", "1800"))   # 900 killed healthy loops
 LOOP_MAX = int(os.environ.get("BENCH_LOOP_MAX", "14"))             # a perfect run already needs ~7 fires
 REPEATS = max(1, int(os.environ.get("BENCH_REPEATS", "1")))
+# final verification lenses (arm --verifiers), e.g. "correctness,security,tests"; empty = auto
+VERIFIERS = os.environ.get("BENCH_VERIFIERS", "").strip()
 POLL_S = 2
 KICK = (
     "The perseveranza loop is armed in this directory: you are the session driving it. "
@@ -142,7 +145,7 @@ def read_journal(path: Path):
 def dry_loop(work: Path, name: str):
     """No claude: simulate a converged loop (drive the real hook with fake Stop events)."""
     hook = ROOT / "src" / "shell" / "stop.mjs"
-    env = {**os.environ, "OMC_LOOP_NO_NOTIFY": "1", "OMC_NO_UPDATE_CHECK": "1",
+    env = {**os.environ, "OMC_LOOP_NO_NOTIFY": "1", "OMC_NO_UPDATE_CHECK": "1", "OMC_LOOP_NO_WATCHDOG": "1",
            "PERSEVERANZA_HOME": str(WORKROOT / "prs-home")}
 
     def fire():
@@ -169,7 +172,16 @@ def dry_loop(work: Path, name: str):
     subprocess.run(["node", str(LOOP_MJS), "claim-done"], cwd=work, capture_output=True, text=True, env=env)
     fire()                                             # -> cleanup (no suite configured in dry run)
     fire()                                             # -> final-verify
-    (gate / "verify.json").write_text(verdict({"pass": True}), encoding="utf-8")
+    try:
+        lenses = json.loads((gate / "state.json").read_text(encoding="utf-8")).get("verdictLenses") or []
+    except (OSError, ValueError):
+        lenses = []
+    if lenses and lenses != ["general"]:
+        # a round by lenses: one verifier, and one verdict file, per lens
+        for lens in lenses:
+            (gate / f"verify-{lens}.json").write_text(verdict({"lens": lens, "pass": True}), encoding="utf-8")
+    else:
+        (gate / "verify.json").write_text(verdict({"pass": True}), encoding="utf-8")
     fire()                                             # -> done: archived + disarmed
 
 
@@ -180,7 +192,10 @@ def run_minitask(name: str, repeat: int) -> dict:
         shutil.rmtree(work)
     shutil.copytree(template, work)
     task_text = (work / "TASK.txt").read_text(encoding="utf-8").strip()
-    env = {**os.environ, "OMC_LOOP_NO_NOTIFY": "1", "OMC_NO_UPDATE_CHECK": "1"}
+    env = {**os.environ, "OMC_LOOP_NO_NOTIFY": "1", "OMC_NO_UPDATE_CHECK": "1",
+           # no detached watchdog per loop: the runner itself watches the timeout, and a
+           # leftover watchdog keeps the throw-away work dir busy (Windows cannot delete it)
+           "OMC_LOOP_NO_WATCHDOG": "1"}
     if _ARGS.dry_run:
         env["PERSEVERANZA_HOME"] = str(WORKROOT / "prs-home")
 
@@ -188,6 +203,8 @@ def run_minitask(name: str, repeat: int) -> dict:
                 "--external", "off", "--no-git-finish", "--lang", "en"]
     if not _ARGS.dry_run:
         arm_args += ["--test", "node visible/test.mjs"]
+    if VERIFIERS:
+        arm_args += ["--verifiers", VERIFIERS]
     arm = subprocess.run(arm_args, cwd=work, capture_output=True, text=True, env=env)
     if arm.returncode != 0:
         return {"name": name, "repeat": repeat, "workdir": str(work), "closed": False,

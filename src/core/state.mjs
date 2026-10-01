@@ -11,6 +11,40 @@ export const PHASES = ['plan', 'implement', 'review', 'cleanup', 'final-verify',
 export const COMPLEXITIES = ['low', 'medium', 'high'];
 export const DEFAULT_MAX_ITERATIONS = 25;
 export const DEFAULT_MAX_RETRIES = 3;
+// The lenses of the final verification: `general` is the single verifier of old; the others
+// split the adversarial mandate among verifiers that run side by side (arm --verifiers).
+export const LENSES = ['general', 'correctness', 'security', 'tests'];
+export const AUTO_LENSES_HIGH = ['correctness', 'security', 'tests'];
+// the rejected rounds whose findings the next final verification rechecks
+export const MAX_PRIOR_VERIFIES = 3;
+// the rejected reviews of the current step, handed to the advisor of the fix
+export const MAX_PRIOR_REVIEWS = 10;
+// The internal advisor (agents/pf-advisor.md): a second opinion that never routes the loop.
+export const DEFAULT_ADVISOR_MODEL = 'opus';
+// a model name as the Agent tool takes it (opus, sonnet, claude-opus-4-1, opus[1m]...)
+export const ADVISOR_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,63}$/;
+export const normalizeAdvisorModel = (v) => (typeof v === 'string' && ADVISOR_MODEL_RE.test(v.trim()) ? v.trim() : DEFAULT_ADVISOR_MODEL);
+
+// Known lenses only, each once, in the order given. -> [] when nothing is left.
+export function normalizeLenses(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const l of raw) {
+    const k = String(l ?? '').trim().toLowerCase();
+    if (LENSES.includes(k) && !out.includes(k)) out.push(k);
+  }
+  return out;
+}
+
+// The lenses a final verification round asks for: the ones armed, else by complexity.
+export function effectiveLenses(s) {
+  const chosen = normalizeLenses(s && s.options && s.options.verifiers);
+  if (chosen.length) return chosen;
+  return s && s.complexity === 'high' ? [...AUTO_LENSES_HIGH] : ['general'];
+}
+
+// One verifier writing verify.json, as before the lenses: the round the machine reads alone.
+export const singleLens = (lenses) => !Array.isArray(lenses) || !lenses.length || (lenses.length === 1 && lenses[0] === 'general');
 
 export function defaultState(overrides = {}) {
   const s = {
@@ -26,6 +60,11 @@ export function defaultState(overrides = {}) {
       testCmd: null,
       externals: [],
       lang: 'it',
+      // final verification lenses chosen at arm; null = automatic (by complexity, per round)
+      verifiers: null,
+      // the internal advisor at the plan and from the 2nd fix (arm --advisor, --advisor-model)
+      advisor: true,
+      advisorModel: DEFAULT_ADVISOR_MODEL,
     },
     // staleGates: final passes in a row that did not cover the current tree (pass-stale)
     counters: { iterations: 0, retries: 0, finalFails: 0, staleGates: 0 },
@@ -54,6 +93,13 @@ export function defaultState(overrides = {}) {
     // the code fingerprint the request pointed at (null: not computable, e.g. outside git): a
     // final pass closes only the tree it judged
     verdictTree: null,
+    // the lenses the current final verification round asked for (fixed when it is requested)
+    verdictLenses: [],
+    // the kept findings (verify-<n>.json) of the last rejected rounds: rechecked by the next
+    priorVerifies: [],
+    // the kept rejections (review-<n>.json) of the current step: the advisor of the fix reads
+    // every attempt that already failed, not only the last one
+    priorReviews: [],
     armedAt: null,
     engineVersion: null,
   };
@@ -135,6 +181,10 @@ export function normalizeState(raw) {
   s.options.testCmd = s.options.testCmd ? String(s.options.testCmd) : null;
   s.options.externals = Array.isArray(s.options.externals) ? s.options.externals.map(String) : [];
   s.options.lang = typeof s.options.lang === 'string' && s.options.lang ? s.options.lang : 'it';
+  const verifiers = normalizeLenses(s.options.verifiers);
+  s.options.verifiers = verifiers.length ? verifiers : null;
+  s.options.advisor = bool(s.options.advisor, true);
+  s.options.advisorModel = normalizeAdvisorModel(s.options.advisorModel);
   s.baselineDirty = Array.isArray(s.baselineDirty) ? s.baselineDirty.map(String) : [];
   if (s.lastTest && typeof s.lastTest === 'object') {
     s.lastTest = {
@@ -152,6 +202,13 @@ export function normalizeState(raw) {
   s.verdictRequestedAt = Math.max(0, num(s.verdictRequestedAt, 0));
   s.verdictRequestId = typeof s.verdictRequestId === 'string' && s.verdictRequestId ? s.verdictRequestId : null;
   s.verdictTree = typeof s.verdictTree === 'string' && s.verdictTree ? s.verdictTree : null;
+  s.verdictLenses = normalizeLenses(s.verdictLenses);
+  s.priorVerifies = Array.isArray(s.priorVerifies)
+    ? s.priorVerifies.map(String).filter((n) => /^verify-\d+\.json$/.test(n)).slice(-MAX_PRIOR_VERIFIES)
+    : [];
+  s.priorReviews = Array.isArray(s.priorReviews)
+    ? s.priorReviews.map(String).filter((n) => /^review-\d+\.json$/.test(n)).slice(-MAX_PRIOR_REVIEWS)
+    : [];
   s.tree.fingerprint = typeof s.tree.fingerprint === 'string' && s.tree.fingerprint ? s.tree.fingerprint : null;
   s.tree.iteration = Math.max(0, num(s.tree.iteration, 0));
   s.owner.sessionId = typeof s.owner.sessionId === 'string' && s.owner.sessionId ? s.owner.sessionId : null;

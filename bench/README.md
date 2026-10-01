@@ -68,7 +68,9 @@ nei run 1-2 le sue riscritture del runner erano la causa dei crash di gen_1.
 
 Tuning: `BENCH_LOOP_MODEL` (default `sonnet`), `BENCH_LOOP_TIMEOUT_S` (default 1800 per
 mini-task — 900 uccideva loop sani a metà), `BENCH_LOOP_MAX` (default 14 iterazioni),
-`BENCH_REPEATS` (default 1; con 3 il rumore per task diventa misurabile).
+`BENCH_REPEATS` (default 1; con 3 il rumore per task diventa misurabile),
+`BENCH_VERIFIERS` (default vuoto = automatico; es. `correctness,security,tests` arma i loop
+con `--verifiers` e il `--dry-run` scrive un verdetto per lente invece di `verify.json`).
 
 ⚠ **Il motore dei loop è il plugin INSTALLATO**, non il repo: il runner verifica che sia
 >= 2.0.0 (registro `installed_plugins.json`) e abortisce altrimenti — i run 1-4 del bench

@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-2.5.3-blue)
+![versione](https://img.shields.io/badge/versione-2.6.0-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -79,15 +79,15 @@ Perseveranza nasce da tre principi:
 ```mermaid
 flowchart TD
     START(["/perseveranza «task»"]) --> PLAN
-    PLAN["<b>plan</b><br/>esplora il codice → checklist<br/>critica del piano da modello esterno<br/>registra la complessità"] --> IMPL
+    PLAN["<b>plan</b><br/>esplora il codice → checklist<br/>critica del piano: modello esterno<br/>o advisor interno pf-advisor<br/>registra la complessità"] --> IMPL
     IMPL["<b>implement</b><br/>uno step della checklist"] --> REV
     REV["<b>review</b><br/>agente pf-reviewer, contesto pulito<br/>verdetto in review.json"] -- "blocking > 0" --> FIX
-    FIX["<b>fix</b> · stesso step, ri-revisionato<br/>dal 2º fallimento: diagnosi esterna"] --> REV
+    FIX["<b>fix</b> · stesso step, ri-revisionato<br/>dal 2º fallimento: diagnosi esterna<br/>e/o advisor interno"] --> REV
     REV -- "blocking = 0" --> NEXT{"restano step?"}
     NEXT -- "sì" --> IMPL
     NEXT -- "no → test verde fresco<br/>+ claim-done" --> CLEAN
     CLEAN["<b>cleanup</b> · una tantum"] --> VERIFY
-    VERIFY["<b>verifica finale avversariale</b><br/>agente pf-verifier prova a falsificare<br/>+ modello esterno + lente security<br/>verdetto in verify.json"] -- "pass" --> DONE
+    VERIFY["<b>verifica finale avversariale</b><br/>agente pf-verifier prova a falsificare<br/>+ modello esterno + lente security<br/>verdetto in verify.json<br/>(o uno per lente)"] -- "pass" --> DONE
     VERIFY -- "fail" --> POSTFIX["fix post-verifica"] --> IMPL
     FIX -. "fix esauriti" .-> PAUSE
     VERIFY -. "bocciature esaurite" .-> PAUSE
@@ -101,17 +101,17 @@ flowchart TD
 
 | fase | chi la fa | cosa produce |
 |---|---|---|
-| **plan** | Claude, dopo aver esplorato il codice | `plan.md` come checklist, complessità registrata |
+| **plan** | Claude, dopo aver esplorato il codice; critica di un modello esterno o di `pf-advisor` | `plan.md` come checklist, complessità registrata |
 | **implement** | Claude (o `pf-executor` con opus se la complessità è alta) | uno step, con i suoi casi limite |
 | **review** | `pf-reviewer`, contesto pulito, modello per complessità | `review.json` con `requestId`, `blocking` e findings |
-| **fix** | Claude, sullo stesso step | il fix, che torna in review |
+| **fix** | Claude, sullo stesso step; dal 2º tentativo con il parere di `pf-advisor` | il fix, che torna in review |
 | **cleanup** | Claude, una volta sola | codice morto e duplicazioni rimossi, docs aggiornati |
-| **verifica finale** | `pf-verifier` che assume che il lavoro sia sbagliato | `verify.json` con `requestId`, `pass` e findings |
+| **verifica finale** | `pf-verifier` che assume che il lavoro sia sbagliato, uno per lente | `verify.json` (o un `verify-<lente>.json` per lente) con `requestId`, `pass` e findings |
 | **chiusura** | lo Stop hook, non Claude | commit, push, archivio del run, notifica |
 
 Il modello dei revisori segue la complessità che Claude registra: `haiku` / `sonnet` /
-`opus` per la review, `sonnet` / `opus` / `opus` per la verifica finale; con `high` la
-verifica aggiunge una lente security.
+`opus` per la review, `sonnet` / `opus` / `opus` per la verifica finale. Con `high` la
+verifica finale si divide in tre lenti che lavorano in parallelo (vedi sotto).
 
 ## Le garanzie
 
@@ -195,6 +195,37 @@ verifica aggiunge una lente security.
   `review-stale-<n>.json` e la fase richiede il verdetto, una volta. Un verdetto senza id
   (un pack di prompt più vecchio) vale se scritto dopo la richiesta; con l'id giusto vale
   anche se l'orologio del file è indietro.
+- **La verifica finale può guardare con più lenti.** Con `--verifiers correctness,security,tests`
+  (e di default con complessità `high`) Claude delega nello stesso messaggio, in primo
+  piano, un verificatore per lente: `correctness` (logica, casi limite, input ostili,
+  regressioni dei fix), `security` (segreti, input non fidati, injection, path traversal),
+  `tests` (test mirati, casi non coperti, commenti e documentazione che dicono il vero).
+  Ognuno scrive `verify-<lente>.json` con lo stesso `requestId`. Il giro passa solo se tutte
+  le lenti hanno scritto e nessuna ha un finding `critical`; un `pass: false` senza critical
+  è un pass con warning, annotato nel journal, salvo un finding `high`/`major` (quello blocca). Una lente mancante viene richiesta da sola,
+  le altre restano valide; la seconda volta è una bocciatura. I findings di tutte le lenti
+  finiscono, ciascuno con la sua lente, in un solo `verify-<n>.json`. Un `verify.json` del giro (un pack di prompt
+  personalizzato che non conosce le lenti) copre ogni lente senza un file suo, e boccia il
+  giro se boccia (`lens-fallback` nel journal). Con la sola lente `general` (il default fino a complessità `medium`) tutto
+  resta com'era: un verificatore, `verify.json`.
+- **Ogni bocciatura rende più forte il giro dopo.** I `verify-<n>.json` degli ultimi tre giri
+  bocciati entrano nel prompt della verifica successiva: ogni verificatore deve controllare
+  che quei difetti siano risolti e che i fix non abbiano introdotto regressioni.
+- **Un secondo parere anche senza modelli esterni.** L'agente `pf-advisor` (contesto pulito,
+  sola lettura sul sorgente, modello `opus` di default) interviene nei momenti in cui un
+  secondo parere serve davvero: prima di consegnare il piano e quando lo stesso errore si
+  ripresenta (dal 2º fix dopo una review bocciata, dalla 2ª bocciatura della verifica finale).
+  Con modelli esterni rilevati è il ripiego se nessuno risponde; senza, è il secondo parere.
+  Scrive un file di testo libero `.omc-loop/advisor-<slot>-<n>.md` (critica, tre rischi, cosa
+  cambierebbe, cosa non ha potuto verificare): niente JSON, niente verdetto. Nel fix riceve
+  tutti i tentativi già falliti sullo stesso step (`review-<n>.json`, `verify-<n>.json`), non
+  deve riproporre un approccio già fallito e dice se il problema è lo step stesso: allora
+  Claude riscrive lo step in `plan.md` prima di riprovare. È consultivo: non instrada mai il
+  loop, e un parere mancante, vuoto o in errore non è un finding e non blocca (Claude lo
+  annota in `notes.md`). Il journal registra ogni suggerimento (`advisor-hint`: slot e
+  motivo `no-external`/`fallback`/`off`) per misurare quanto serve; `status` mostra
+  `Advisor: on (opus)` o `off`. `--advisor off` lo spegne, `--advisor-model` o
+  `OMC_ADVISOR_MODEL` scelgono il modello.
 - **Un pass finale chiude solo ciò che ha giudicato.** Se al pass il piano ha di nuovo step
   aperti, l'ultimo run registrato della suite non è un verde sul codice giudicato (rosso,
   assente, o eseguito prima di una pulizia che ha toccato il codice) oppure il codice è
@@ -217,7 +248,10 @@ Le opzioni di `/perseveranza`:
 | `--commit` | commit atomico dopo ogni step validato |
 | `--test "cmd"` | la suite (se non la passi, Claude la individua) |
 | `--approve-plan` | pausa dopo il piano: approvi tu con `resume` |
+| `--verifiers <lenti>` | lenti della verifica finale tra `general`, `correctness`, `security`, `tests` (default `auto`: le ultime tre con complessità `high`, altrimenti `general`) |
 | `--external off` | nessun confronto con modelli esterni |
+| `--advisor off` | nessun advisor interno (default `on`) |
+| `--advisor-model <nome>` | modello dell'advisor interno (default `OMC_ADVISOR_MODEL`, altrimenti `opus`) |
 | `--check` | prova subito i provider rilevati: parte solo con quelli che rispondono |
 | `--no-git-finish` / `--no-push` | niente commit+push a fine progetto / solo commit locale |
 | `--lang en` | istruzioni in inglese (default: italiano) |

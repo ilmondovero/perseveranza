@@ -47,6 +47,50 @@ test('arm validates its flags', () => {
   assert.equal(readState(p), null);
 });
 
+test('arm: the internal advisor flags, the env default, validation; status shows it', () => {
+  const d = project();
+  const out = arm(d).out;
+  assert.equal(readState(d).options.advisor, true);
+  assert.equal(readState(d).options.advisorModel, 'opus');
+  assert.ok(out.includes('Internal advisor: on (model opus'), out);
+  assert.ok(out.includes('.omc-loop/advisor-plan-0.md'), out);
+  assert.ok(cli(d, 'status').out.includes('Advisor: on (opus)'));
+  assert.ok(journal(d).some((e) => e.type === 'advisor-hint' && e.slot === 'plan' && e.reason === 'no-external' && e.model === 'opus' && e.via === 'arm'));
+  const m = project();
+  arm(m, 't', ['--advisor', 'on', '--advisor-model', 'sonnet']);
+  assert.equal(readState(m).options.advisorModel, 'sonnet');
+  assert.ok(cli(m, 'status').out.includes('Advisor: on (sonnet)'));
+  const e = project();
+  e.env.OMC_ADVISOR_MODEL = 'haiku';
+  arm(e);
+  assert.equal(readState(e).options.advisorModel, 'haiku', 'the env is the default');
+  const f = project();
+  f.env.OMC_ADVISOR_MODEL = 'haiku';
+  arm(f, 't', ['--advisor-model', 'opus']);
+  assert.equal(readState(f).options.advisorModel, 'opus', 'the flag wins over the env');
+  const b = project();
+  b.env.OMC_ADVISOR_MODEL = 'not a model!';
+  const bo = arm(b).out;
+  assert.equal(readState(b).options.advisorModel, 'opus');
+  assert.ok(bo.includes('is not a model name, ignored'), bo);
+  const o = project();
+  const oo = arm(o, 't', ['--advisor', 'OFF']).out;
+  assert.equal(readState(o).options.advisor, false);
+  assert.ok(oo.includes('Internal advisor: off'), oo);
+  assert.ok(cli(o, 'status').out.includes('Advisor: off'));
+  assert.ok(journal(o).some((x) => x.type === 'advisor-hint' && x.reason === 'off'));
+  const bad = project();
+  const r1 = cli(bad, 'arm', 'x', '--external', 'off', '--advisor', 'maybe');
+  assert.equal(r1.code, 1);
+  assert.ok(r1.out.includes('Invalid --advisor: use on|off'), r1.out);
+  const r2 = cli(bad, 'arm', 'x', '--external', 'off', '--advisor-model', 'opus; rm -rf /');
+  assert.equal(r2.code, 1);
+  assert.ok(r2.out.includes('Invalid --advisor-model'), r2.out);
+  const r3 = cli(bad, 'arm', 'x', '--external', 'off', '--advisor-model', '');
+  assert.equal(r3.code, 1);
+  assert.equal(readState(bad), null, 'nothing armed on an invalid flag');
+});
+
 test('arm language: Italian by default, then config, then PERSEVERANZA_LANG, then --lang', () => {
   const p = project();
   delete p.env.PERSEVERANZA_LANG;

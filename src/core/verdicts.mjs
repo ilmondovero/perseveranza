@@ -1,6 +1,7 @@
 // Verdict artifacts written by the review / verification agents.
 //   .omc-loop/review.json : { "requestId": <string>, "blocking": <int>, "findings": [...] }
 //   .omc-loop/verify.json : { "requestId": <string>, "pass": <bool>, "findings": [...] }
+//   .omc-loop/verify-<lens>.json : the same, plus "lens" (a final verification by lenses)
 // A malformed artifact is never "a pass": it becomes a MISSING outcome (which the machine
 // treats as a failure after one reminder) and the discrepancy is journaled.
 // When the declared verdict and the findings disagree, the STRICTER reading wins.
@@ -21,16 +22,23 @@ export const SEVERITY_ALIASES = {
   bassa: 'suggestion', basso: 'suggestion', minore: 'suggestion', suggerimento: 'suggestion',
 };
 
+// The aliases a judge uses for "serious" on a four-level scale (high/major and their Italian
+// forms). Read as warning, so they do not overturn a declared pass; but under a declared
+// pass:false they are the judge's own reason to reject, which a final verification by
+// lenses must not lose (a lens with pass:false over plain warnings does not block).
+export const STRONG_ALIASES = ['high', 'major', 'grave', 'alta', 'alto', 'maggiore'];
+
 function parseJson(text) {
   if (typeof text !== 'string' || !text.trim()) return { error: 'empty' };
   try { return { value: JSON.parse(text) }; } catch (e) { return { error: `invalid JSON: ${e.message}` }; }
 }
 
 function validateFindings(raw) {
-  if (raw == null) return { findings: [], notes: [] };
+  if (raw == null) return { findings: [], notes: [], strong: 0 };
   if (!Array.isArray(raw)) return { error: 'findings is not an array' };
   const findings = [];
   const mapped = new Map();
+  let strong = 0;
   for (let i = 0; i < raw.length; i++) {
     const f = raw[i];
     if (!f || typeof f !== 'object') return { error: `finding #${i} is not an object` };
@@ -38,10 +46,11 @@ function validateFindings(raw) {
     const severity = SEVERITIES.includes(declared) ? declared : SEVERITY_ALIASES[declared];
     if (!severity) return { error: `finding #${i}: unknown severity "${f.severity}" (allowed: ${SEVERITIES.join(', ')})` };
     if (severity !== declared) mapped.set(declared, severity);
+    if (STRONG_ALIASES.includes(declared)) strong += 1;
     findings.push({ severity, desc: String(f.desc ?? f.description ?? ''), file: f.file != null ? String(f.file) : null });
   }
   const notes = [...mapped].map(([from, to]) => `severity "${from}" read as ${to}`);
-  return { findings, notes };
+  return { findings, notes, strong };
 }
 
 // An empty id carries no claim about the request: read like an absent one (the machine then
@@ -116,5 +125,7 @@ export function parseVerifyVerdict(text) {
     pass = false;
     notes.push(`pass=true but ${crit} critical finding(s): the stricter reading wins`);
   }
-  return { ok: true, pass, declaredPass: v.pass, findings: f.findings, requestId: req.requestId, notes };
+  // the lens a verifier says it judged (the file name decides; a mismatch is only noted)
+  const lens = typeof v.lens === 'string' && v.lens.trim() ? v.lens.trim().toLowerCase().slice(0, 40) : null;
+  return { ok: true, pass, declaredPass: v.pass, findings: f.findings, requestId: req.requestId, lens, notes, strongWarnings: f.strong };
 }

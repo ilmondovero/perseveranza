@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync, realpathSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { project, cli, arm, fire, sessionStart, activity, readActivity, watchdog, readState, writeState, patchState, writePlan, writeArtifact, requestIdFrom, gate, journal, spawnSync, CLI, WATCHDOG, freshDir } from '../helpers/cli.mjs';
 import { spawn } from 'node:child_process';
@@ -75,6 +75,51 @@ test('review fail -> fix -> pass; escalation after the fixes are exhausted; resu
   r = fire(p);
   assert.equal(r.blocked, true);
   assert.equal(r.state.counters.retries, 0);
+});
+
+test('advisor: the 2nd fix without externals carries the advisor hint with the armed model; --advisor off does not', () => {
+  const p = project();
+  arm(p, 't', ['--advisor-model', 'sonnet']);
+  writePlan(p, PLAN);
+  fire(p); fire(p); // -> review
+  writeArtifact(p, 'review.json', { blocking: 1, findings: [{ severity: 'critical', desc: 'first try wrong' }] });
+  let r = fire(p);
+  assert.ok(r.reason.includes('attempt 1/3'));
+  assert.ok(!r.reason.includes('pf-advisor'), 'the 1st fix goes without');
+  fire(p); // -> review
+  writeArtifact(p, 'review.json', { blocking: 1, findings: [{ severity: 'critical', desc: 'still wrong' }] });
+  r = fire(p);
+  assert.ok(r.reason.includes('attempt 2/3'));
+  assert.equal(r.state.phase, 'implement', 'the advisor does not route');
+  assert.ok(r.reason.includes('pf-advisor') && r.reason.includes('model=sonnet'), r.reason);
+  assert.ok(!r.reason.includes('If no external model'), 'no externals: the advisor is the second opinion itself');
+  assert.equal(r.state.priorReviews.length, 2);
+  for (const n of r.state.priorReviews) {
+    assert.ok(existsSync(gate(p, n)), `${n} kept on disk for the advisor`);
+    assert.ok(r.reason.includes(`.omc-loop/${n}`), `${n} handed to the advisor`);
+  }
+  const hints = journal(p).filter((e) => e.type === 'advisor-hint');
+  assert.ok(hints.some((e) => e.slot === 'fix' && e.reason === 'no-external' && e.model === 'sonnet'), JSON.stringify(hints));
+  assert.ok(cli(p, 'history').out.includes('advisor fix: hint issued (no external model, model sonnet)'));
+  // a missing opinion blocks nothing: no advisor file, the review round goes on as usual
+  fire(p);
+  writeArtifact(p, 'review.json', { blocking: 0 });
+  r = fire(p);
+  assert.equal(r.state.phase, 'implement');
+  assert.ok(r.reason.includes('Review passed'), r.reason);
+  assert.deepEqual(r.state.priorReviews, [], 'the next step starts clean');
+
+  const off = project();
+  arm(off, 't', ['--advisor', 'off']);
+  writePlan(off, PLAN);
+  fire(off); fire(off);
+  writeArtifact(off, 'review.json', { blocking: 1 });
+  fire(off); fire(off);
+  writeArtifact(off, 'review.json', { blocking: 1 });
+  r = fire(off);
+  assert.ok(r.reason.includes('attempt 2/3'));
+  assert.ok(!r.reason.includes('pf-advisor') && !r.reason.includes('advisor-fix'), r.reason);
+  assert.ok(journal(off).some((e) => e.type === 'advisor-hint' && e.slot === 'fix' && e.reason === 'off'));
 });
 
 test('kill switch via STOP file and OMC_LOOP_KILL, also on a corrupt state; run archived', () => {
@@ -1077,4 +1122,113 @@ test('reconciliation through the real hooks: mutating tools refused, inspection 
   assert.equal(r.state.signals.paused, true);
   assert.ok(existsSync(gate(p, 'ESCALATION.md')));
   assert.ok(readFileSync(gate(p, 'ESCALATION.md'), 'utf8').includes('node server.js --port 3000'));
+});
+
+// the archived .omc-loop of the only run in a test home
+function archivedGate(p) {
+  const base = join(p.home, 'runs');
+  const proj = readdirSync(base)[0];
+  const stamp = readdirSync(join(base, proj))[0];
+  return join(base, proj, stamp, 'omc-loop');
+}
+
+// plan -> one reviewed step -> claim -> cleanup -> final-verify, returning the last fire
+function toFinalVerify(p) {
+  writePlan(p, '- [ ] one\n');
+  fire(p); fire(p); // -> implement -> review
+  writeArtifact(p, 'review.json', { blocking: 0 });
+  fire(p); // -> implement (advance)
+  writePlan(p, '- [x] one\n');
+  cli(p, 'claim-done');
+  fire(p); // -> cleanup
+  return fire(p); // -> final-verify
+}
+
+test('a final verification by three lenses through the real hook: a missing lens is asked alone, then the round closes', () => {
+  const p = project();
+  const armed = arm(p, 'lenses', ['--complexity', 'high']);
+  assert.ok(armed.out.includes('Final verification lenses: auto'), armed.out);
+  let r = toFinalVerify(p);
+  assert.equal(r.state.phase, 'final-verify');
+  assert.deepEqual(r.state.verdictLenses, ['correctness', 'security', 'tests']);
+  const id = requestIdFrom(r.reason);
+  assert.equal(id, r.state.verdictRequestId, r.reason);
+  for (const l of ['correctness', 'security', 'tests']) assert.ok(r.reason.includes(`.omc-loop/verify-${l}.json with requestId ${id}`), `${l}: ${r.reason}`);
+  assert.ok(cli(p, 'status').out.includes('lenses:      expected correctness, security, tests; arrived none'));
+  // two lenses write, one (the security verifier, launched in the background) does not
+  writeArtifact(p, 'verify-correctness.json', { requestId: id, lens: 'correctness', pass: true, findings: [] });
+  writeArtifact(p, 'verify-tests.json', { requestId: id, lens: 'tests', pass: false, findings: [{ severity: 'warning', desc: 'the README claims a flag that does not exist', file: 'README.md:3' }] });
+  assert.ok(cli(p, 'status').out.includes('arrived correctness, tests; missing security'));
+  r = fire(p);
+  assert.equal(r.state.phase, 'final-verify', r.reason);
+  assert.ok(r.reason.includes('lens(es) security are missing') && !r.reason.includes('[lens correctness'), r.reason);
+  assert.equal(r.state.verdictRequestId, id, 'the same request');
+  assert.ok(existsSync(gate(p, 'verify-correctness.json')) && existsSync(gate(p, 'verify-tests.json')), 'the lenses that wrote stay valid on disk');
+  assert.ok(journal(p).some((j) => j.type === 'lenses' && j.result === 'partial' && j.missing.join() === 'security'));
+  // the missing lens arrives: every lens wrote, no critical (tests said pass:false with a warning)
+  writeArtifact(p, 'verify-security.json', { requestId: id, lens: 'security', pass: true, findings: [] });
+  r = fire(p);
+  assert.equal(r.state, null, `closed and disarmed: ${r.reason}`);
+  const g = archivedGate(p);
+  const merged = readdirSync(g).filter((n) => /^verify-\d+\.json$/.test(n));
+  assert.equal(merged.length, 1, readdirSync(g).join(', '));
+  const doc = JSON.parse(readFileSync(join(g, merged[0]), 'utf8'));
+  assert.equal(doc.pass, true);
+  assert.deepEqual(doc.lenses.covered, { correctness: 'verify-correctness.json', security: 'verify-security.json', tests: 'verify-tests.json' });
+  assert.deepEqual(doc.blockedBy, []);
+  assert.deepEqual(doc.findings, [{ severity: 'warning', desc: 'the README claims a flag that does not exist', file: 'README.md:3', lens: 'tests', from: 'verify-tests.json' }]);
+  for (const l of ['correctness', 'security', 'tests']) assert.ok(existsSync(join(g, merged[0].replace('verify-', `verify-${l}-`))), `${l} kept`);
+  assert.ok(readFileSync(join(g, 'journal.jsonl'), 'utf8').includes('pass=false without a critical finding: read as a pass with warnings'));
+});
+
+test('lenses through the real hook: a lens missing twice rejects, the merged findings are on disk and rechecked by the next round', () => {
+  const p = project();
+  arm(p, 'lens missing', ['--verifiers', 'correctness,tests']);
+  let r = toFinalVerify(p);
+  assert.deepEqual(r.state.verdictLenses, ['correctness', 'tests']);
+  const id = requestIdFrom(r.reason);
+  writeArtifact(p, 'verify-correctness.json', { requestId: id, lens: 'correctness', pass: false, findings: [{ severity: 'warning', desc: 'empty input not handled', file: 'a.js:1' }] });
+  r = fire(p); // tests missing
+  assert.ok(r.reason.includes('lens(es) tests are missing'), r.reason);
+  r = fire(p); // still missing: a rejection
+  assert.equal(r.state.phase, 'implement', r.reason);
+  assert.equal(r.state.counters.finalFails, 1);
+  const kept = r.state.priorVerifies[0];
+  assert.match(kept, /^verify-\d+\.json$/);
+  assert.ok(r.reason.includes(`.omc-loop/${kept}`), r.reason);
+  const doc = JSON.parse(readFileSync(gate(p, kept), 'utf8'));
+  assert.equal(doc.result, 'missing-twice');
+  assert.deepEqual(doc.lenses.missing, ['tests']);
+  assert.equal(doc.findings[0].lens, 'correctness');
+  assert.ok(!existsSync(gate(p, 'verify-correctness.json')), 'kept, not left to answer the next round');
+  assert.ok(existsSync(gate(p, kept.replace('verify-', 'verify-correctness-'))));
+  assert.ok(cli(p, 'history').out.includes('lenses partial'));
+  // fixed and claimed again: the new round rechecks those findings by name
+  fire(p); // -> review
+  writeArtifact(p, 'review.json', { blocking: 0 });
+  fire(p);
+  cli(p, 'claim-done');
+  r = fire(p);
+  assert.equal(r.state.phase, 'final-verify', r.reason);
+  assert.ok(r.reason.includes(`their findings are in .omc-loop/${kept}`), r.reason);
+  // an agent that wrote verify.json for the round (it did not read the lenses): lens-fallback
+  writeArtifact(p, 'verify.json', { requestId: requestIdFrom(r.reason), pass: true });
+  r = fire(p);
+  assert.equal(r.state, null, `closed on the fallback: ${r.reason}`);
+  assert.ok(readFileSync(join(archivedGate(p), 'journal.jsonl'), 'utf8').includes('"type":"lens-fallback"'));
+});
+
+test('arm --verifiers validates the lenses; status shows them', () => {
+  const p = project();
+  const bad = cli(p, 'arm', 'x', '--external', 'off', '--verifiers', 'correctness,style');
+  assert.equal(bad.code, 1);
+  assert.ok(bad.out.includes('Invalid --verifiers (style)') && bad.out.includes('general, correctness, security, tests'), bad.out);
+  assert.equal(cli(p, 'arm', 'x', '--external', 'off', '--verifiers', ' , ').code, 1);
+  arm(p, 'x', ['--verifiers', 'Security,tests,security']);
+  assert.deepEqual(readState(p).options.verifiers, ['security', 'tests']);
+  assert.ok(cli(p, 'status').out.includes('verifiers: security,tests'));
+  const q = project();
+  arm(q, 'x', ['--verifiers', 'auto']);
+  assert.equal(readState(q).options.verifiers, null);
+  assert.ok(cli(q, 'status').out.includes('verifiers: auto (now general)'));
 });

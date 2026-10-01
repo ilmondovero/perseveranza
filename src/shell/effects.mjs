@@ -7,6 +7,7 @@ import { notify } from './notify.mjs';
 import { gitFinish } from './git.mjs';
 import { archiveRun, archiveFailureNote } from './archive.mjs';
 import { summarizeExternalOpinions, shortTs } from './util.mjs';
+import { writeAtomic } from './activity.mjs';
 import { countOpenSteps } from '../core/plan.mjs';
 import { finishProject } from '../core/machine.mjs';
 
@@ -90,6 +91,13 @@ export function executeEffects(effects, env) {
         }
         break;
       }
+      case 'writeArtifact':
+        // a file the machine composed (the merged findings of a lens round): a plain name in
+        // the gate, written whole or not at all, never a crash of the hook
+        if (typeof e.name === 'string' && /^[\w.-]+$/.test(e.name) && typeof e.content === 'string') {
+          try { writeAtomic(join(paths.gateDir, e.name), e.content); } catch { /* gate gone */ }
+        } else appendJournal(paths.gateDir, { type: 'note', text: `writeArtifact refused: bad name ${JSON.stringify(e.name)}` });
+        break;
       case 'notify': notify(e.title, [e.message, archiveResult && archiveFailureNote(archiveResult)].filter(Boolean).join(' · '), { env: processEnv }); break;
       case 'writeEscalation': writeEscalation(paths, holder.state, e.why); break;
       case 'gitFinish': {

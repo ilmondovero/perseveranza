@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { gate, saveState, VerbError, positiveInt } from '../shared.mjs';
-import { defaultState, COMPLEXITIES } from '../../core/state.mjs';
+import { defaultState, COMPLEXITIES, LENSES, AUTO_LENSES_HIGH, ADVISOR_MODEL_RE, DEFAULT_ADVISOR_MODEL } from '../../core/state.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
 import { spawnWatchdog } from '../../shell/watchdog.mjs';
 import { RETAINED_STATE } from '../../shell/archive.mjs';
@@ -25,6 +25,9 @@ export const OPTIONS = {
   'approve-plan': { type: 'boolean' },
   'budget-tokens': { type: 'string' },
   lang: { type: 'string' },
+  verifiers: { type: 'string' },
+  advisor: { type: 'string' },
+  'advisor-model': { type: 'string' },
   force: { type: 'boolean' },
   check: { type: 'boolean' },
 };
@@ -37,6 +40,21 @@ export async function run({ argv, cwd, env }) {
   const task = positionals.join(' ').trim();
   if (!task) throw new VerbError('Missing the task description: arm "<task>"');
   if (v.complexity && !COMPLEXITIES.includes(v.complexity)) throw new VerbError('Invalid --complexity: use low|medium|high');
+  // the final verification lenses: a list, or "auto" (by complexity, when the round is asked)
+  let verifiers = null;
+  if (v.verifiers != null && v.verifiers.trim().toLowerCase() !== 'auto') {
+    const asked = v.verifiers.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const unknown = asked.filter((x) => !LENSES.includes(x));
+    if (!asked.length || unknown.length) throw new VerbError(`Invalid --verifiers${unknown.length ? ` (${unknown.join(', ')})` : ''}: a comma-separated list of ${LENSES.join(', ')}, or auto`);
+    verifiers = [...new Set(asked)];
+  }
+  // the internal advisor: on by default; its model from the flag, else OMC_ADVISOR_MODEL, else opus
+  const advisorFlag = v.advisor == null ? 'on' : v.advisor.trim().toLowerCase();
+  if (advisorFlag !== 'on' && advisorFlag !== 'off') throw new VerbError('Invalid --advisor: use on|off');
+  if (v['advisor-model'] != null && !ADVISOR_MODEL_RE.test(v['advisor-model'].trim())) throw new VerbError('Invalid --advisor-model: a model name such as opus, sonnet or haiku (letters, digits, . _ : - [ ])');
+  const envModel = typeof env.OMC_ADVISOR_MODEL === 'string' ? env.OMC_ADVISOR_MODEL.trim() : '';
+  const envModelBad = !!envModel && !ADVISOR_MODEL_RE.test(envModel);
+  const advisorModel = v['advisor-model'] != null ? v['advisor-model'].trim() : envModel && !envModelBad ? envModel : DEFAULT_ADVISOR_MODEL;
   const paths = gate(cwd);
   if (existsSync(join(paths.gateDir, RETAINED_STATE))) {
     throw new VerbError('A previous run is retained in .omc-loop after an archive failure. Fix the archive destination and run `disarm` to archive it before arming a new task.');
@@ -80,6 +98,9 @@ export async function run({ argv, cwd, env }) {
       testCmd: v.test || null,
       externals,
       lang,
+      verifiers,
+      advisor: advisorFlag === 'on',
+      advisorModel,
     },
     limits: {
       maxIterations: v.max ? positiveInt(v.max, 25) : 25,
@@ -93,6 +114,8 @@ export async function run({ argv, cwd, env }) {
   });
   saveState(paths, state);
   appendJournal(paths.gateDir, { type: 'note', text: `armed: ${task}`, options: state.options, limits: state.limits, force: !!v.force });
+  // the plan of the first turn is written under the command's instructions: its advisor hint is this arm's
+  appendJournal(paths.gateDir, { type: 'advisor-hint', slot: 'plan', reason: !state.options.advisor ? 'off' : externals.length ? 'fallback' : 'no-external', ...(state.options.advisor ? { model: advisorModel } : {}), via: 'arm' });
   spawnWatchdog(paths.gateDir, env);
 
   console.log(`perseveranza ARMED (max ${state.limits.maxIterations} iterations${v.max ? '' : ', adaptive after the plan'}, ${state.limits.maxRetries} fixes per step${maxTokens ? `, ${maxTokens} tokens` : ''}${state.options.commitSteps ? ', commit per step' : ''}). Task: ${task}`);
@@ -110,6 +133,10 @@ export async function run({ argv, cwd, env }) {
     const ms = PROVIDERS['ollama-cloud'].models(provEnv);
     console.log(`  ollama-cloud: model${ms.length > 1 ? 's' : ''} ${ms.map(modelLabel).join(', ')} (host ${PROVIDERS['ollama-cloud'].host(provEnv)})`);
   }
+  console.log(`Final verification lenses: ${verifiers ? verifiers.join(', ') : `auto (${AUTO_LENSES_HIGH.join(', ')} with complexity high, otherwise general)`}`);
+  console.log(state.options.advisor
+    ? `Internal advisor: on (model ${advisorModel}, agent pf-advisor)${envModelBad ? `; OMC_ADVISOR_MODEL "${envModel}" is not a model name, ignored` : ''}. ${externals.length ? 'If no external model answers on the plan, before' : 'Before'} stopping with the plan ask pf-advisor with model=${advisorModel} (clean context) for a critique of task + plan: it writes .omc-loop/advisor-plan-0.md. It is consultative (a missing opinion does not block) and returns from the 2nd fix of a step.`
+    : 'Internal advisor: off (--advisor off)');
   if (state.options.testCmd) console.log(`Test suite: ${state.options.testCmd} (claim-done will require a fresh green run through the test verb)`);
   console.log(`Instruction language: ${lang}${lang === 'en' ? ' (shipped defaults)' : ` (packs/${lang}.json)`}`);
   if (state.baselineDirty.length) console.log(`Note: ${state.baselineDirty.length} file(s) already modified before the task; the final commit may include them.`);

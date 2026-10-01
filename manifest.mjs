@@ -62,6 +62,7 @@ export const AGENT_FILES = [
   'agents/pf-reviewer.md',
   'agents/pf-verifier.md',
   'agents/pf-executor.md',
+  'agents/pf-advisor.md',
 ];
 
 export const COMMAND_FILES = ['commands/perseveranza.md'];

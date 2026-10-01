@@ -54,3 +54,20 @@ as a rejection: the loop takes the stricter reading. This file closes the loop (
 sends it back to the fix (`false`). Write the file and finish.
 Copy the caller's verdict request ID exactly into `requestId`; it binds this verdict to the
 verification round that requested it.
+
+## Lenses
+
+The loop may split the final verification among several verifiers running side by side,
+one per lens: `general`, `correctness`, `security`, `tests`. When the caller's prompt gives
+you a lens and a file (`.omc-loop/verify-<lens>.json`):
+
+- falsify the work within the mandate of that lens, as the caller states it;
+- write THAT file, not `verify.json`, in the format above plus the field
+  `"lens": "<your lens>"`, with the same `requestId` the caller gave you;
+- do not write the files of the other lenses: other verifiers are writing them now.
+
+When the loop reads lenses, only a `critical` finding rejects the round: a `pass: false` with
+only `warning` findings is read as a pass whose warnings go to the fix. Mark `critical` what
+must block the closing commit.
+
+Without a lens in the prompt, write `.omc-loop/verify.json` exactly as above.
