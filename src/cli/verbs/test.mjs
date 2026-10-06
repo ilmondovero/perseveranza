@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { gate, requireState, saveState, argsAfterDoubleDash, VerbError } from '../shared.mjs';
+import { gate, requireState, changeState, argsAfterDoubleDash, VerbError } from '../shared.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
 import { treeFingerprints } from '../../shell/git.mjs';
 import { parseTimeoutMs } from '../../shell/util.mjs';
@@ -123,8 +123,8 @@ export async function run({ argv, rawArgv, cwd, env }) {
     const v = greenStillValid(s.lastTest, fp);
     if (v.same) {
       const prev = s.lastTest;
-      s.lastTest = { ...prev, iteration: it, at: new Date().toISOString(), fingerprint: fp.full, codeFingerprint: fp.code };
-      saveState(paths, s);
+      // written on the state as it is now, not on the copy read above
+      changeState(paths, (st) => { st.lastTest = { ...prev, iteration: it, at: new Date().toISOString(), fingerprint: fp.full, codeFingerprint: fp.code }; });
       appendJournal(paths.gateDir, { type: 'test', cmd: prev.cmd, exitCode: 0, iteration: it, fingerprint: fp.full, reused: true, docsOnly: v.docsOnly, from: prev.at });
       console.log(v.docsOnly
         ? `TEST GREEN already recorded for this code (${prev.at}, iteration ${prev.iteration}); only documentation changed since: suite NOT rerun, proof refreshed.`
@@ -135,17 +135,21 @@ export async function run({ argv, rawArgv, cwd, env }) {
   }
 
   console.log(`Running: ${cmd}`);
-  const timeout = parseTimeoutMs(env.OMC_TEST_TIMEOUT_MS, 1800000); // heavy suites: 30 min default
-  const r = await runSuite(cmd, { timeout, env, gateDir: paths.gateDir, heartbeatMs: parseTimeoutMs(env.OMC_ACTIVITY_HEARTBEAT_MS, 60000), sessionId: s.owner.sessionId });
+  const timeout = parseTimeoutMs(env.PERSEVERANZA_TEST_TIMEOUT_MS, 1800000); // heavy suites: 30 min default
+  const r = await runSuite(cmd, { timeout, env, gateDir: paths.gateDir, heartbeatMs: parseTimeoutMs(env.PERSEVERANZA_ACTIVITY_HEARTBEAT_MS, 60000), sessionId: s.owner.sessionId });
   const exitCode = r.status;
   const fp = treeFingerprints(cwd);
   const failed = exitCode === 0 ? [] : parseFailedTests(r.output);
-  const prev = s.lastTest;
-  const sameTree = !!(prev && prev.fingerprint && fp.full && prev.fingerprint === fp.full);
-  const flaky = flakinessNote(prev, { exitCode, failed }, sameTree);
-  s.lastTest = { cmd, exitCode, iteration: it, at: new Date().toISOString(), fingerprint: fp.full, codeFingerprint: fp.code, failed };
-  if (!s.options.testCmd) s.options.testCmd = cmd;
-  saveState(paths, s);
+  // the suite may have run for minutes, with Stops saving meanwhile (usage, phase, counters):
+  // the result goes on the state as it is now, never on the copy read before the run
+  let flaky = null;
+  changeState(paths, (st) => {
+    const prev = st.lastTest;
+    const sameTree = !!(prev && prev.fingerprint && fp.full && prev.fingerprint === fp.full);
+    flaky = flakinessNote(prev, { exitCode, failed }, sameTree);
+    st.lastTest = { cmd, exitCode, iteration: it, at: new Date().toISOString(), fingerprint: fp.full, codeFingerprint: fp.code, failed };
+    if (!st.options.testCmd) st.options.testCmd = cmd;
+  });
   appendJournal(paths.gateDir, { type: 'test', cmd, exitCode, iteration: it, fingerprint: fp.full, failed, ...(flaky ? { flaky } : {}) });
   console.log(exitCode === 0 ? 'TEST GREEN (exit 0): recorded.' : `TEST RED (exit ${exitCode}${exitCode === 124 ? ', timeout' : ''}): recorded.${failed.length ? ` Failed: ${failed.join(', ')}` : ''}`);
   if (flaky) console.log(`NOTE (journaled): ${flaky}.`);

@@ -1,7 +1,7 @@
 {
   "name": "perseveranza",
   "displayName": "Perseveranza",
-  "version": "2.6.0",
+  "version": "3.0.0",
   "description": "Autonomous feedback loop for Claude Code: plan -> implement -> review -> adversarial final verification, with model routing by complexity",
   "author": {
     "name": "ilmondovero",
@@ -10,7 +10,7 @@
   "repository": "https://github.com/ilmondovero/perseveranza",
   "keywords": [
     "loop",
-    "stop-hook",
+    "mod",
     "workflow",
     "code-review",
     "adversarial-verification"

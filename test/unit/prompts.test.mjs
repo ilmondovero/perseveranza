@@ -34,8 +34,8 @@ test('the operative verbs are in the defaults (the pack may reword, the verbs mu
   assert.ok(DEFAULT_PROMPTS['review-advance'].includes('{{testRun}}'));
   assert.ok(DEFAULT_PROMPTS['hint-test-green'].includes('{{testRun}}'));
   assert.ok(DEFAULT_PROMPTS['hint-verdict-file'].includes('{{verdictFile}}'));
-  assert.ok(DEFAULT_PROMPTS['review-delegate'].includes('.omc-loop/review.json'));
-  assert.ok(DEFAULT_PROMPTS['final-verify'].includes('.omc-loop/verify.json'));
+  assert.ok(DEFAULT_PROMPTS['review-delegate'].includes('.perseveranza/review.json'));
+  assert.ok(DEFAULT_PROMPTS['final-verify'].includes('.perseveranza/verify.json'));
   assert.ok(DEFAULT_PROMPTS['review-missing-outcome'].includes('report pass'));
 });
 

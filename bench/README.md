@@ -1,13 +1,13 @@
 # perseveranza-bench — evolvere il prompt pack con SIA
 
 Esperimento di self-improvement: [SIA](https://github.com/hexo-ai/sia) fa evolvere il
-**prompt pack** di perseveranza (v2.0.0+) misurandolo su una batteria di mini-task con
+**prompt pack** di perseveranza (v3.0.0+) misurandolo su una batteria di mini-task con
 test nascosti. Questo NON fa parte del runtime del plugin: è tooling di sviluppo.
 
 ## Novità con il motore v2
 
-- il runner richiede il plugin installato **>= 2.0.0** (CLI in `src/cli/omc-loop.mjs`,
-  journal `journal.jsonl`, run archiviato in `~/.perseveranza/runs/`): iterazioni, esito
+- il runner richiede il plugin installato **>= 3.0.0** (CLI in `src/cli/perseveranza.mjs`,
+  loop in `.perseveranza/`, journal `journal.jsonl`, run archiviato in `~/.perseveranza/runs/`): iterazioni, esito
   e token vengono letti dal journal archiviato, non dal polling dello stato;
 - **`BENCH_REPEATS=N`** ripete ogni mini-task N volte per generazione: `evaluate.py` fa la
   media per task e riporta la deviazione standard (`noise`), così le mutazioni sotto il
@@ -35,7 +35,7 @@ non sono un segreto per gli umani.
 
 ## Prerequisiti
 
-- perseveranza **>= 2.0.0** installato (il plugin) e CLI `claude` autenticata (abbonamento: nessuna
+- perseveranza **>= 3.0.0** installato (il plugin) e CLI `claude` autenticata (abbonamento: nessuna
   `ANTHROPIC_API_KEY` necessaria — verificato: SDK e orchestrator al massimo avvisano);
 - `py -m pip install "sia-agent[claude]"` (Python 3.11+);
 - env `PERSEVERANZA_ROOT` = path del repo perseveranza (per gli script del loop);
@@ -73,7 +73,7 @@ mini-task — 900 uccideva loop sani a metà), `BENCH_LOOP_MAX` (default 14 iter
 con `--verifiers` e il `--dry-run` scrive un verdetto per lente invece di `verify.json`).
 
 ⚠ **Il motore dei loop è il plugin INSTALLATO**, non il repo: il runner verifica che sia
->= 2.0.0 (registro `installed_plugins.json`) e abortisce altrimenti — i run 1-4 del bench
+>= 3.0.0 (registro `installed_plugins.json`) e abortisce altrimenti — i run 1-4 del bench
 v1 girarono inconsapevolmente con la 1.12.0 (pack ignorato, misure invalide). Prima di un
 run: `claude plugin update perseveranza@perseveranza`. Prova a vuoto senza costi:
 `PERSEVERANZA_ROOT=<repo> python bench/task/reference/reference_target_agent.py --dry-run --working_dir <dir>`.

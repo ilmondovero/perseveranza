@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { project, arm, cli, fire, gate, writePlan, patchState, writeArtifact } from '../helpers/cli.mjs';
+import { ARCHIVE_GATE_DIRNAME } from '../../src/shell/paths.mjs';
 import { listRuns, RETAINED_STATE } from '../../src/shell/archive.mjs';
 
 for (const outcome of ['done', 'budget-iterations', 'killed', 'corrupt-state', 'disarmed']) {
@@ -42,7 +43,7 @@ for (const outcome of ['done', 'budget-iterations', 'killed', 'corrupt-state', '
     const runs = listRuns(p.env);
     assert.equal(runs.length, 1);
     assert.equal(runs[0].summary.outcome, outcome);
-    assert.equal(readFileSync(join(runs[0].dir, 'omc-loop', 'notes.md'), 'utf8'), 'irreplaceable notes');
+    assert.equal(readFileSync(join(runs[0].dir, ARCHIVE_GATE_DIRNAME, 'notes.md'), 'utf8'), 'irreplaceable notes');
     assert.equal(cli(p, 'arm', 'next task', '--external', 'off').code, 0);
   });
 }

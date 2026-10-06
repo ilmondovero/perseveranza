@@ -8,16 +8,16 @@
 //
 //   { type: 'journal', entry }               append to the run journal
 //   { type: 'saveState' }                    persist the returned state
-//   { type: 'dropArtifact', name }           delete .omc-loop/<name> (a stale verdict, never read)
-//   { type: 'keepArtifact', name, as }        rename .omc-loop/<name> to <as> (a verdict consumed on
+//   { type: 'dropArtifact', name }           delete .perseveranza/<name> (a stale verdict, never read)
+//   { type: 'keepArtifact', name, as }        rename .perseveranza/<name> to <as> (a verdict consumed on
 //                                            read stays readable by the fix phase and the archive)
-//   { type: 'writeArtifact', name, content }  write .omc-loop/<name> atomically (the findings of a
+//   { type: 'writeArtifact', name, content }  write .perseveranza/<name> atomically (the findings of a
 //                                            final verification by lenses, merged in one file)
 //   { type: 'notify', title, message }       desktop notification (best-effort)
 //   { type: 'writeEscalation', why }         hand-off document for a human
 //   { type: 'gitFinish', retry }             commit+push (shell then calls finishProject)
-//   { type: 'archiveRun', outcome }          move .omc-loop/ into the runs archive
-//   { type: 'disarm' }                       remove .omc-loop/
+//   { type: 'archiveRun', outcome }          move .perseveranza/ into the runs archive
+//   { type: 'disarm' }                       remove .perseveranza/
 //   { type: 'allowStop' }                    let Claude stop (no output)
 //   { type: 'block', reason }                block the stop and inject the instruction
 //
@@ -27,15 +27,49 @@ import { countOpenSteps, stepCounts } from './plan.mjs';
 import { parseReviewVerdict, parseVerifyVerdict, parseReconcile } from './verdicts.mjs';
 import { lookup } from './transitions.mjs';
 import { canContinue, adaptiveMax, tokensSpent } from './budget.mjs';
-import { renderPrompt, templateLayer } from './prompts.mjs';
-import { PHASES, COMPLEXITIES, LENSES, MAX_PRIOR_VERIFIES, MAX_PRIOR_REVIEWS, DEFAULT_ADVISOR_MODEL, normalizeUsage, effectiveLenses, singleLens } from './state.mjs';
+import { renderPrompt, templateLayer, loopVar, userVar, bashVar } from './prompts.mjs';
+import { PHASES, COMPLEXITIES, LENSES, MAX_PRIOR_VERIFIES, MAX_PRIOR_REVIEWS, MAX_SUBAGENT_WAITS, DEFAULT_ADVISOR_MODEL, normalizeUsage, effectiveLenses, singleLens } from './state.mjs';
 import { DEFAULT_STALE_MS, releaseOpen } from './staleness.mjs';
 import { renderProgress } from '../hud/render.mjs';
 
 export const MODEL_ROUTING = {
   review: { low: 'haiku', medium: 'sonnet', high: 'opus' },
   verify: { low: 'sonnet', medium: 'opus', high: 'opus' },
+  // pf-executor: delegated with model=opus at high complexity (hint-impl-high); used only by
+  // the mod's routing of a spawn, never rendered in a prompt
+  execute: { low: 'sonnet', medium: 'sonnet', high: 'opus' },
 };
+
+// The loop's own subagents: pf-<name>, or perseveranza:pf-<name> when installed as a plugin.
+// -> 'pf-<name>' | null
+export function loopAgentName(type) {
+  const m = typeof type === 'string' ? type.trim().match(/^(?:perseveranza:)?(pf-[A-Za-z0-9_-]+)$/) : null;
+  return m ? m[1] : null;
+}
+
+// ctx.backgroundTasks (from the Stop input, seen only by the mod): the loop's subagents still
+// running. Anything not shaped like a task is ignored, and no field is ever coerced: an entry
+// that is not a plain object, or a status that is not a string, never throws. -> [{ agent, description }]
+export function runningLoopAgents(tasks) {
+  if (!Array.isArray(tasks)) return [];
+  const out = [];
+  for (const t of tasks) {
+    if (!t || typeof t !== 'object' || Array.isArray(t) || typeof t.status !== 'string' || t.status.toLowerCase() !== 'running') continue;
+    const agent = loopAgentName(t.agent_type ?? t.agentType);
+    if (agent) out.push({ agent, description: typeof t.description === 'string' ? t.description.slice(0, 80) : '' });
+  }
+  return out;
+}
+// The one subagent each phase waits for: the one whose work or verdict the phase is about.
+// Another pf-* still running (a reviewer left over from the previous round, seen in
+// implement) does not hold the loop.
+export const WAIT_ROLES = { implement: 'pf-executor', review: 'pf-reviewer', 'final-verify': 'pf-verifier' };
+// Blocking stops in a row with no evidence of work since the previous stop (counters.quietStops):
+// no tree change, no test recorded, no verdict or report routed, no claim. Only real work
+// resets it, never a wait or a missing, missing-twice or idle outcome. A wait is refused once
+// this many came in a row: waits never stretch a run of text-only continuations toward Claude
+// Code's cap of 8 (a stuck subagent: 3 waits, missing, missing-twice, and no wait after).
+export const MAX_QUIET_STOPS = 5;
 export const NOTIFY_TITLE = 'Claude Code - perseveranza';
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -62,7 +96,7 @@ const roundLenses = (s) => (Array.isArray(s.verdictLenses) && s.verdictLenses.le
 export const lensFileName = (lens) => `verify-${lens}.json`;
 // A lens round stays open (its verdicts on disk, valid for the same request) only while the
 // loop keeps asking for the same request: a missing lens, or a claim refused in the phase.
-const LENS_ROUND_OPEN = new Set(['missing', 'claim-open', 'claim-no-test', 'claim-stale', 'claim-unverifiable']);
+const LENS_ROUND_OPEN = new Set(['missing', 'claim-open', 'claim-no-test', 'claim-stale', 'claim-unverifiable', 'subagent-running']);
 
 // One second of tolerance for coarse file clocks, when a verdict without an id is dated by
 // its file (the Stop hook and `status` apply the same rule).
@@ -77,15 +111,25 @@ function agentRef(name, fallback) {
 
 // Everything the templates may interpolate, derived from state + ctx.
 function buildVars(s, ctx) {
-  const LOOP = ctx.LOOP || 'node omc-loop.mjs';
-  const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP }, ctx.overrides || []);
+  // ctx.loopMode 'tool': the verbs are the mod's tool, not a shell command; USER is what the
+  // user runs (in shell mode both are the CLI); the suite and the external models stay shell
+  // commands in either mode (BASH: the tool runs neither, the user's Bash permissions decide)
+  const layers = ctx.overrides || [];
+  const LOOP = loopVar(ctx.loopMode, ctx.LOOP, layers);
+  const USER = userVar(ctx.loopMode, ctx.LOOP, layers);
+  const BASH = bashVar(ctx.loopMode, ctx.LOOP, layers);
+  const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP, USER }, layers);
   const externals = s.options.externals;
   const extList = externals.join(', ');
-  const askHint = (slot) => P('hint-ask', { slot, extList });
+  // hint-ask names the CLI twice (the stdin form): the bare command, the tool-mode words before it
+  const askHint = (slot) => {
+    const text = renderPrompt('hint-ask', { slot, extList, LOOP: loopVar('shell', ctx.LOOP, layers) }, layers);
+    return ctx.loopMode === 'tool' ? `${renderPrompt('loop-bash', {}, layers)} ${text}` : text;
+  };
   const extFraming = P('hint-ext-framing');
   const high = s.complexity === 'high';
   const implHint = high ? P('hint-impl-high', { executorRef: agentRef('pf-executor', 'a generic executor subagent') }) : '';
-  const testRun = `${LOOP} test --if-needed -- ${s.options.testCmd || '<test command>'}`;
+  const testRun = `${BASH} test --if-needed -- ${s.options.testCmd || '<test command>'}`;
   // What the recorded suite run proves about the CURRENT tree: the hint every phase gets so
   // that neither Claude nor its subagents rerun a suite whose green is already on record.
   const proof = testProof(s, ctx);
@@ -104,7 +148,7 @@ function buildVars(s, ctx) {
       advisorRef: agentRef('pf-advisor', 'a generic subagent with a clean context, read-only on the source'),
       advisorModel: s.options.advisorModel || DEFAULT_ADVISOR_MODEL,
       advisorN: s.counters.iterations + 1,
-      priorAttempts: files.length ? files.map((n) => `.omc-loop/${n}`).join(', ') : `.omc-loop/${pattern}`,
+      priorAttempts: files.length ? files.map((n) => `.perseveranza/${n}`).join(', ') : `.perseveranza/${pattern}`,
     });
     return { text, reason: externals.length ? 'fallback' : 'no-external' };
   };
@@ -125,7 +169,7 @@ function buildVars(s, ctx) {
     advisorVerifyFix: () => advisor('hint-advisor-verify-fix', s.priorVerifies || [], 'verify-*.json'),
     secHint: high ? P('hint-security') : '',
     // antifragile: the defects of the rejected rounds are rechecked by name, not rediscovered
-    priorVerifyHint: s.priorVerifies.length ? P('hint-verify-recheck', { priorVerifyFiles: s.priorVerifies.map((n) => `.omc-loop/${n}`).join(', ') }) : '',
+    priorVerifyHint: s.priorVerifies.length ? P('hint-verify-recheck', { priorVerifyFiles: s.priorVerifies.map((n) => `.perseveranza/${n}`).join(', ') }) : '',
     commitHint: s.options.commitSteps ? P('hint-commit') : '',
     reviewerRef: agentRef('pf-reviewer', 'a generic code-reviewer subagent'),
     verifierRef: agentRef('pf-verifier', 'an independent adversarial subagent'),
@@ -173,7 +217,17 @@ export function step(input, event = {}, ctx0 = {}) {
   // the end of the fire (after the transition counted the next iteration)
   const lensRound = { expected: [], files: [], covered: {}, missing: [], pending: false, consumed: false, n: s.counters.iterations };
   let consumeLenses = () => {};
+  // evidence of work since the previous stop, set once the verdicts are read (see MAX_QUIET_STOPS)
+  let worked = false;
+  const prevFireAt = Number(s.owner.lastFireAt) || 0;
   const done = (outcome, extra = []) => {
+    // The waits for a running subagent are capped per verdict request (per phase where none
+    // is pending): a missing outcome asked about the same request does not buy three more.
+    if (outcome !== 'subagent-running' && (s.phase !== phase || s.verdictRequestId !== input.verdictRequestId)) s.counters.subagentWaits = 0;
+    // a stop that lets Claude stop ends the run of continuations; one that blocks extends it
+    // unless this stop saw work done since the previous one
+    const blocks = effects.some((e) => e.type === 'block') || extra.some((e) => e.type === 'block');
+    s.counters.quietStops = !blocks || worked ? 0 : s.counters.quietStops + 1;
     // the round ends with this outcome: the lens verdicts still on disk are kept and merged
     if (lensRound.pending && !LENS_ROUND_OPEN.has(outcome)) {
       consumeLenses(outcome === 'missing-twice' || outcome === 'fail-limit' ? 'missing-twice' : report !== 'none' ? `report-${report}` : 'superseded');
@@ -299,7 +353,7 @@ export function step(input, event = {}, ctx0 = {}) {
       J({ type: 'verdict', artifact: name, stale: true, staleBy: st.staleBy, requestId: st.id, expectedRequestId: s.verdictRequestId, writtenAt: at > 0 ? iso(at) : null, requestedAt: iso(s.verdictRequestedAt), savedAs: as, treatedAs: report === 'none' ? 'missing' : `report ${report}` });
       return;
     }
-    ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs(name)}` };
+    ctx = { ...ctx, verdictFile: `.perseveranza/${keptAs(name)}` };
     effects.push({ type: 'keepArtifact', name, as: keptAs(name) });
     verdictSrc = name;
     if (v.ok) {
@@ -339,7 +393,7 @@ export function step(input, event = {}, ctx0 = {}) {
     const blockedBy = lensRound.files.filter((f) => f.blocks).map((f) => f.name);
     const doc = { requestId: s.verdictRequestId, result, pass: result === 'pass' || result === 'report-pass', lenses: { expected: lensRound.expected, covered: lensRound.covered, missing: lensRound.missing }, blockedBy, files, findings };
     effects.push({ type: 'writeArtifact', name: merged, content: `${JSON.stringify(doc, null, 2)}\n` });
-    ctx = { ...ctx, verdictFile: `.omc-loop/${merged}` };
+    ctx = { ...ctx, verdictFile: `.perseveranza/${merged}` };
     if ((result === 'fail' || result === 'missing-twice' || result === 'report-fail') && findings.length) remember(merged);
   };
 
@@ -434,7 +488,7 @@ export function step(input, event = {}, ctx0 = {}) {
     } else if (lensRound.files.length) {
       // the round stays open: its files stay on disk, valid for this request, until it ends
       lensRound.pending = true;
-      if (s.flags.repeated || report !== 'none') ctx = { ...ctx, verdictFile: `.omc-loop/${keptAs('verify.json')}` };
+      if (s.flags.repeated || report !== 'none') ctx = { ...ctx, verdictFile: `.perseveranza/${keptAs('verify.json')}` };
     }
     const okFiles = lensRound.files.filter((f) => f.ok);
     J({ type: 'lenses', requestId: s.verdictRequestId, expected: lenses,
@@ -447,6 +501,8 @@ export function step(input, event = {}, ctx0 = {}) {
       blockedBy, result: decided || (lensRound.files.length ? 'partial' : 'none') });
   };
 
+  // a wait reads the verdicts but consumes none: what was pushed from here on is undone
+  const beforeVerdicts = effects.length;
   if (phase === 'review' && artifacts.review != null) {
     readVerdict('review.json', 'review', parseReviewVerdict, (v) => (v.blocking === 0 ? 'pass' : 'fail'));
     // a rejection of this step, kept for the advisor of the next fixes (every attempt, not the last)
@@ -455,6 +511,14 @@ export function step(input, event = {}, ctx0 = {}) {
       s.priorReviews = [...(Array.isArray(s.priorReviews) ? s.priorReviews : []).filter((n) => n !== kept), kept].slice(-MAX_PRIOR_REVIEWS);
     }
   } else if (phase === 'final-verify') readFinal();
+
+  // work since the previous stop: the tree changed (unknown is no evidence), a suite run was
+  // recorded, a verdict or a report routes, a claim was made
+  const testAt = s.lastTest ? Date.parse(s.lastTest.at) : NaN;
+  worked = (ctx.fingerprint != null && treeBefore.fingerprint !== ctx.fingerprint)
+    || (Number.isFinite(testAt) && testAt > prevFireAt)
+    || report !== 'none'
+    || claimed;
 
   if (!COMPLEXITIES.includes(s.complexity)) s.complexity = 'medium';
   const V = buildVars(s, ctx);
@@ -475,7 +539,7 @@ export function step(input, event = {}, ctx0 = {}) {
     return done(outcome, [
       { type: 'saveState' },
       { type: 'writeEscalation', why },
-      { type: 'notify', title: NOTIFY_TITLE, message: `Loop paused, a human is needed: ${why} - ${proj}. Hand-off in .omc-loop/ESCALATION.md` },
+      { type: 'notify', title: NOTIFY_TITLE, message: `Loop paused, a human is needed: ${why} - ${proj}. Hand-off in .perseveranza/ESCALATION.md` },
       { type: 'allowStop' },
     ]);
   };
@@ -627,6 +691,28 @@ export function step(input, event = {}, ctx0 = {}) {
     return go('claim-again', { testProof: testProofKind }, [{ type: 'dropArtifact', name: 'verify.json' }]);
   }
 
+  // --- a pf-* subagent still running at the stop (a fact only the mod sees): its work or its
+  // verdict is not on disk yet. Reviewing nothing, or counting a missing outcome, would burn a
+  // round: wait for it instead, a few stops in a row at most, without spending an iteration.
+  const running = WAIT_ROLES[phase] && (phase === 'implement' || report === 'none') ? runningLoopAgents(ctx.backgroundTasks).filter((a) => a.agent === WAIT_ROLES[phase]) : [];
+  // work at this stop ends the run without work before it
+  if (running.length && s.counters.subagentWaits < MAX_SUBAGENT_WAITS && (worked || s.counters.quietStops < MAX_QUIET_STOPS)) {
+    s.counters.subagentWaits += 1;
+    // nothing was judged: the reference tree stays the one of the previous stop (the next
+    // stop must see the subagent's changes as changes, not as an idle step), and every
+    // verdict file stays where it is (the judge may still be writing it)
+    s.tree = treeBefore;
+    const undone = effects.splice(beforeVerdicts).filter((e) => e.type !== 'journal').map((e) => e.name);
+    if (undone.length) J({ type: 'note', text: `waiting for a subagent: verdict file(s) left in place, not read as this round's outcome (${[...new Set(undone)].join(', ')})` });
+    const row = lookup(phase, 'subagent-running');
+    const listed = running.slice(0, 3).map((a) => (a.description ? `${a.agent} "${a.description}"` : a.agent));
+    const agents = `${listed.join(', ')}${running.length > 3 ? `, +${running.length - 3}` : ''}`;
+    const reason = say(row.prompt, { phase, agents, waits: s.counters.subagentWaits, maxWaits: MAX_SUBAGENT_WAITS });
+    J({ type: 'transition', from: phase, to: row.next, outcome: 'subagent-running', report, verdictSrc, prompt: row.prompt, iteration: s.counters.iterations, waits: s.counters.subagentWaits, running: running.map((a) => a.agent) });
+    return done('subagent-running', [{ type: 'saveState' }, { type: 'block', reason }]);
+  }
+  if (running.length) J({ type: 'note', text: `subagent(s) still running (${running.map((a) => a.agent).join(', ')}) after ${s.counters.subagentWaits} wait(s) for this request and ${s.counters.quietStops} stop(s) in a row without work: the usual logic decides` });
+
   switch (phase) {
     case 'plan': {
       if (planExists || s.flags.repeated) {
@@ -634,7 +720,7 @@ export function step(input, event = {}, ctx0 = {}) {
           s.flags.planPresented = true;
           s.signals.paused = true;
           s.flags.repeated = false;
-          return go('approval', {}, [{ type: 'notify', title: NOTIFY_TITLE, message: `Plan ready: review .omc-loop/plan.md and then run resume - ${proj}` }]);
+          return go('approval', {}, [{ type: 'notify', title: NOTIFY_TITLE, message: `Plan ready: review .perseveranza/plan.md and then run resume - ${proj}` }]);
         }
         s.flags.repeated = false;
         if (!s.limits.maxIterationsExplicit) {
@@ -715,15 +801,16 @@ export function step(input, event = {}, ctx0 = {}) {
   }
 }
 
-// The restored session inspected the interrupted work and wrote .omc-loop/reconcile.json.
+// The restored session inspected the interrupted work and wrote .perseveranza/reconcile.json.
 // Its disposition decides where the loop resumes; anything uncertain, and any command still
 // running, goes to a human. Counters are never reset: the interruption counts, it does not
 // buy a fresh budget. A decision (route or pause) also drops the signals the killed turn
 // may have left (a report, a claim): the reconciliation judged the work, not that turn.
 function reconcile(s, ctx, { now, phase, J, done, effects }) {
   const i = s.signals.interrupted;
-  const LOOP = ctx.LOOP || 'node omc-loop.mjs';
-  const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP }, ctx.overrides || []);
+  const LOOP = loopVar(ctx.loopMode, ctx.LOOP, ctx.overrides || []);
+  const USER = userVar(ctx.loopMode, ctx.LOOP, ctx.overrides || []);
+  const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP, USER }, ctx.overrides || []);
   const head = header(s, ctx, String(ctx.planText ?? ''));
   const V = buildVars(s, ctx);
   const raw = ctx.artifacts && ctx.artifacts.reconcile != null ? ctx.artifacts.reconcile : null;
@@ -740,7 +827,7 @@ function reconcile(s, ctx, { now, phase, J, done, effects }) {
     return done('reconcile-uncertain', [
       { type: 'saveState' },
       { type: 'writeEscalation', why },
-      { type: 'notify', title: NOTIFY_TITLE, message: `Loop paused after a restore, a human is needed: ${why} - ${ctx.projectName || 'project'}. Hand-off in .omc-loop/ESCALATION.md` },
+      { type: 'notify', title: NOTIFY_TITLE, message: `Loop paused after a restore, a human is needed: ${why} - ${ctx.projectName || 'project'}. Hand-off in .perseveranza/ESCALATION.md` },
       { type: 'allowStop' },
     ]);
   };

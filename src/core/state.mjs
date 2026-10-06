@@ -5,6 +5,9 @@
 //   phase, counters, flags, owner, usage, tree -> written only by the Stop hook
 //   signals, lastTest                          -> written only by the verbs
 //   options, limits                       -> written only by `arm` (and adaptive budget once)
+// with the exceptions VERB_OWNED lists (complexity, resume's counters and owner release, the
+// test command, the watchdog's interruption). rev: incremented by every save, whoever
+// writes, so a writer can tell that the state changed under it (shell/state-file.mjs).
 
 export const SCHEMA_VERSION = 2;
 export const PHASES = ['plan', 'implement', 'review', 'cleanup', 'final-verify', 'git-finish'];
@@ -65,9 +68,15 @@ export function defaultState(overrides = {}) {
       // the internal advisor at the plan and from the 2nd fix (arm --advisor, --advisor-model)
       advisor: true,
       advisorModel: DEFAULT_ADVISOR_MODEL,
+      // how the instructions name the verbs: 'tool' (the mod's `perseveranza` tool, set by
+      // `arm` when the mod is alive in the arming session) or 'shell' (the CLI command)
+      loopMode: 'shell',
     },
     // staleGates: final passes in a row that did not cover the current tree (pass-stale)
-    counters: { iterations: 0, retries: 0, finalFails: 0, staleGates: 0 },
+    // subagentWaits: stops answered with subagent-running (a pf-* subagent still running,
+    // seen only by the mod) for the current verdict request; a new request or phase resets it
+    // quietStops: stops in a row that asked for no new work (subagent-running, missing, idle)
+    counters: { iterations: 0, retries: 0, finalFails: 0, staleGates: 0, subagentWaits: 0, quietStops: 0 },
     limits: { maxIterations: DEFAULT_MAX_ITERATIONS, maxIterationsExplicit: false, maxRetries: DEFAULT_MAX_RETRIES, maxTokens: null },
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, source: null },
     // resumedAt: when `resume` closed a pause (ms); consumed by the next fire so the gap
@@ -100,8 +109,11 @@ export function defaultState(overrides = {}) {
     // the kept rejections (review-<n>.json) of the current step: the advisor of the fix reads
     // every attempt that already failed, not only the last one
     priorReviews: [],
+    // the files of the mod's usage inbox (.perseveranza/usage-inbox/) already added to usage
+    usageInboxSeen: [],
     armedAt: null,
     engineVersion: null,
+    rev: 0,
   };
   return deepMerge(s, overrides);
 }
@@ -122,22 +134,105 @@ function deepMerge(base, patch) {
 const num = (v, def) => (Number.isFinite(Number(v)) ? Number(v) : def);
 const bool = (v, def) => (typeof v === 'boolean' ? v : def);
 const USAGE_KEYS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'];
-const tokenCounts = (o) => Object.fromEntries(USAGE_KEYS.map((k) => [k, Math.max(0, num(o && o[k], 0))]));
+// A token count is a finite non-negative integer. A value too large to count (1e308, a
+// string of digits, Infinity) saturates at MAX_TOKENS instead of falling back to 0: tokens
+// already spent never vanish from the budget. NaN, a negative or a non-number is 0.
+export const MAX_TOKENS = Number.MAX_SAFE_INTEGER;
+// one delta of the mod (one flush, one agent, one field) is never more than this: past it the
+// value is clamped and the caller journals it (usage-clamped)
+export const MAX_TOKEN_DELTA = 1e12;
+// A string counts only when it is plain decimal digits (with an optional fraction): what a
+// writer may quote of a JSON number. No sign, exponent, hex (0x10), binary (0b11), octal or
+// whitespace: Number() would read those, and a count that came out of a file must not.
+const DECIMAL = /^\d+(\.\d+)?$/;
+export function tokenCount(v) {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && DECIMAL.test(v) ? Number(v) : NaN;
+  if (Number.isNaN(n) || n <= 0) return 0;
+  return n >= MAX_TOKENS ? MAX_TOKENS : Math.floor(n);
+}
+const tokenCounts = (o) => Object.fromEntries(USAGE_KEYS.map((k) => [k, tokenCount(o && o[k])]));
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const MAX_USAGE_AGENTS = 16;
+// Stops a pf-* subagent still running may hold the loop (subagent-running) for one verdict
+// request (one phase, where none is pending): past it the usual logic applies, so the loop
+// never spends Claude Code's cap of text-only continuations on waiting (see MAX_QUIET_STOPS
+// in machine.mjs for the cap across waits and missing outcomes).
+export const MAX_SUBAGENT_WAITS = 3;
+
+// saturating: a sum never becomes Infinity (which a later read would turn into 0)
+const addCounts = (a, b) => Object.fromEntries(USAGE_KEYS.map((k) => [k, Math.min(MAX_TOKENS, (a ? a[k] : 0) + (b ? b[k] : 0))]));
+const spendOf = (c) => c.inputTokens + c.outputTokens;
+
+// The rows of a mod reading, folded to the cap: main, the biggest spenders, and the rest
+// summed under "other" (never dropped: the budget must see every token).
+function foldAgents(rows) {
+  const byKey = new Map();
+  for (const [k, c] of rows) byKey.set(k, addCounts(byKey.get(k), c));
+  const main = byKey.get('main');
+  const other = byKey.get('other');
+  const rest = [...byKey].filter(([k]) => k !== 'main' && k !== 'other').sort((a, b) => spendOf(b[1]) - spendOf(a[1]));
+  const room = MAX_USAGE_AGENTS - (main ? 1 : 0);
+  const fits = rest.length + (other ? 1 : 0) <= room;
+  const kept = fits ? rest : rest.slice(0, room - 1);
+  let folded = other || null;
+  if (!fits) for (const [, c] of rest.slice(room - 1)) folded = addCounts(folded, c);
+  return Object.fromEntries([...(main ? [['main', main]] : []), ...kept, ...(folded ? [['other', folded]] : [])]);
+}
 
 // state.usage: the totals the budget reads, plus the split by agent kind and
 // the subagents' share. Coerced here, not trusted: it comes from files Claude Code writes.
+// source 'mod': the mod measures every request by agent id, so byAgent IS the reading and the
+// totals are at least its sum (the budget counts every agent's tokens).
 export function normalizeUsage(raw) {
   const u = isObj(raw) ? raw : {};
   const out = { ...tokenCounts(u), source: typeof u.source === 'string' ? u.source.slice(0, 40) : null };
   if (isObj(u.byAgent)) {
-    out.byAgent = Object.fromEntries(Object.entries(u.byAgent).filter(([, v]) => isObj(v)).slice(0, MAX_USAGE_AGENTS)
-      .map(([k, v]) => [String(k).slice(0, 80), tokenCounts(v)]));
+    const rows = Object.entries(u.byAgent).filter(([, v]) => isObj(v)).map(([k, v]) => [String(k).slice(0, 80), tokenCounts(v)]);
+    if (out.source === 'mod') {
+      const sum = rows.reduce((acc, [, c]) => addCounts(acc, c), null);
+      if (sum) for (const k of USAGE_KEYS) out[k] = Math.max(out[k], sum[k]);
+      out.byAgent = foldAgents(rows);
+    } else out.byAgent = Object.fromEntries(rows.slice(0, MAX_USAGE_AGENTS));
   }
   if (isObj(u.subagents)) out.subagents = { files: Math.max(0, num(u.subagents.files, 0)), ...tokenCounts(u.subagents) };
   if (u.partial === true) out.partial = true;
   return out;
+}
+
+// The tokens the mod measured since its last flush ({ <agentId|'main'>: counts }) added to
+// the reading in state.usage. A reading of another source (the transcripts, before the mod
+// drove the run) becomes the "main" row it started from: nothing already spent is lost.
+// Every field of the delta is a count (tokenCount) clamped to MAX_TOKEN_DELTA; each clamp is
+// pushed to `clamped` ({ agent, field, value }) for the caller to journal. The totals only
+// grow: a hostile delta adds 0, never subtracts.
+// -> a normalized usage with source 'mod'
+export function mergeModUsage(prev, delta, clamped = null) {
+  const p = normalizeUsage(prev);
+  const base = new Map(p.source === 'mod' && p.byAgent ? Object.entries(p.byAgent)
+    : spendOf(p) || p.cacheReadTokens || p.cacheCreationTokens ? [['main', tokenCounts(p)]] : []);
+  let added = null;
+  for (const [k, v] of Object.entries(isObj(delta) ? delta : {})) {
+    if (!isObj(v)) continue;
+    const key = String(k).slice(0, 80) || 'main';
+    const c = Object.fromEntries(USAGE_KEYS.map((f) => {
+      const n = tokenCount(v[f]);
+      if (n > MAX_TOKEN_DELTA) {
+        if (Array.isArray(clamped)) clamped.push({ agent: key, field: f, value: String(v[f]).slice(0, 40) });
+        return [f, MAX_TOKEN_DELTA];
+      }
+      return [f, n];
+    }));
+    base.set(key, addCounts(base.get(key), c));
+    added = addCounts(added, c);
+  }
+  const subs = [...base].filter(([k]) => k !== 'main');
+  const subTotals = subs.reduce((acc, [, c]) => addCounts(acc, c), null);
+  return normalizeUsage({
+    ...addCounts(tokenCounts(p), added),
+    source: 'mod',
+    byAgent: Object.fromEntries(base),
+    ...(subTotals ? { subagents: { files: subs.length, ...subTotals } } : {}),
+  });
 }
 
 // Fill defaults and coerce types on a v2 object. Never throws on odd input.
@@ -155,6 +250,8 @@ export function normalizeState(raw) {
   s.counters.retries = Math.max(0, num(s.counters.retries, 0));
   s.counters.finalFails = Math.max(0, num(s.counters.finalFails, 0));
   s.counters.staleGates = Math.max(0, num(s.counters.staleGates, 0));
+  s.counters.subagentWaits = Math.max(0, num(s.counters.subagentWaits, 0));
+  s.counters.quietStops = Math.max(0, num(s.counters.quietStops, 0));
   s.limits.maxIterations = num(s.limits.maxIterations, DEFAULT_MAX_ITERATIONS);
   if (s.limits.maxIterations < 1) s.limits.maxIterations = DEFAULT_MAX_ITERATIONS;
   s.limits.maxIterationsExplicit = bool(s.limits.maxIterationsExplicit, false);
@@ -185,6 +282,7 @@ export function normalizeState(raw) {
   s.options.verifiers = verifiers.length ? verifiers : null;
   s.options.advisor = bool(s.options.advisor, true);
   s.options.advisorModel = normalizeAdvisorModel(s.options.advisorModel);
+  s.options.loopMode = s.options.loopMode === 'tool' ? 'tool' : 'shell';
   s.baselineDirty = Array.isArray(s.baselineDirty) ? s.baselineDirty.map(String) : [];
   if (s.lastTest && typeof s.lastTest === 'object') {
     s.lastTest = {
@@ -209,6 +307,8 @@ export function normalizeState(raw) {
   s.priorReviews = Array.isArray(s.priorReviews)
     ? s.priorReviews.map(String).filter((n) => /^review-\d+\.json$/.test(n)).slice(-MAX_PRIOR_REVIEWS)
     : [];
+  s.usageInboxSeen = Array.isArray(s.usageInboxSeen) ? s.usageInboxSeen.map(String).filter((n) => /^[\w-]+\.json$/.test(n)).slice(-5000) : [];
+  s.rev = Math.max(0, Math.floor(num(s.rev, 0)));
   s.tree.fingerprint = typeof s.tree.fingerprint === 'string' && s.tree.fingerprint ? s.tree.fingerprint : null;
   s.tree.iteration = Math.max(0, num(s.tree.iteration, 0));
   s.owner.sessionId = typeof s.owner.sessionId === 'string' && s.owner.sessionId ? s.owner.sessionId : null;
@@ -219,6 +319,46 @@ export function normalizeState(raw) {
   s.owner.claudePid = Math.max(0, num(s.owner.claudePid, 0));
   s.owner.claudeStartedAt = typeof s.owner.claudeStartedAt === 'string' && s.owner.claudeStartedAt ? s.owner.claudeStartedAt : null;
   return s;
+}
+
+// The fields the verbs (and the watchdog) write, as paths. The Stop saves the state it read at
+// its start plus its own decisions: a field of this list that changed on disk since that read
+// was changed by a verb meanwhile, and the verb's value wins (mergeVerbFields).
+export const VERB_OWNED = [
+  'signals.lastReport', 'signals.claimedDone', 'signals.paused', 'signals.resumedAt', 'signals.interrupted',
+  'lastTest', 'complexity', 'options.testCmd',
+  'counters.retries', 'counters.finalFails', 'counters.staleGates',
+  'flags.repeated', 'flags.reconcileAsked',
+  'owner.sessionId', 'owner.releasedFrom', 'owner.releasedAt',
+];
+const getPath = (o, p) => p.split('.').reduce((v, k) => (v && typeof v === 'object' ? v[k] : undefined), o);
+const setPath = (o, p, val) => { const ks = p.split('.'); const last = ks.pop(); let t = o; for (const k of ks) { if (!t[k] || typeof t[k] !== 'object') t[k] = {}; t = t[k]; } t[last] = val; };
+const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+// ours: the state about to be saved; start: the state read at the start; disk: the state on
+// disk now. -> { state, taken: [paths taken from disk] }. Pure; never throws on odd input.
+// The limit: it compares VALUES, not writes. A verb that wrote the value the field already had
+// at the start is invisible, and the Stop's value stands: `resume` resetting counters.retries
+// to 0 while it was 0 at the start and the Stop raised it to 1 keeps the 1, though the reset
+// came later. A per-field write counter would tell them apart; it is not there yet, and the
+// cost is one retry counted once more.
+export function mergeVerbFields(ours, start, disk) {
+  const out = JSON.parse(JSON.stringify(ours));
+  const taken = [];
+  if (!disk || typeof disk !== 'object' || !start || typeof start !== 'object') return { state: out, taken };
+  for (const p of VERB_OWNED) {
+    const d = getPath(disk, p);
+    if (!same(d, getPath(start, p))) { setPath(out, p, d === undefined ? null : JSON.parse(JSON.stringify(d))); taken.push(p); }
+  }
+  return { state: out, taken };
+}
+
+// Did only the fields a verb owns (and the rev) change from start to disk? true: a verb or the
+// watchdog wrote meanwhile (mergeVerbFields keeps it); false: another Stop saved (or the state
+// is not comparable), and its whole state must not be overwritten. Both normalized states.
+export function onlyVerbChanges(start, disk) {
+  if (!start || !disk || typeof start !== 'object' || typeof disk !== 'object') return false;
+  const strip = (s) => { const c = JSON.parse(JSON.stringify(s)); for (const p of VERB_OWNED) setPath(c, p, null); c.rev = 0; return JSON.stringify(c); };
+  return strip(start) === strip(disk);
 }
 
 // A v1 state is a flat object with `phase` and no schemaVersion.

@@ -1,5 +1,5 @@
 // Loads the prompt pack override layers, highest precedence first:
-//   env OMC_PROMPT_PACK > <gate>/prompts.json > packs/<lang>.json > (defaults, implicit)
+//   env PERSEVERANZA_PROMPT_PACK > <gate>/prompts.json > packs/<lang>.json > (defaults, implicit)
 // Never throws: an unreadable layer is skipped and reported in `errors`.
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,8 +24,8 @@ function loadOne(path, source) {
 // -> { layers: [overrides...], sources: [{source, path}], errors: [{source, path, error}] }
 export function loadPromptLayers({ gateDir, env = process.env, lang = 'en', root = ROOT } = {}) {
   const candidates = [];
-  if (env.OMC_PROMPT_PACK) candidates.push({ path: String(env.OMC_PROMPT_PACK), source: 'OMC_PROMPT_PACK' });
-  if (gateDir) candidates.push({ path: join(gateDir, 'prompts.json'), source: '.omc-loop/prompts.json' });
+  if (env.PERSEVERANZA_PROMPT_PACK) candidates.push({ path: String(env.PERSEVERANZA_PROMPT_PACK), source: 'PERSEVERANZA_PROMPT_PACK' });
+  if (gateDir) candidates.push({ path: join(gateDir, 'prompts.json'), source: '.perseveranza/prompts.json' });
   if (lang && lang !== 'en') candidates.push({ path: packPath(lang, root), source: `packs/${lang}.json` });
   const layers = [];
   const sources = [];

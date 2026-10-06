@@ -45,7 +45,7 @@ test('lenses: automatic by complexity, explicit when armed, fixed when the round
   assert.deepEqual(high.state.verdictLenses, THREE);
   const medium = run(mk({ phase: 'cleanup', complexity: 'medium' }), {}, { now: T });
   assert.deepEqual(medium.state.verdictLenses, ['general']);
-  assert.ok(medium.reason.includes('.omc-loop/verify.json') && !medium.reason.includes('verify-general.json'), 'the single verifier, as before');
+  assert.ok(medium.reason.includes('.perseveranza/verify.json') && !medium.reason.includes('verify-general.json'), 'the single verifier, as before');
   const chosen = run(mk({ phase: 'cleanup', complexity: 'high', options: { verifiers: ['general'] } }), {}, { now: T });
   assert.deepEqual(chosen.state.verdictLenses, ['general']);
   assert.ok(chosen.reason.includes('security lens'), 'the single verifier keeps the security hint at high complexity');
@@ -56,7 +56,7 @@ test('lenses: the prompt delegates one verifier per lens, in one message, with f
   const r = run(mk({ phase: 'cleanup', complexity: 'high' }), {}, { now: T });
   const id = r.state.verdictRequestId;
   assert.ok(r.reason.includes('In ONE message and in the FOREGROUND'), r.reason);
-  for (const l of THREE) assert.ok(r.reason.includes(`[lens ${l}: writes .omc-loop/verify-${l}.json with requestId ${id}`), `${l}: ${r.reason}`);
+  for (const l of THREE) assert.ok(r.reason.includes(`[lens ${l}: writes .perseveranza/verify-${l}.json with requestId ${id}`), `${l}: ${r.reason}`);
   assert.ok(r.reason.includes('regressions introduced by the fixes'));
   assert.ok(r.reason.includes('path traversal'));
   assert.ok(r.reason.includes('comments and documentation claim is true'));
@@ -122,7 +122,7 @@ test('rule 2: a critical in one lens rejects at once, even with lenses missing; 
   assert.equal(r.outcome, 'fail');
   assert.equal(r.state.phase, 'implement');
   assert.equal(r.state.counters.finalFails, 1);
-  assert.ok(r.reason.includes('.omc-loop/verify-7.json'), r.reason);
+  assert.ok(r.reason.includes('.perseveranza/verify-7.json'), r.reason);
   const m = merged(r);
   assert.equal(m.doc.pass, false);
   assert.deepEqual(m.doc.blockedBy, ['verify-security.json']);
@@ -192,7 +192,7 @@ test('rule 3: a partial round asks only the missing lenses; the files stay valid
   assert.equal(r.state.verdictRequestId, ID);
   assert.deepEqual(keeps(r), []);
   assert.equal(merged(r), null);
-  assert.ok(r.reason.includes('lens(es) security are missing') && r.reason.includes('[lens security: writes .omc-loop/verify-security.json with requestId R1'), r.reason);
+  assert.ok(r.reason.includes('lens(es) security are missing') && r.reason.includes('[lens security: writes .perseveranza/verify-security.json with requestId R1'), r.reason);
   assert.ok(!r.reason.includes('[lens correctness') && !r.reason.includes('[lens tests'));
   assert.equal(journal(r).find((j) => j.type === 'transition').prompt, 'verify-missing-lenses');
   assert.deepEqual([summary(r).result, summary(r).arrived, summary(r).missing], ['partial', ['correctness', 'tests'], ['security']]);
@@ -211,7 +211,7 @@ test('rule 3: missing twice is a rejection; what arrived is kept, merged and rec
   assert.deepEqual(keeps(r2), [`verify-correctness.json->verify-correctness-${n}.json`]);
   const m = merged(r2);
   assert.deepEqual([m.doc.result, m.doc.pass, m.doc.lenses.missing], ['missing-twice', false, ['security', 'tests']]);
-  assert.ok(r2.reason.includes(`.omc-loop/verify-${n}.json`), r2.reason);
+  assert.ok(r2.reason.includes(`.perseveranza/verify-${n}.json`), r2.reason);
   assert.deepEqual(r2.state.priorVerifies, [`verify-${n}.json`]);
   const none = fire(round({ flags: { repeated: true } }));
   assert.equal(none.outcome, 'missing-twice');
@@ -286,7 +286,7 @@ test('rule 6: a lens nobody asked for blocks if it blocks, otherwise it is only 
   assert.equal(s1.state.counters.finalFails, 1);
   assert.ok(keeps(s1).includes('verify.json->verify-main-4.json') && keeps(s1).includes('verify-security.json->verify-security-4.json'));
   assert.deepEqual(merged(s1).doc.blockedBy, ['verify-security.json']);
-  assert.ok(s1.reason.includes('.omc-loop/verify-4.json'), s1.reason);
+  assert.ok(s1.reason.includes('.perseveranza/verify-4.json'), s1.reason);
   assert.equal(fire(singleRound(), { lenses: { security: lens('security', CRIT) } }).outcome, 'fail', 'with verify.json not there yet');
   // without a block: only noted, the round decides on what it asked for
   const quiet = fire(round({ verdictLenses: ['correctness', 'security'] }), { lenses: { ...ALL, tests: lens('tests', { pass: false, findings: [{ severity: 'warning', desc: 'w' }] }) } });
@@ -339,9 +339,9 @@ test('antifragile: the rejected rounds are rechecked by the next one (last three
   const r = run(s, { planText: PLAN_DONE, artifacts: { verify: '{"requestId":"R1","pass":false,"findings":[{"severity":"critical","desc":"x"}]}' } }, { now: T });
   assert.equal(r.outcome, 'claim-again');
   assert.deepEqual(r.state.priorVerifies, ['verify-4.json', 'verify-6.json', 'verify-9.json']);
-  assert.ok(r.reason.includes('Earlier rounds of this verification rejected the work: their findings are in .omc-loop/verify-4.json, .omc-loop/verify-6.json, .omc-loop/verify-9.json'), r.reason);
+  assert.ok(r.reason.includes('Earlier rounds of this verification rejected the work: their findings are in .perseveranza/verify-4.json, .perseveranza/verify-6.json, .perseveranza/verify-9.json'), r.reason);
   const lensed = run(mk({ phase: 'cleanup', complexity: 'high', priorVerifies: ['verify-3.json'] }), {}, { now: T });
-  assert.ok(lensed.reason.includes('their findings are in .omc-loop/verify-3.json') && lensed.reason.includes('introduced no regression'), lensed.reason);
+  assert.ok(lensed.reason.includes('their findings are in .perseveranza/verify-3.json') && lensed.reason.includes('introduced no regression'), lensed.reason);
   assert.ok(!run(mk({ phase: 'cleanup' }), {}, { now: T }).reason.includes('Earlier rounds'));
   assert.deepEqual(run(mk({ phase: 'final-verify' }), { artifacts: { verify: '{"pass":true}' } }).state.priorVerifies, []);
 });

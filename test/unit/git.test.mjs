@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gitFinish } from '../../src/shell/git.mjs';
+import { GATE_DIRNAME } from '../../src/shell/paths.mjs';
+import { LEGACY_GATE_DIRNAME } from '../../src/shell/legacy.mjs';
 
 const ok = (stdout = '') => ({ status: 0, stdout, stderr: '' });
 const error = { status: 128, stdout: '', stderr: 'fatal: read failed' };
@@ -38,7 +40,8 @@ test('git closure requires successful status and ahead queries', () => {
 });
 
 test('git closure stops before commit if staging or loop exclusion fails', () => {
-  for (const command of ['add -A -- . :(exclude).omc-loop', 'reset -q -- .omc-loop']) {
+  // both loop folders are kept out: the 3.0 one and a leftover 2.x one
+  for (const command of [`add -A -- . :(exclude)${GATE_DIRNAME} :(exclude)${LEGACY_GATE_DIRNAME}`, `reset -q -- ${GATE_DIRNAME} ${LEGACY_GATE_DIRNAME}`]) {
     const f = fixture({ [command]: error });
     assert.equal(gitFinish('.', { spawn: f.spawn }).confirmed, false);
     assert.ok(!f.calls.some((call) => call.startsWith('commit ')));

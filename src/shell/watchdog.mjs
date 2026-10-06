@@ -4,12 +4,12 @@
 // of life (Stop or tool activity) is older than the stale threshold, re-sleeps as long as
 // the loop keeps showing life, and, when the silence is real, journals a `watchdog` entry
 // and sends the desktop notification. Every fire spawns a fresh one and records its pid in
-// .omc-loop/watchdog.json: an older watchdog finds another pid there and exits, so at most
+// .perseveranza/watchdog.json: an older watchdog finds another pid there and exits, so at most
 // one speaks. It exits on disarm (no state.json), on pause (a human is expected) and after
-// a maximum lifetime. Disabled with OMC_LOOP_NO_WATCHDOG=1 (tests).
+// a maximum lifetime. Disabled with PERSEVERANZA_NO_WATCHDOG=1 (tests).
 //
-// With OMC_LOOP_RESTORE=1 it does not only speak: after the alert it waits a second
-// threshold (OMC_LOOP_RESTORE_AFTER_MS, default twice the stale threshold), and if the
+// With PERSEVERANZA_RESTORE=1 it does not only speak: after the alert it waits a second
+// threshold (PERSEVERANZA_RESTORE_AFTER_MS, default twice the stale threshold), and if the
 // silence is still unbroken it terminates the Claude Code process that drove the loop
 // (recorded by the Stop hook) and reopens the same session with a restore prompt, so a
 // hung turn costs an hour, not a night. Two stages because a session waiting on a human
@@ -28,10 +28,12 @@ import { stepCounts } from '../core/plan.mjs';
 import { writeAtomic } from './activity.mjs';
 import { readLife } from './life.mjs';
 import { appendJournal, readJournal } from './journal.mjs';
+import { updateState } from './state-file.mjs';
 import { loadPromptLayers } from './packs.mjs';
 import { ROOT, loopCommand } from './paths.mjs';
 import { processInfo, sameProcess, killTree, launchRestore } from './restore.mjs';
 import { notify } from './notify.mjs';
+import { readModFault, modFaultText } from './mod-fault.mjs';
 import { parseTimeoutMs, boolEnv } from './util.mjs';
 
 export const WATCHDOG_FILE = 'watchdog.json';
@@ -55,7 +57,7 @@ export function alive(pid) {
 // watches it: it re-reads the gate at every wake, so it needs no replacement, and one
 // process per loop is the whole budget. -> pid (new or incumbent) or 0.
 export function spawnWatchdog(gateDir, env = process.env, { replace = false } = {}) {
-  if (boolEnv(env.OMC_LOOP_NO_WATCHDOG)) return 0;
+  if (boolEnv(env.PERSEVERANZA_NO_WATCHDOG)) return 0;
   const incumbent = currentPid(gateDir);
   if (!replace && alive(incumbent)) return incumbent;
   try {
@@ -109,7 +111,9 @@ export function alertText(d, gateDir, now = Date.now()) {
       : d.via === 'fire' ? `last Stop ${formatAge(now - d.seenAt)} ago (${formatAt(d.seenAt)})`
         : d.via === 'restore' ? `restored ${formatAge(now - d.seenAt)} ago (${formatAt(d.seenAt)})`
         : `armed ${formatAge(now - d.seenAt)} ago, never fired`;
-  return `Loop silent for ${formatAge(d.silentMs)} - ${proj}: phase ${d.state.phase}${c.total ? `, ${c.done}/${c.total} steps` : ''}; ${last}.`;
+  // the silence may have a cause the mod could not journal (mod-fault.json): said with it
+  const fault = modFaultText(readModFault(gateDir), now);
+  return `Loop silent for ${formatAge(d.silentMs)} - ${proj}: phase ${d.state.phase}${c.total ? `, ${c.done}/${c.total} steps` : ''}; ${last}.${fault ? ` Note: ${fault}.` : ''}`;
 }
 
 // Kill the driving Claude Code process (if it is still that process) and reopen the session.
@@ -145,25 +149,30 @@ export function restore(gateDir, d, env = process.env) {
   // the next Stop of the restored session reconciles first, read-only: mark the interruption,
   // but only once a session exists to do it (a marked loop with nobody to reconcile would
   // refuse every edit to the next human who opens the project)
-  if (r.ok) {
-    try {
-      const fresh = loadState(JSON.parse(readFileSync(join(gateDir, 'state.json'), 'utf8'))).state;
-      if (fresh) {
-        fresh.signals.interrupted = { at: launchedAt, silentMs: d.silentMs, phase: fresh.phase, pending: d.activity ? d.activity.pending.map((p) => p.agent) : [] };
-        fresh.flags.reconcileAsked = false;
-        writeAtomic(join(gateDir, 'state.json'), JSON.stringify(fresh, null, 2));
-      }
-    } catch { /* the restore prompt still asks for the reconciliation */ }
-  }
+  if (r.ok) markInterrupted(gateDir, { at: launchedAt, silentMs: d.silentMs, pending: d.activity ? d.activity.pending.map((p) => p.agent) : [] });
   return { attempted: true, killed, wasAlive: info.alive, launched: r.ok, how: r.how, why: r.error || '' };
+}
+
+// The interruption the restored session reconciles, written on the state as it is at the
+// write (updateState: a Stop of the restored session may save). A detached process never
+// promotes a pending copy (decide() does not either): with state.json standing only in its
+// pending copy nothing is written, and the restore prompt still asks for the reconciliation.
+// -> the updateState result
+export function markInterrupted(gateDir, { at, silentMs, pending = [] }, { fs } = {}) {
+  try {
+    return updateState({ gateDir, statePath: join(gateDir, 'state.json') }, (fresh) => {
+      fresh.signals.interrupted = { at, silentMs, phase: fresh.phase, pending };
+      fresh.flags.reconcileAsked = false;
+    }, { promote: false, fs });
+  } catch (e) { return { ok: false, error: String(e && e.message) }; }
 }
 
 const entry = (d, extra) => ({ type: 'watchdog', silentMs: d.silentMs, seenAt: new Date(d.seenAt).toISOString(), via: d.via, phase: d.state.phase, activity: d.activity ? { event: d.activity.event, tool: d.activity.tool, agent: d.activity.agent, pending: d.activity.pending } : null, ...extra });
 
 async function run(gateDir, env = process.env) {
-  const staleMs = parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS);
-  const restoreOn = boolEnv(env.OMC_LOOP_RESTORE);
-  const restoreAfterMs = Math.max(staleMs, parseTimeoutMs(env.OMC_LOOP_RESTORE_AFTER_MS, 2 * staleMs));
+  const staleMs = parseTimeoutMs(env.PERSEVERANZA_STALE_MS, DEFAULT_STALE_MS);
+  const restoreOn = boolEnv(env.PERSEVERANZA_RESTORE);
+  const restoreAfterMs = Math.max(staleMs, parseTimeoutMs(env.PERSEVERANZA_RESTORE_AFTER_MS, 2 * staleMs));
   const startedAt = Date.now();
   let alerted = false;
   for (;;) {

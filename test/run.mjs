@@ -25,5 +25,9 @@ function collect(dir) {
 const dirs = levels.length ? levels.map((l) => join(ROOT, l)) : [join(ROOT, 'unit'), join(ROOT, 'verbs'), join(ROOT, 'e2e'), join(ROOT, 'packaging')];
 const files = dirs.flatMap((d) => { try { return collect(d); } catch { return []; } });
 if (!files.length) { console.error('no test files found'); process.exit(1); }
-const r = spawnSync(process.execPath, ['--test', ...extra, ...files], { stdio: 'inherit', env: { ...process.env, OMC_LOOP_NO_NOTIFY: '1' } });
+// the suite does not depend on running inside a Claude Code session: `arm` reads the session id
+// to look for the mod's sign of life (src/shell/mod-alive.mjs), and the tests that check it set it
+const env = { ...process.env, PERSEVERANZA_NO_NOTIFY: '1' };
+delete env.CLAUDE_CODE_SESSION_ID;
+const r = spawnSync(process.execPath, ['--test', ...extra, ...files], { stdio: 'inherit', env });
 process.exit(r.status ?? 1);

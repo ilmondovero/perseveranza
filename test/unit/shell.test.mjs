@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, appendFileSync, utimesSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, appendFileSync, utimesSync, existsSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseTranscriptUsage, readSessionUsage, capAgents } from '../../src/shell/transcript.mjs';
@@ -13,7 +13,10 @@ import { effectiveEnv, disabledProviders, detectLang, disableProvider, enablePro
 import { cmpSemver } from '../../src/update.mjs';
 import { mk } from '../helpers/core.mjs';
 
-const tmp = () => mkdtempSync(join(tmpdir(), 'prs-unit-'));
+// every temporary folder of this file, removed once its tests are done
+const tmps = [];
+after(() => { for (const d of tmps) rmSync(d, { recursive: true, force: true }); });
+const tmp = (prefix = 'prs-unit-') => { const d = mkdtempSync(join(tmpdir(), prefix)); tmps.push(d); return d; };
 
 test('transcript usage: sums assistant usage after the arm time, null when nothing found', () => {
   const lines = [
@@ -166,12 +169,12 @@ test('packs: precedence env > project > lang, broken layers reported not thrown'
   const root = tmp();
   mkdirSync(join(root, 'packs'));
   writeFileSync(join(root, 'packs', 'it.json'), JSON.stringify({ prompts: { cleanup: 'IT', 'plan-write': 'IT-PLAN' } }));
-  const gateDir = join(d, '.omc-loop');
+  const gateDir = join(d, '.perseveranza');
   mkdirSync(gateDir);
   writeFileSync(join(gateDir, 'prompts.json'), JSON.stringify({ prompts: { cleanup: 'PROJECT' } }));
   const envPack = join(d, 'env.json');
   writeFileSync(envPack, JSON.stringify({ prompts: { cleanup: 'ENV' } }));
-  const r = loadPromptLayers({ gateDir, env: { OMC_PROMPT_PACK: envPack }, lang: 'it', root });
+  const r = loadPromptLayers({ gateDir, env: { PERSEVERANZA_PROMPT_PACK: envPack }, lang: 'it', root });
   assert.deepEqual(r.layers.map((l) => l.cleanup), ['ENV', 'PROJECT', 'IT']);
   assert.equal(r.layers[2]['plan-write'], 'IT-PLAN');
   writeFileSync(join(gateDir, 'prompts.json'), '{');
@@ -200,6 +203,22 @@ test('archive summary aggregates the journal', () => {
   assert.equal(buildSummary(null, [], 'killed').task, '');
 });
 
+test('archive summary: who ran each verb (the mod\'s tool, the /perseveranza command, a shell)', () => {
+  const j = [
+    { ts: 'a', type: 'signal', verb: 'complexity', value: 'low', via: 'tool' },
+    { ts: 'b', type: 'test', exitCode: 0, iteration: 2, via: 'tool' },
+    { ts: 'c', type: 'signal', verb: 'claim-done', value: '' },
+    { ts: 'd', type: 'signal', verb: 'pause', via: 'command' },
+  ];
+  const sum = buildSummary(mk(), j, 'done');
+  assert.deepEqual(sum.verbs, [
+    { verb: 'complexity', value: 'low', via: 'tool', ts: 'a' },
+    { verb: 'claim-done', value: '', via: 'shell', ts: 'c' },
+    { verb: 'pause', value: '', via: 'command', ts: 'd' },
+  ]);
+  assert.deepEqual(sum.tests, [{ exitCode: 0, iteration: 2, via: 'tool', ts: 'b' }]);
+});
+
 test('providers: registry, detection, models, timeouts', () => {
   const has = (n) => ['codex', 'claude', 'cursor-agent'].includes(n);
   assert.deepEqual(detectAvailable({ has, env: {}, platform: 'linux' }), ['codex', 'cursor', 'claude']);
@@ -209,8 +228,8 @@ test('providers: registry, detection, models, timeouts', () => {
   assert.deepEqual(providerModels('codex'), [null]);
   assert.equal(PROVIDERS['ollama-cloud'].host({ OLLAMA_HOST: 'https://x/' }), 'https://x');
   assert.equal(askTimeoutMs({}), 180000);
-  assert.equal(askTimeoutMs({ OMC_ASK_TIMEOUT_MS: '5000' }), 5000);
-  assert.equal(askTimeoutMs({ OMC_ASK_TIMEOUT_MS: '5000' }, 7), 7);
+  assert.equal(askTimeoutMs({ PERSEVERANZA_ASK_TIMEOUT_MS: '5000' }), 5000);
+  assert.equal(askTimeoutMs({ PERSEVERANZA_ASK_TIMEOUT_MS: '5000' }, 7), 7);
   const hostile = 'a" ; rm -rf / ; $(x) %PATH% `y`';
   assert.deepEqual(PROVIDERS.grok.argv(hostile)[2], hostile);
   assert.deepEqual(PROVIDERS.cursor.argv(hostile).at(-1), hostile);
@@ -321,23 +340,23 @@ test('update: cmpSemver is numeric', () => {
 test('askProvider: a timeout says how to raise it and is retried once, a real answer is not', async () => {
   const { askProvider, askRetries } = await import('../../src/providers/registry.mjs');
   assert.equal(askRetries({}), 1);
-  assert.equal(askRetries({ OMC_ASK_RETRIES: '3' }), 3);
-  assert.equal(askRetries({ OMC_ASK_RETRIES: '99' }), 5);
-  assert.equal(askRetries({ OMC_ASK_RETRIES: 'x' }), 1);
+  assert.equal(askRetries({ PERSEVERANZA_ASK_RETRIES: '3' }), 3);
+  assert.equal(askRetries({ PERSEVERANZA_ASK_RETRIES: '99' }), 5);
+  assert.equal(askRetries({ PERSEVERANZA_ASK_RETRIES: 'x' }), 1);
   assert.equal(askRetries({}, 0), 0);
   let calls = 0;
   const timedOut = () => { calls++; return { status: null, error: Object.assign(new Error('spawnSync C:\\Windows\\system32\\cmd.exe ETIMEDOUT'), { code: 'ETIMEDOUT' }) }; };
-  const r = await askProvider('codex', 'x', { spawn: timedOut, env: { OMC_ASK_TIMEOUT_MS: '5000' } });
+  const r = await askProvider('codex', 'x', { spawn: timedOut, env: { PERSEVERANZA_ASK_TIMEOUT_MS: '5000' } });
   assert.equal(r.ok, false);
   assert.equal(calls, 2);
   assert.equal(r.attempts, 2);
   assert.ok(r.output.includes('timeout after 5s'), r.output);
-  assert.ok(r.output.includes('OMC_ASK_TIMEOUT_MS'));
+  assert.ok(r.output.includes('PERSEVERANZA_ASK_TIMEOUT_MS'));
   assert.ok(r.output.includes('providers.timeouts.codex'));
   assert.ok(r.output.includes('after 2 attempts'));
   // retries off
   calls = 0;
-  await askProvider('codex', 'x', { spawn: timedOut, env: { OMC_ASK_RETRIES: '0' } });
+  await askProvider('codex', 'x', { spawn: timedOut, env: { PERSEVERANZA_ASK_RETRIES: '0' } });
   assert.equal(calls, 1);
   // a missing binary is final, not transient
   calls = 0;
@@ -360,10 +379,7 @@ test('askProvider: a timeout says how to raise it and is retried once, a real an
 
 test('config: last provider checks are recorded and summarised', async () => {
   const { recordCheck, lastChecks, reachabilitySummary } = await import('../../src/providers/config.mjs');
-  const { mkdtempSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const env = { PERSEVERANZA_HOME: mkdtempSync(join(tmpdir(), 'prs-cfg-')) };
+  const env = { PERSEVERANZA_HOME: tmp('prs-cfg-') };
   assert.deepEqual(lastChecks(env), {});
   recordCheck('agy', { ok: true, ms: 1200 }, env);
   recordCheck('codex', { ok: false, ms: 180000, error: 'timeout after 180s' }, env);

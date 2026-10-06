@@ -2,15 +2,16 @@
 
 Runs the 3 mini-tasks by arming a HEADLESS perseveranza loop (claude -p) in a throw-away
 copy of each template, applies PROMPT_PACK as an override of the instructions
-(.omc-loop/prompts.json) and writes submission.json with the measured outcomes.
+(.perseveranza/prompts.json) and writes submission.json with the measured outcomes.
 
 THE EVOLUTION SURFACE IS PROMPT_PACK: the feedback agent improves the loop's instruction
 templates (keys and placeholders: see task.md). The execution mechanics below must stay
 intact except for real bugs; NEVER read data/private, NEVER modify the mini-tasks or their
 tests: that is cheating, and the hidden tests catch it.
 
-Engine v2 (perseveranza >= 2.0.0):
-  - the loop CLI is src/cli/omc-loop.mjs, the journal is .omc-loop/journal.jsonl;
+Engine v2, names of 3.0 (perseveranza >= 3.0.0):
+  - the loop CLI is src/cli/perseveranza.mjs, the journal is .perseveranza/journal.jsonl
+    (archived as <runs>/<project>/<stamp>/loop/journal.jsonl);
   - each mini-task can be repeated BENCH_REPEATS times (default 1): the submission carries
     one entry per repetition and evaluate.py averages per task, so the noise that dominated
     single-run measurements (see bench/README.md) can be estimated;
@@ -50,7 +51,7 @@ _ap.add_argument("--dry-run", action="store_true", help="no claude: fake loops, 
 _ARGS, _ = _ap.parse_known_args()
 
 ROOT = Path(os.environ["PERSEVERANZA_ROOT"])  # plugin repo: loop CLI + contamination guard
-LOOP_MJS = ROOT / "src" / "cli" / "omc-loop.mjs"
+LOOP_MJS = ROOT / "src" / "cli" / "perseveranza.mjs"
 # absolute: the loops run with cwd = their work dir, so a relative path would point elsewhere
 DATASET = (Path(_ARGS.dataset_dir) if _ARGS.dataset_dir else ROOT / "bench" / "task" / "data" / "public").resolve()
 MINITASKS = DATASET / "minitasks"
@@ -72,9 +73,10 @@ KICK = (
 )
 
 # ENGINE VERSION GUARD. The loops are driven by the INSTALLED plugin's Stop hook, not by the
-# repo's scripts: with an engine < 2.0.0 the pack layout, the journal and the verbs differ and
-# every measure is invalid (runs 1-4 of the v1 bench ran on 1.12.0: results thrown away).
-REQUIRED_ENGINE = (2, 0, 0)
+# repo's scripts: with an engine < 3.0.0 the hook looks for the loop in another folder and never
+# sees the one armed here; < 2.0.0 the pack layout, the journal and the verbs differ too. Either
+# way every measure is invalid (runs 1-4 of the v1 bench ran on 1.12.0: results thrown away).
+REQUIRED_ENGINE = (3, 0, 0)
 
 
 def installed_engine_version():
@@ -126,6 +128,16 @@ def require_engine():
     return engine
 
 
+def child_env(extra: dict) -> dict:
+    """The env of every process the runner starts. Without CLAUDE_CODE_SESSION_ID: the runner may
+    itself run inside a Claude Code session (a Bash call of it), and that session is not the one
+    driving the loops here (each loop is a fresh `claude -p`, with its own id). With it, `arm`
+    would look for the mod's sign of life of the runner's session and refuse when it has none."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    env.update(extra)
+    return env
+
+
 def read_journal(path: Path):
     entries = []
     try:
@@ -145,14 +157,14 @@ def read_journal(path: Path):
 def dry_loop(work: Path, name: str):
     """No claude: simulate a converged loop (drive the real hook with fake Stop events)."""
     hook = ROOT / "src" / "shell" / "stop.mjs"
-    env = {**os.environ, "OMC_LOOP_NO_NOTIFY": "1", "OMC_NO_UPDATE_CHECK": "1", "OMC_LOOP_NO_WATCHDOG": "1",
-           "PERSEVERANZA_HOME": str(WORKROOT / "prs-home")}
+    env = child_env({"PERSEVERANZA_NO_NOTIFY": "1", "PERSEVERANZA_NO_UPDATE_CHECK": "1", "PERSEVERANZA_NO_WATCHDOG": "1",
+                     "PERSEVERANZA_HOME": str(WORKROOT / "prs-home")})
 
     def fire():
         subprocess.run(["node", str(hook)], input=json.dumps({"cwd": str(work), "session_id": "dry"}),
                        cwd=work, capture_output=True, text=True, env=env, timeout=120)
 
-    gate = work / ".omc-loop"
+    gate = work / ".perseveranza"
 
     def verdict(fields: dict) -> str:
         # the request id the phase prompt hands the reviewer/verifier, copied like an agent does
@@ -192,15 +204,18 @@ def run_minitask(name: str, repeat: int) -> dict:
         shutil.rmtree(work)
     shutil.copytree(template, work)
     task_text = (work / "TASK.txt").read_text(encoding="utf-8").strip()
-    env = {**os.environ, "OMC_LOOP_NO_NOTIFY": "1", "OMC_NO_UPDATE_CHECK": "1",
-           # no detached watchdog per loop: the runner itself watches the timeout, and a
-           # leftover watchdog keeps the throw-away work dir busy (Windows cannot delete it)
-           "OMC_LOOP_NO_WATCHDOG": "1"}
+    env = child_env({"PERSEVERANZA_NO_NOTIFY": "1", "PERSEVERANZA_NO_UPDATE_CHECK": "1",
+                     # no detached watchdog per loop: the runner itself watches the timeout, and a
+                     # leftover watchdog keeps the throw-away work dir busy (Windows cannot delete it)
+                     "PERSEVERANZA_NO_WATCHDOG": "1"})
     if _ARGS.dry_run:
         env["PERSEVERANZA_HOME"] = str(WORKROOT / "prs-home")
 
     arm_args = ["node", str(LOOP_MJS), "arm", task_text, "--max", str(LOOP_MAX),
-                "--external", "off", "--no-git-finish", "--lang", "en"]
+                "--external", "off", "--no-git-finish", "--lang", "en",
+                # the loop is driven by the `claude -p` started below, not by the runner: there is
+                # no session to check the mod in yet (the instructions name the CLI command)
+                "--no-mod-check"]
     if not _ARGS.dry_run:
         arm_args += ["--test", "node visible/test.mjs"]
     if VERIFIERS:
@@ -211,7 +226,7 @@ def run_minitask(name: str, repeat: int) -> dict:
                 "iterations": None, "escalated": False, "max": LOOP_MAX,
                 "error": f"arm failed: {arm.stdout}{arm.stderr}"}
 
-    gate = work / ".omc-loop"
+    gate = work / ".perseveranza"
     (gate / "prompts.json").write_text(json.dumps(PROMPT_PACK), encoding="utf-8")
     journal_copy = work.parent / f"{work.name}.journal.jsonl"  # survives the archive/disarm
 
@@ -247,7 +262,7 @@ def run_minitask(name: str, repeat: int) -> dict:
     # under ~/.perseveranza/runs (or PERSEVERANZA_HOME): prefer it, fall back to the copy.
     journal = []
     home = Path(env.get("PERSEVERANZA_HOME", Path.home() / ".perseveranza"))
-    runs = sorted((home / "runs" / work.name).glob("*/omc-loop/journal.jsonl")) if (home / "runs" / work.name).exists() else []
+    runs = sorted((home / "runs" / work.name).glob("*/loop/journal.jsonl")) if (home / "runs" / work.name).exists() else []
     if runs:
         journal = read_journal(runs[-1])
     if not journal:

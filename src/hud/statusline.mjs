@@ -22,7 +22,7 @@ const cwd = sess.cwd || sess.workspace?.current_dir || sess.workspace?.cwd || pr
 const base = loadConfig().statusline?.base || '';
 let baseOut = '';
 if (base) {
-  const baseTimeout = parseTimeoutMs(process.env.OMC_STATUSLINE_BASE_TIMEOUT_MS, 5000);
+  const baseTimeout = parseTimeoutMs(process.env.PERSEVERANZA_STATUSLINE_BASE_TIMEOUT_MS, 5000);
   let r = {};
   try { r = spawnSync(base, { shell: true, input: raw, encoding: 'utf8', timeout: baseTimeout, killSignal: 'SIGKILL' }); }
   catch { /* a broken base must never blank the whole statusline */ }
@@ -36,7 +36,7 @@ if (existsSync(paths.statePath)) {
     const s = loadState(JSON.parse(readFileSync(paths.statePath, 'utf8'))).state;
     if (s) {
       const planText = existsSync(paths.planPath) ? readFileSync(paths.planPath, 'utf8') : '';
-      seg = renderProgress(s, planText, { color: true, marker: true, version: currentVersion(ROOT), now: Date.now(), staleMs: parseTimeoutMs(process.env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS), ...readLife(paths.gateDir, s) });
+      seg = renderProgress(s, planText, { color: true, marker: true, version: currentVersion(ROOT), now: Date.now(), staleMs: parseTimeoutMs(process.env.PERSEVERANZA_STALE_MS, DEFAULT_STALE_MS), ...readLife(paths.gateDir, s) });
       maybeSpawnRefresh(process.env);
       const upd = updateAvailable(ROOT, process.env);
       if (upd) seg += ` \x1b[1;33m⬆v${upd}\x1b[0m`;

@@ -5,6 +5,18 @@ argument-hint: <task description> [--max N] [--commit] [--external off] [--check
 
 Enable "perseveranza" mode for the task below and start working on it.
 
+How to run the loop's verbs: when this session has the `perseveranza` tool
+(`mcp__perseveranza__perseveranza`, registered by the perseveranza mod), use it for the loop's
+own verbs: the first word is `verb`, the words after it go whole in `args`:
+`{"verb": "status"}`, `{"verb": "complexity", "args": "low"}`, `{"verb": "report", "args": "pass"}`,
+`{"verb": "claim-done"}`, `{"verb": "pause"}`, `{"verb": "resume"}`. The tool does NOT run the
+test suite (`test`) nor the external models (`ask`): those are ALWAYS shell commands run with
+Bash, `node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" test ...` / `... ask ...`, where the
+user's permissions decide. The same shell command is the explicit fallback for every other verb
+when the tool is not there or fails to start. `arm` is always the shell command (step 1);
+`disarm` and taking over a loop of another session (`resume --takeover`) are the user's: they
+type `/pf disarm` or `/pf resume --takeover` (or ask you to run the shell command).
+
 Task requested by the user:
 
 $ARGUMENTS
@@ -21,7 +33,7 @@ Steps to run NOW, in order:
    `--lang en` only if the user writes in English and did not set a language in the
    config. Arm the loop:
 
-   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" arm "<task without flags>" [--max N] [--commit] [--external off] [--test "npm test"] [--lang en]
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" arm "<task without flags>" [--max N] [--commit] [--external off] [--test "npm test"] [--lang en]
 
    (`--commit` = atomic commit after every validated step; `--external off` = no comparison
    with external models, which are otherwise auto-detected: codex, agy, grok, cursor, claude
@@ -37,32 +49,37 @@ Steps to run NOW, in order:
    `--verifiers correctness,security,tests` = the final verification split into lenses, one
    verifier per lens, among general, correctness, security, tests (default auto: those three
    at complexity high, otherwise the single general verifier); `--advisor off` = no internal
-   advisor (default on); `--advisor-model <name>` = its model (default `OMC_ADVISOR_MODEL`,
+   advisor (default on); `--advisor-model <name>` = its model (default `PERSEVERANZA_ADVISOR_MODEL`,
    else opus).)
    If the command says the loop is ALREADY armed, do not force it: show the user
-   `status` and ask whether to `disarm` first.
+   `status` and ask whether to `disarm` first. If it says the perseveranza mod is not
+   running in this session, show the user its message (the causes and how to go on) and stop:
+   do NOT add `--no-mod-check` unless the user asks for it (without the mod nothing drives
+   the loop).
 
-2. Check it is armed:
+2. Check it is armed: the `perseveranza` tool with `{"verb": "status"}`, or (fallback)
 
-   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" status
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" status
 
 3. PLAN PHASE: FIRST explore the relevant code (modules involved, existing patterns, current
-   tests), THEN write the plan to `.omc-loop/plan.md` as a markdown checklist (`- [ ] step`)
+   tests), THEN write the plan to `.perseveranza/plan.md` as a markdown checklist (`- [ ] step`)
    with small, verifiable steps. If arm detected external models (line "External models for
    the second opinion"), submit the plan to one of them for an independent critique with the
-   `ask` verb (it saves the opinion in `.omc-loop/external-plan-*.md`):
+   `ask` verb (it saves the opinion in `.perseveranza/external-plan-*.md`), always as a shell
+   command with Bash (the tool does not run it)
 
-   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" ask <provider> plan -- "<task + plan>"
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" ask <provider> plan -- "<task + plan>"
 
    and integrate the well-founded remarks. If arm printed `Internal advisor: on` and there is
    no external model (or none of them gives a usable answer), ask the `pf-advisor` agent
    (`perseveranza:pf-advisor` from the plugin) with the model arm printed, in a clean context,
-   for a critique of task + plan: it writes `.omc-loop/advisor-plan-0.md` and changes nothing.
-   Integrate only the well-founded remarks and write in `.omc-loop/notes.md` why you
+   for a critique of task + plan: it writes `.perseveranza/advisor-plan-0.md` and changes nothing.
+   Integrate only the well-founded remarks and write in `.perseveranza/notes.md` why you
    discarded the others; a missing, empty or failed opinion is NOT a finding and does NOT
    block: proceed on your own judgement and note that it is missing. Then assess the task complexity and record it:
+   the tool with `{"verb": "complexity", "args": "low|medium|high"}`, or (fallback)
 
-   node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" complexity low|medium|high
+   node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" complexity low|medium|high
 
    (criterion: low = small, localised change; medium = standard multi-file feature; high =
    architecture, wide refactor, delicate domain. Default if you do not record it: medium.)
@@ -81,16 +98,17 @@ Complexity routes the models of the phases (hints for the subagents):
 How the loop works (feedback):
 
 - implement -> code review (delegated to a subagent with a clean context): the reviewer
-  writes the verdict to `.omc-loop/review.json` (`{"requestId": "<ID from the phase prompt>", "blocking": N, "findings": [...]}`) and
+  writes the verdict to `.perseveranza/review.json` (`{"requestId": "<ID from the phase prompt>", "blocking": N, "findings": [...]}`) and
   that file routes the loop; only if it is missing, you record the outcome with
   `report pass|fail`. A missing outcome is asked for once, then counts as a failed review.
   - blocking > 0 -> back to fixing the SAME step, and the fix gets re-reviewed (after the
     configured number of fixes, default 3, the loop pauses and notifies the user); the
-    consumed verdict is kept as `.omc-loop/review-<n>.json`: reread the findings there;
+    consumed verdict is kept as `.perseveranza/review-<n>.json`: reread the findings there;
   - blocking = 0 -> tick the step in `plan.md` (`- [x]`) and move to the next.
 - To run the test suite ALWAYS use the dedicated verb (the script runs the command and
-  records the real exit code: the proof is not self-declared):
-  node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" test --if-needed -- <command>
+  records the real exit code: the proof is not self-declared), as a shell command with Bash
+  (the tool does not run it, in any mode):
+  node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" test --if-needed -- <command>
   `--if-needed` skips the run when a green is already recorded for the current tree (or when
   only documentation changed since): the suite runs ONCE per tree, not once per agent. Per
   step run only the tests targeted at the change, and tell the subagents (executor,
@@ -106,14 +124,14 @@ How the loop works (feedback):
   says whether the step itself is ill-posed: then rewrite the step in `plan.md` before
   retrying. It advises, it never routes: a missing opinion blocks nothing.
 - When ALL steps are ticked and the project is complete: run the test verb and, in the same
-  response,
-  node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" claim-done
+  response, the tool with `{"verb": "claim-done"}`, or (fallback)
+  node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" claim-done
   The claim is ACCEPTED only with a green test run for the current tree (when a suite is
   known): run in this iteration, or earlier if the code did not change since (documentation
   edits do not count as code). -> first a cleanup round (only at the first claim:
   dead code, duplication, docs), then the adversarial final verification (independent
   subagent + falsification by an external model if detected; security lens for high
-  complexity): the verifier writes `.omc-loop/verify.json` (`{"requestId": "<ID from the
+  complexity): the verifier writes `.perseveranza/verify.json` (`{"requestId": "<ID from the
   phase prompt>", "pass": true|false, "findings": [...]}`); `fail` sends you back to fix.
   `pass` closes the loop only if the plan is still fully ticked, the last recorded suite
   run is green on the code the verifier judged, and that code (everything git does not
@@ -122,7 +140,7 @@ How the loop works (feedback):
   committed and you are sent back to implement, with a new claim-done that asks for a new
   verification.
 - At closure, if the directory is inside a git repo, the hook itself runs `git add -A`
-  (excluding `.omc-loop/`), commit `perseveranza: <task>` and `git push`, verified on facts
+  (excluding `.perseveranza/`), commit `perseveranza: <task>` and `git push`, verified on facts
   (clean tree, HEAD not ahead of upstream). If the closure cannot be confirmed the loop
   pauses in phase git-finish and tells the user what to fix; `resume` retries. The run
   (journal, plan, notes, opinions) is archived in `~/.perseveranza/runs/` (verb `runs`).
@@ -133,23 +151,24 @@ How the loop works (feedback):
   reviewing nothing: wait for the subagent and check its result on disk before stopping.
 - Budget: iterations (adaptive from the plan, or `--max`) and optionally tokens
   (`--budget-tokens`); at the cap the loop stops by itself.
-- Manual interruption at any time:
-  node "${CLAUDE_PLUGIN_ROOT}/src/cli/omc-loop.mjs" disarm
-  (emergency kill switch, faster and from any session: create the file `.omc-loop/STOP` or
-  set `OMC_LOOP_KILL=1` -> at the first Stop the loop disarms itself)
+- Manual interruption at any time: the user types `/pf disarm` (it runs at once, even
+  while you work; `/pf` is the mod's command for the user, `/pf help` lists its verbs), or
+  node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" disarm
+  (emergency kill switch, faster and from any session: create the file `.perseveranza/STOP` or
+  set `PERSEVERANZA_KILL=1` -> at the first Stop the loop disarms itself)
 
 Rules:
-- NEVER edit `.omc-loop/state.json` by hand: use only the verbs `report`, `complexity`,
+- NEVER edit `.perseveranza/state.json` by hand: use only the verbs `report`, `complexity`,
   `claim-done`, `pause`, `resume`.
-- The loop files you manage are `.omc-loop/plan.md` (step checklist) and `.omc-loop/notes.md`
+- The loop files you manage are `.perseveranza/plan.md` (step checklist) and `.perseveranza/notes.md`
   (2-3 lines per completed step: decisions, traps — the memory that survives context
   compaction; re-read it if you lose the thread).
 - At every new step, if its complexity clearly differs from the recorded one, update it
   with the `complexity` verb before implementing.
 - The review uses the `pf-reviewer` agent, the final verification `pf-verifier`, high
-  complexity implementation `pf-executor`, the second opinion `pf-advisor` (shipped with the plugin; `perseveranza:pf-*` from
-  the plugin or the plain name from a manual install; fall back to generic subagents if
+  complexity implementation `pf-executor`, the second opinion `pf-advisor` (shipped with the plugin; `perseveranza:pf-*`, from
+  the marketplace or from a manual install alike; fall back to generic subagents if
   absent). Pass them step/plan, touched files and diff in the prompt (if huge: list +
   excerpts): they start from an empty context, do not make them dig.
-- The transition history is in `.omc-loop/journal.jsonl` (verb `history` renders it;
+- The transition history is in `.perseveranza/journal.jsonl` (verb `history` renders it;
   `explain` shows the transition table and the next possible outcomes).

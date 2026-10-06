@@ -1,3 +1,5 @@
+> Nota 3.0.0: i nomi `.omc-loop`/`OMC_*` citati qui sono stati rinominati in `.perseveranza`/`PERSEVERANZA_*`, e il CLI `src/cli/omc-loop.mjs` in `src/cli/perseveranza.mjs` (vedi tabella nel CHANGELOG).
+
 # Notes for code review (v2)
 
 Invariants and traps of the project. **Read before reviewing changes to `src/`.** The

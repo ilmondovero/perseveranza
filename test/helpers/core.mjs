@@ -2,7 +2,7 @@
 import { defaultState } from '../../src/core/state.mjs';
 import { step } from '../../src/core/machine.mjs';
 
-export const LOOP = 'node "omc-loop.mjs"';
+export const LOOP = 'node "perseveranza.mjs"';
 
 export function mk(overrides = {}) {
   return defaultState({ task: 'test task', armedAt: '2026-01-01T00:00:00.000Z', ...overrides });

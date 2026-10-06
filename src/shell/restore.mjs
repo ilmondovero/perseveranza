@@ -15,7 +15,7 @@
 //
 // Everything here is best-effort and platform-bound: Windows gets the full path (process
 // tree via CIM, taskkill /T, a new console via `start`); macOS/Linux get the kill and a
-// terminal when one can be found. OMC_LOOP_CLAUDE_BIN overrides the binary (tests).
+// terminal when one can be found. PERSEVERANZA_CLAUDE_BIN overrides the binary (tests).
 import { spawn, spawnSync } from 'node:child_process';
 
 const WIN = process.platform === 'win32';
@@ -130,10 +130,10 @@ export function cleanEnv(env = process.env) {
 // -> { ok, how, error? }
 export function launchRestore({ cwd, sessionId, prompt, env = process.env }) {
   const e = cleanEnv(env);
-  const bin = e.OMC_LOOP_CLAUDE_BIN || 'claude';
+  const bin = e.PERSEVERANZA_CLAUDE_BIN || 'claude';
   const args = ['-r', sessionId, prompt];
   try {
-    if (e.OMC_LOOP_CLAUDE_BIN) {
+    if (e.PERSEVERANZA_CLAUDE_BIN) {
       // a test double: run it directly, no console
       spawn(process.execPath, [bin, ...args], { cwd, env: e, detached: true, stdio: 'ignore', windowsHide: true }).unref();
       return { ok: true, how: 'direct' };

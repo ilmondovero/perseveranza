@@ -53,7 +53,7 @@ test('arm: the internal advisor flags, the env default, validation; status shows
   assert.equal(readState(d).options.advisor, true);
   assert.equal(readState(d).options.advisorModel, 'opus');
   assert.ok(out.includes('Internal advisor: on (model opus'), out);
-  assert.ok(out.includes('.omc-loop/advisor-plan-0.md'), out);
+  assert.ok(out.includes('.perseveranza/advisor-plan-0.md'), out);
   assert.ok(cli(d, 'status').out.includes('Advisor: on (opus)'));
   assert.ok(journal(d).some((e) => e.type === 'advisor-hint' && e.slot === 'plan' && e.reason === 'no-external' && e.model === 'opus' && e.via === 'arm'));
   const m = project();
@@ -61,15 +61,15 @@ test('arm: the internal advisor flags, the env default, validation; status shows
   assert.equal(readState(m).options.advisorModel, 'sonnet');
   assert.ok(cli(m, 'status').out.includes('Advisor: on (sonnet)'));
   const e = project();
-  e.env.OMC_ADVISOR_MODEL = 'haiku';
+  e.env.PERSEVERANZA_ADVISOR_MODEL = 'haiku';
   arm(e);
   assert.equal(readState(e).options.advisorModel, 'haiku', 'the env is the default');
   const f = project();
-  f.env.OMC_ADVISOR_MODEL = 'haiku';
+  f.env.PERSEVERANZA_ADVISOR_MODEL = 'haiku';
   arm(f, 't', ['--advisor-model', 'opus']);
   assert.equal(readState(f).options.advisorModel, 'opus', 'the flag wins over the env');
   const b = project();
-  b.env.OMC_ADVISOR_MODEL = 'not a model!';
+  b.env.PERSEVERANZA_ADVISOR_MODEL = 'not a model!';
   const bo = arm(b).out;
   assert.equal(readState(b).options.advisorModel, 'opus');
   assert.ok(bo.includes('is not a model name, ignored'), bo);
@@ -238,7 +238,7 @@ test('prompts layers shows the active override sources', () => {
   arm(p);
   writeFileSync(gate(p, 'prompts.json'), JSON.stringify({ prompts: { cleanup: 'x' } }));
   const r = cli(p, 'prompts', 'layers', 'it');
-  assert.ok(r.out.includes('.omc-loop/prompts.json'));
+  assert.ok(r.out.includes('.perseveranza/prompts.json'));
   assert.ok(r.out.includes('packs/it.json'));
   writeFileSync(gate(p, 'prompts.json'), '{broken');
   assert.equal(cli(p, 'prompts', 'layers').code, 1);
@@ -256,7 +256,7 @@ test('status shows the age of the last fire and flags a stale loop', () => {
   assert.ok(stale.includes('last fire:   20h43m ago'), stale);
   assert.ok(stale.includes('STALE'));
   assert.ok(stale.includes('resume --takeover'));
-  const wide = spawnSync(process.execPath, [CLI, 'status'], { cwd: p.dir, encoding: 'utf8', env: { ...p.env, OMC_LOOP_STALE_MS: String(30 * 3600 * 1000) } });
+  const wide = spawnSync(process.execPath, [CLI, 'status'], { cwd: p.dir, encoding: 'utf8', env: { ...p.env, PERSEVERANZA_STALE_MS: String(30 * 3600 * 1000) } });
   assert.ok(!wide.stdout.includes('STALE'), 'threshold from the environment');
 });
 
@@ -473,7 +473,7 @@ test('arm reports reachability from the last provider check, and --check probes 
   cli(p, 'disarm', '--no-archive');
   // --check probes now against an unreachable host: dropped for this run and disabled in the config
   p.env.OLLAMA_HOST = 'http://127.0.0.1:9';
-  p.env.OMC_ASK_TIMEOUT_MS = '3000';
+  p.env.PERSEVERANZA_ASK_TIMEOUT_MS = '3000';
   const c = cli(p, 'arm', 'x', '--no-git-finish', '--check');
   assert.equal(c.code, 0, c.out);
   assert.ok(c.out.includes('External models for the second opinion: none'), c.out);

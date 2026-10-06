@@ -55,7 +55,7 @@ test('an expired git deadline cannot be mistaken for a non-git project', () => {
   assert.ok(gitOut(p, 'status', '--porcelain').includes('pending.txt'));
   armGit(p);
   toVerifyPass(p);
-  const stopped = fire(p, {}, { OMC_HOOK_TIMEOUT_MS: '1000' });
+  const stopped = fire(p, {}, { PERSEVERANZA_HOOK_TIMEOUT_MS: '1000' });
   assert.equal(stopped.state.phase, 'git-finish');
   assert.equal(stopped.state.signals.paused, true);
   assert.equal(gitOut(p, 'log', '-1', '--pretty=%s'), 'init');
@@ -89,16 +89,16 @@ function toVerifyPass(p) {
 }
 
 test('pure helpers: underLoop by prefix, dirtyBeyondLoop, porcelainPaths', () => {
-  assert.equal(underLoop('.omc-loop/state.json'), true);
-  assert.equal(underLoop('"\\.omc-loop/x y.md"'.replace(/\\/g, '')), true);
-  assert.equal(underLoop('src/omc-loop-helper.js'), false);
-  assert.equal(dirtyBeyondLoop(' M .omc-loop/state.json\n'), false);
-  assert.equal(dirtyBeyondLoop(' M .omc-loop/state.json\n M src/a.js\n'), true);
-  assert.equal(dirtyBeyondLoop('R  .omc-loop/a -> src/b\n'), true);
-  assert.deepEqual(porcelainPaths(' M a.js\n?? "b c.txt"\nR  x -> y\n M .omc-loop/z\n'), ['a.js', 'b c.txt', 'y']);
+  assert.equal(underLoop('.perseveranza/state.json'), true);
+  assert.equal(underLoop('"\.perseveranza/x y.md"'.replace(/\\/g, '')), true);
+  assert.equal(underLoop('src/perseveranza-helper.js'), false);
+  assert.equal(dirtyBeyondLoop(' M .perseveranza/state.json\n'), false);
+  assert.equal(dirtyBeyondLoop(' M .perseveranza/state.json\n M src/a.js\n'), true);
+  assert.equal(dirtyBeyondLoop('R  .perseveranza/a -> src/b\n'), true);
+  assert.deepEqual(porcelainPaths(' M a.js\n?? "b c.txt"\nR  x -> y\n M .perseveranza/z\n'), ['a.js', 'b c.txt', 'y']);
 });
 
-test('commit+push confirmed -> disarm, the commit is on the remote, .omc-loop never committed', () => {
+test('commit+push confirmed -> disarm, the commit is on the remote, .perseveranza never committed', () => {
   const p = project({ git: true });
   addRemote(p);
   armGit(p);
@@ -110,7 +110,7 @@ test('commit+push confirmed -> disarm, the commit is on the remote, .omc-loop ne
   assert.ok(gitOut(p, 'log', '-1', '--pretty=%s').startsWith('perseveranza: git task'));
   assert.equal(gitOut(p, 'rev-list', '--count', '@{u}..HEAD'), '0');
   assert.equal(gitOut(p, 'status', '--porcelain'), '');
-  assert.ok(!gitOut(p, 'ls-tree', '-r', 'HEAD', '--name-only').includes('.omc-loop'));
+  assert.ok(!gitOut(p, 'ls-tree', '-r', 'HEAD', '--name-only').includes('.perseveranza'));
   assert.ok(cli(p, 'runs').out.includes('done'));
 });
 
@@ -201,14 +201,14 @@ test('a successful external opinion leaves no note; provider detected but nothin
   assert.ok(gitOut(q, 'log', '-1', '--pretty=%B').includes('no external falsification was recorded'));
 });
 
-test('a file named like the loop dir (src/omc-loop-helper.js) is real work and gets committed', () => {
+test('a file named like the loop dir (src/perseveranza-helper.js) is real work and gets committed', () => {
   const p = project({ git: true });
   addRemote(p);
   armGit(p);
-  spawnSync('node', ['-e', 'require("fs").mkdirSync("src");require("fs").writeFileSync("src/omc-loop-helper.js","x")'], { cwd: p.dir });
+  spawnSync('node', ['-e', 'require("fs").mkdirSync("src");require("fs").writeFileSync("src/perseveranza-helper.js","x")'], { cwd: p.dir });
   toVerifyPass(p);
   const r = fire(p);
   assert.equal(r.state, null);
-  assert.ok(gitOut(p, 'ls-tree', '-r', 'HEAD', '--name-only').includes('src/omc-loop-helper.js'));
+  assert.ok(gitOut(p, 'ls-tree', '-r', 'HEAD', '--name-only').includes('src/perseveranza-helper.js'));
   assert.ok(!existsSync(gate(p, '')));
 });

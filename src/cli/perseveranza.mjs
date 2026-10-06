@@ -22,17 +22,39 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { VerbError } from './shared.mjs';
+import { setJournalVia, JOURNAL_VIAS } from '../shell/journal.mjs';
 
 export const VERBS = ['arm', 'test', 'report', 'complexity', 'claim-done', 'ask', 'pause', 'resume', 'status', 'history', 'explain', 'providers', 'runs', 'prompts', 'config', 'hud', 'disarm'];
 
+// The verbs the mod's tool may run (hooks/lib/verbs.js TOOL_VERBS; a test keeps the lists
+// equal). A run that says it came from the tool (PERSEVERANZA_VIA=tool) and asks for anything
+// else is refused here too, as a second wall behind the mod's own check: the tool runs without
+// a permission prompt, so it must not reach the suite (test), an external agent (ask), arm,
+// disarm, a takeover, or any verb that is not the loop's own state.
+export const TOOL_VIA_VERBS = ['status', 'history', 'explain', 'report', 'complexity', 'claim-done', 'pause', 'resume'];
+export function toolViaRefusal(via, verb, rest = []) {
+  if (via !== 'tool') return null;
+  if (!TOOL_VIA_VERBS.includes(verb)) return `perseveranza: "${verb}" does not run through the perseveranza tool (it runs: ${TOOL_VIA_VERBS.join(', ')}). ${verb === 'test' || verb === 'ask' ? 'Run it as a shell command with Bash.' : 'It is the user\'s, or a shell command run with Bash.'} Nothing was run.`;
+  if (verb === 'resume' && rest.includes('--takeover')) return 'perseveranza: taking a loop over (resume --takeover) is the user\'s decision, not the tool\'s: the user types /pf resume --takeover. Nothing was run.';
+  return null;
+}
+
 async function main() {
+  // the mod runs the verbs with PERSEVERANZA_VIA=tool (its tool) or command (/pf): the
+  // journal says so. Taken out of the environment here, so that nothing this verb starts (the
+  // suite of `test`, a provider of `ask`) inherits it.
+  const via = JOURNAL_VIAS.includes(process.env.PERSEVERANZA_VIA) ? process.env.PERSEVERANZA_VIA : null;
+  setJournalVia(via);
+  delete process.env.PERSEVERANZA_VIA;
   const [verb = 'status', ...rest] = process.argv.slice(2);
   if (!VERBS.includes(verb)) {
     console.log(`Unknown verb: ${verb}. Verbs: ${VERBS.join(', ')}.`);
     return 1;
   }
+  const refused = toolViaRefusal(via, verb, rest);
+  if (refused) { console.log(refused); return 2; }
   const mod = await import(`./verbs/${verb}.mjs`);
-  const code = await mod.run({ argv: rest, rawArgv: process.argv, cwd: process.cwd(), env: process.env });
+  const code = await mod.run({ argv: rest, rawArgv: process.argv, cwd: process.cwd(), env: process.env, via });
   return Number.isInteger(code) ? code : 0;
 }
 

@@ -1,5 +1,5 @@
 // Desktop notification, cross-platform, best-effort and silent on failure.
-// Silenced with OMC_LOOP_NO_NOTIFY=1 (tests, headless, CI).
+// Silenced with PERSEVERANZA_NO_NOTIFY=1 (tests, headless, CI).
 import { spawnSync } from 'node:child_process';
 import { boolEnv } from './util.mjs';
 
@@ -9,7 +9,7 @@ function resolvePowerShell() {
 }
 
 export function notify(title, msg, { env = process.env, timeoutMs = 8000 } = {}) {
-  if (boolEnv(env.OMC_LOOP_NO_NOTIFY)) return false;
+  if (boolEnv(env.PERSEVERANZA_NO_NOTIFY)) return false;
   const t = Math.max(1000, Math.min(timeoutMs, 8000));
   try {
     if (process.platform === 'win32') {

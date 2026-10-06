@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { gate, requireState } from '../shared.mjs';
+import { loadStateFile, readRetainedState } from '../../shell/state-file.mjs';
 import { stepCounts } from '../../core/plan.mjs';
 import { effectiveLenses, singleLens } from '../../core/state.mjs';
 import { parseVerifyVerdict } from '../../core/verdicts.mjs';
@@ -11,7 +12,29 @@ import { formatTokens } from '../../hud/render.mjs';
 import { RETAINED_STATE } from '../../shell/archive.mjs';
 import { staleness, releaseOpen, describeLastFire, describeActivity, formatAge, DEFAULT_STALE_MS } from '../../core/staleness.mjs';
 import { readLife } from '../../shell/life.mjs';
+import { pendingUsage } from '../../shell/usage-inbox.mjs';
 import { parseTimeoutMs } from '../../shell/util.mjs';
+import { legacyRunNotice, legacyEnvNotice } from '../../shell/legacy.mjs';
+import { readJournalTail } from '../../shell/journal.mjs';
+import { readModFault, modFaultText } from '../../shell/mod-fault.mjs';
+
+// The last start of the mod this run's journal saw (op 'journal' of the bridge): the Claude
+// Code version it runs on and whether that version is one the mod supports. null: no mod start
+// recorded (the run is driven without the mod, or its start came before the arm). Only a
+// line of the owner's session counts (the bridge journals no other since 3.0.0; one written
+// while the owner could not be read says so, ownerUnknown, and is not used); an unclaimed run
+// takes any.
+export function lastModStart(gateDir, owner = '') {
+  const mine = (e) => !e.ownerUnknown && (!owner || e.session === String(owner).slice(0, 8));
+  const j = readJournalTail(gateDir).filter((e) => e && e.type === 'mod-start' && mine(e)).pop();
+  return j ? { claudeCode: String(j.claudeCode || '?'), ok: j.ok === true, min: String(j.min || ''), problem: typeof j.problem === 'string' ? j.problem : '' } : null;
+}
+
+export function modLine(m) {
+  if (!m) return '';
+  if (m.ok) return `  mod:         driven by the perseveranza mod on Claude Code ${m.claudeCode}`;
+  return `  mod:         WARNING: Claude Code ${m.claudeCode}${m.min ? ` (the mod needs ${m.min} or later)` : ''}${m.problem ? `: ${m.problem}` : ''}`;
+}
 
 // The lens verdicts of the current round on disk, by the Stop hook's rule: they parse and
 // answer this request; one without an id counts only if not written before the request
@@ -33,7 +56,7 @@ export function arrivedLenses(gateDir, s) {
   return out;
 }
 
-export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null, transcriptAt = 0, lensesArrived = [] } = {}) {
+export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE_MS, activity = null, transcriptAt = 0, lensesArrived = [], pending = null, mod = null, fault = null } = {}) {
   const c = stepCounts(planText);
   const lines = [];
   lines.push(`perseveranza ARMED — ${s.task}`);
@@ -41,9 +64,12 @@ export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE
   lines.push(`  complexity:  ${s.complexity}`);
   lines.push(`  steps:       ${c.done}/${c.total} done${c.open ? ` (${c.open} open)` : ''}`);
   lines.push(`  iterations:  ${s.counters.iterations}/${iterationCap(s)}${s.limits.maxIterationsExplicit ? '' : ' (adaptive)'}`);
-  const spent = tokensSpent(s.usage);
-  lines.push(`  tokens:      ${spent ? formatTokens(spent) : 'not measured'}${s.limits.maxTokens ? ` / ${formatTokens(s.limits.maxTokens)}` : ''}${spent && s.usage.source === 'transcript' ? ' (main transcript only)' : ''}${spent && s.usage.partial ? ' (partial)' : ''}`);
-  const agents = spent && s.usage.byAgent ? Object.entries(s.usage.byAgent).map(([k, v]) => [k, tokensSpent(v)]).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]) : [];
+  // the mod's flushes still in the inbox count: the next stop adds them, and the budget with them
+  const usage = pending ? pending.usage : s.usage;
+  const spent = tokensSpent(usage);
+  lines.push(`  tokens:      ${spent ? formatTokens(spent) : 'not measured'}${s.limits.maxTokens ? ` / ${formatTokens(s.limits.maxTokens)}` : ''}${spent && s.usage.source === 'transcript' ? ' (main transcript only)' : ''}${spent && usage.source === 'mod' ? ' (measured by the mod, every agent)' : ''}${pending && pending.files ? ` (incl. ${pending.files} flush(es) still in the inbox)` : ''}${spent && s.usage.partial ? ' (partial)' : ''}`);
+  if (pending && pending.unreadable.length) lines.push(`  inbox:       ${pending.unreadable.length} file(s) that cannot be read, not counted: ${pending.unreadable.slice(0, 5).join(', ')}${pending.unreadable.length > 5 ? ', ...' : ''}`);
+  const agents = spent && usage.byAgent ? Object.entries(usage.byAgent).map(([k, v]) => [k, tokensSpent(v)]).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]) : [];
   if (agents.length > 1) lines.push(`  by agent:    ${agents.map(([k, n]) => `${k} ${formatTokens(n)}`).join(', ')}`);
   lines.push(`  retries:     ${s.counters.retries}/${s.limits.maxRetries} review fixes, ${s.counters.finalFails}/${s.limits.maxRetries} final rejections`);
   lines.push(`  signals:     report=${s.signals.lastReport}${s.signals.claimedDone ? ', claim-done pending' : ''}`);
@@ -62,7 +88,7 @@ export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE
   lines.push(`  session:     ${s.owner.sessionId ? s.owner.sessionId.slice(0, 8) : released}`);
   const st = staleness(s, now, staleMs, activity, transcriptAt);
   const hint = st.stale ? `  <- no sign of life for over ${formatAge(staleMs)}: the owner session is probably gone (resume --takeover to drive it from here, disarm to stop it)`
-    : st.paused && st.ageMs != null && st.ageMs > staleMs ? '  <- paused, a human is expected: read .omc-loop/ESCALATION.md if present, then resume' : '';
+    : st.paused && st.ageMs != null && st.ageMs > staleMs ? '  <- paused, a human is expected: read .perseveranza/ESCALATION.md if present, then resume' : '';
   lines.push(`  last fire:   ${describeLastFire(s, now, staleMs, activity, transcriptAt)}${hint}`);
   const act = st.via !== 'fire' ? describeActivity(activity, now) : '';
   if (act) lines.push(`  activity:    ${act}`);
@@ -71,8 +97,11 @@ export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE
   if ((s.phase === 'review' || s.phase === 'final-verify') && s.verdictRequestId) lines.push(`  verdict request: ${s.verdictRequestId}  <- the ${s.phase === 'review' ? 'reviewer' : 'verifier'} copies it into ${s.phase === 'review' ? 'review.json' : lensRound ? 'verify-<lens>.json' : 'verify.json'} as "requestId"`);
   if (lensRound) lines.push(`  lenses:      expected ${s.verdictLenses.join(', ')}; arrived ${lensesArrived.length ? lensesArrived.join(', ') : 'none'}${s.verdictLenses.some((l) => !lensesArrived.includes(l)) ? `; missing ${s.verdictLenses.filter((l) => !lensesArrived.includes(l)).join(', ')}` : ''}`);
   if (s.priorVerifies && s.priorVerifies.length) lines.push(`  rechecked:   ${s.priorVerifies.join(', ')}  <- findings of rejected rounds the next verification rechecks`);
-  if (s.signals.interrupted) lines.push(`  interrupted: ${s.signals.interrupted.at || '?'} after ${formatAge(s.signals.interrupted.silentMs)} silent in phase ${s.signals.interrupted.phase || '?'}${s.signals.interrupted.pending.length ? `, pending: ${s.signals.interrupted.pending.join(', ')}` : ''}  <- reconciling: read-only until .omc-loop/reconcile.json is written`);
+  if (s.signals.interrupted) lines.push(`  interrupted: ${s.signals.interrupted.at || '?'} after ${formatAge(s.signals.interrupted.silentMs)} silent in phase ${s.signals.interrupted.phase || '?'}${s.signals.interrupted.pending.length ? `, pending: ${s.signals.interrupted.pending.join(', ')}` : ''}  <- reconciling: read-only until .perseveranza/reconcile.json is written`);
   lines.push(`  armed at:    ${s.armedAt || '?'}  (engine v${s.engineVersion || '?'})`);
+  const ml = modLine(mod);
+  if (ml) lines.push(ml);
+  if (fault) lines.push(`  mod fault:   ${modFaultText(fault, now)}  <- the next Stop journals it; if the session stopped, resume it (or the watchdog will speak)`);
   const next = outcomesFor(s.phase).filter((r) => s.signals.interrupted || !r.outcome.startsWith('reconcile-')).map((r) => r.outcome).join(', ');
   lines.push(`  next outcomes: ${next}`);
   return lines.join('\n');
@@ -80,17 +109,34 @@ export function summary(s, planText, { now = Date.now(), staleMs = DEFAULT_STALE
 
 export function run({ argv, cwd, env = process.env }) {
   const paths = gate(cwd);
-  if (!existsSync(paths.statePath)) {
+  // a 2.x run left in the project, an old variable still set: said first, never touched
+  const legacy = [...legacyRunNotice(cwd), ...legacyEnvNotice(env)];
+  // read-only: a pending copy of a save cut short is shown, not promoted (the next Stop or verb does)
+  const loaded = loadStateFile(paths, { promote: false, journal: false });
+  if (loaded.absent && !loaded.state) {
     console.log('perseveranza is NOT armed in this project.');
-    if (existsSync(join(paths.gateDir, RETAINED_STATE))) {
-      console.log('Run artifacts retained in .omc-loop after an archive failure. Fix the archive destination and retry disarm.');
+    for (const l of legacy) console.log(l);
+    const fault = readModFault(paths.gateDir);
+    if (fault) console.log(`Mod fault left behind: ${modFaultText(fault)} (the next arm clears it).`);
+    // after an archive failure the run's state is the newest of state.unsaved.json (the final
+    // state state.json refused) and state.disarmed.json: that one is shown, and disarm archives it
+    const retained = readRetainedState(paths.gateDir);
+    if (retained || existsSync(join(paths.gateDir, RETAINED_STATE))) {
+      console.log('Run artifacts retained in .perseveranza after an archive failure. Fix the archive destination and retry disarm.');
+    }
+    if (retained) {
+      console.log(`Retained state (${retained.file}):`);
+      let planText = '';
+      try { planText = readFileSync(paths.planPath, 'utf8'); } catch { /* no plan */ }
+      console.log(summary(retained.state, planText, { now: Date.now(), staleMs: parseTimeoutMs(env.PERSEVERANZA_STALE_MS, DEFAULT_STALE_MS), ...readLife(paths.gateDir, retained.state), lensesArrived: [], pending: pendingUsage(paths.gateDir, retained.state) }));
     }
     return 1;
   }
-  const s = requireState(paths);
+  const s = loaded.state || requireState(paths);
   if (argv.includes('--json')) { console.log(JSON.stringify(s, null, 2)); return 0; }
+  for (const l of legacy) console.log(l);
   let planText = '';
   try { planText = readFileSync(paths.planPath, 'utf8'); } catch { /* no plan */ }
-  console.log(summary(s, planText, { now: Date.now(), staleMs: parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS), ...readLife(paths.gateDir, s), lensesArrived: arrivedLenses(paths.gateDir, s) }));
+  console.log(summary(s, planText, { now: Date.now(), staleMs: parseTimeoutMs(env.PERSEVERANZA_STALE_MS, DEFAULT_STALE_MS), ...readLife(paths.gateDir, s), lensesArrived: arrivedLenses(paths.gateDir, s), pending: pendingUsage(paths.gateDir, s), mod: lastModStart(paths.gateDir, s.owner.sessionId), fault: readModFault(paths.gateDir) }));
   return 0;
 }

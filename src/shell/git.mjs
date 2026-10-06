@@ -4,6 +4,10 @@ import { createHash } from 'node:crypto';
 import { openSync, readSync, closeSync, lstatSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { GATE_DIRNAME } from './paths.mjs';
+import { LEGACY_GATE_DIRNAME } from './legacy.mjs';
+
+// Never committed: the loop folder, and the one a 2.x run may have left in the project.
+const LOOP_DIRS = [GATE_DIRNAME, LEGACY_GATE_DIRNAME];
 
 export const PUSH_CAP_MS = 45000;
 const MIN_CALL_MS = 2000;
@@ -21,7 +25,7 @@ function makeGit(cwd, deadline, spawn = spawnSync) {
 // --- pure helpers on `git status --porcelain` output ---
 export function underLoop(p) {
   const q = String(p).trim().replace(/^"|"$/g, '');
-  return q === GATE_DIRNAME || q.startsWith(`${GATE_DIRNAME}/`);
+  return LOOP_DIRS.some((d) => q === d || q.startsWith(`${d}/`));
 }
 
 export function dirtyBeyondLoop(porcelainStdout) {
@@ -109,7 +113,7 @@ export function treeFingerprints(cwd, { deadline = Date.now() + 60000 } = {}) {
 }
 
 // Commit + push at the end of the project, verified on FACTS (clean tree, HEAD not ahead
-// of upstream), never on exit codes. .omc-loop/ is never committed.
+// of upstream), never on exit codes. The loop folder (LOOP_DIRS) is never committed.
 // -> { ran:false } | { ran:true, confirmed, committed, pushed, pushSkipped?, hasUpstream, ahead?, pushErr? }
 export function gitFinish(cwd, { task = '', push = true, baselineDirty: base = [], externalNote = '', deadline = null, spawn = spawnSync } = {}) {
   const git = makeGit(cwd, deadline, spawn);
@@ -120,10 +124,10 @@ export function gitFinish(cwd, { task = '', push = true, baselineDirty: base = [
     return failed(`cannot verify git repository: ${inside.stderr.trim() || 'git failed'}`);
   }
   if (inside.stdout.trim() !== 'true') return { ran: false };
-  const added = git(['add', '-A', '--', '.', `:(exclude)${GATE_DIRNAME}`]);
+  const added = git(['add', '-A', '--', '.', ...LOOP_DIRS.map((d) => `:(exclude)${d}`)]);
   if (added.status !== 0) return failed('git add failed; closure not verified');
-  const reset = git(['reset', '-q', '--', GATE_DIRNAME]);
-  if (reset.status !== 0) return failed('cannot exclude .omc-loop from the commit');
+  const reset = git(['reset', '-q', '--', ...LOOP_DIRS]);
+  if (reset.status !== 0) return failed(`cannot exclude ${GATE_DIRNAME} from the commit`);
   const baseNote = (Array.isArray(base) && base.length)
     ? `\n\nperseveranza note: this commit may include ${base.length} file(s) already modified before the task (git add -A): `
       + `${base.slice(0, 10).join(', ')}${base.length > 10 ? ` (+${base.length - 10} more)` : ''}.`

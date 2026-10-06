@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// The activity hook: PreToolUse (Agent), PostToolUse (working tools) and SubagentStop.
+// The activity hook: PreToolUse (Agent), PostToolUse (working tools) and SubagentStop. Since 3.0
+// registered by nobody (the mod records the activity itself, hooks/lib/activity.js): it stays
+// for a settings hook wired by hand and the tests.
 // The Stop hook sees the loop only between turns; this one sees it DURING a turn, so a
 // review delegated at 11:10 and never returned is visible as such, in real time, instead
-// of looking like a session that simply died. It writes .omc-loop/activity.json (throttled)
+// of looking like a session that simply died. It writes .perseveranza/activity.json (throttled)
 // and journals delegations and subagent returns. DORMANT without state.json; silent for a
 // session that does not own the loop; never throws, always exits 0, and does the dormant
 // check before importing anything beyond the filesystem: it runs at tool-call rate in every
@@ -13,29 +15,37 @@ import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const GATE = '.omc-loop';
+const GATE = '.perseveranza';
 
 // Commands a reconciling session may run: inspection only. EVERY segment of the command
 // (split on pipes, newlines, `&` and `;`) must be an inspection command or a pure filter;
 // redirection and substitution outside quotes are refused. `git branch` only as a listing
 // (a name would create one); no `find` (its actions delete and execute); no scriptblocks.
-const READ_ONLY_CMD = /^\s*(git\s+(status|diff|log|show|rev-parse|stash\s+list|ls-files|blame)\b|git\s+branch(\s+(-a|-r|-v|-vv|-l|--all|--list|--show-current|--contains\s+\S+))*\s*$|ls\b|dir\b|cat\b|type\b|head\b|tail\b|wc\b|grep\b|rg\b|awk\b|sed\s+-n\b|tasklist\b|ps\b|pwd\b|echo\b|Get-(Process|ChildItem|Content|CimInstance|Location|Item)\b|node\s+("[^"]*omc-loop\.mjs"|\S*omc-loop\.mjs)\s+(status|history|explain|runs|pause|disarm)\b)/i;
+const READ_ONLY_CMD = /^\s*(git\s+(status|diff|log|show|rev-parse|stash\s+list|ls-files|blame)\b|git\s+branch(\s+(-a|-r|-v|-vv|-l|--all|--list|--show-current|--contains\s+\S+))*\s*$|ls\b|dir\b|cat\b|type\b|head\b|tail\b|wc\b|grep\b|rg\b|awk\b|sed\s+-n\b|tasklist\b|ps\b|pwd\b|echo\b|Get-(Process|ChildItem|Content|CimInstance|Location|Item)\b|node\s+("[^"]*perseveranza.mjs"|\S*perseveranza.mjs)\s+(status|history|explain|runs|pause|disarm)\b)/i;
 const FILTER_CMD = /^\s*(grep|rg|findstr|head|tail|sort|uniq|wc|cut|awk|sed\s+-n|Select-String|Select-Object|Sort-Object|Format-List|Format-Table|Measure-Object|Out-String)\b/i;
 const CMD_UNSAFE = /[<>]|`|\$\(|\$\{|\btee\b|-delete\b|-exec\b|-execdir\b|-ok\b|\{[^}]*\}/;
 const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Agent', 'Task']);
-const RECONCILE_FILE = /[\\/]\.omc-loop[\\/]reconcile\.json$|^\.omc-loop[\\/]reconcile\.json$/;
+const RECONCILE_FILE = /[\\/].perseveranza[\\/]reconcile\.json$|^.perseveranza[\\/]reconcile\.json$/;
+// the mod's own tool (mcp__<plugin>__perseveranza): the verbs READ_ONLY_CMD lets through a shell
+// run here too (disarm is not one of the tool's), the others wait for the reconciliation
+export const MOD_TOOL_RE = /^mcp__.+__perseveranza$/;
+export const RECONCILE_TOOL_VERBS = ['status', 'history', 'explain', 'pause'];
 
 // -> the reason to refuse, or null when the tool may run. Pure: unit-tested directly.
 export function reconcileDecision(tool, input) {
   const file = String((input && (input.file_path || input.path || input.notebook_path)) || '').trim();
   if ((tool === 'Write' || tool === 'Edit') && RECONCILE_FILE.test(file)) return null; // the one write the reconciliation exists to produce
-  if (MUTATING_TOOLS.has(tool)) return `perseveranza: the loop is being reconciled after a restore; ${tool} is refused until .omc-loop/reconcile.json is written (that file is the only write allowed). Inspect read-only (git status/diff/log, plan, notes, process table), write the file, stop.`;
+  if (MOD_TOOL_RE.test(String(tool || ''))) {
+    const verb = String((input && input.verb) || '');
+    return RECONCILE_TOOL_VERBS.includes(verb) ? null : `perseveranza: the loop is being reconciled after a restore; the \`${verb.slice(0, 20)}\` verb is refused until .perseveranza/reconcile.json is written (status, history, explain and pause run). Inspect read-only, write the file, stop.`;
+  }
+  if (MUTATING_TOOLS.has(tool)) return `perseveranza: the loop is being reconciled after a restore; ${tool} is refused until .perseveranza/reconcile.json is written (that file is the only write allowed). Inspect read-only (git status/diff/log, plan, notes, process table), write the file, stop.`;
   if (tool === 'Bash' || tool === 'PowerShell') {
     const cmd = String(input && input.command || '');
     const unquoted = cmd.replace(/"[^"]*"|'[^']*'/g, '""'); // a `<` inside a git format string is not a redirection
     const segments = cmd.split(/\|{1,2}|&{1,2}|;|\r?\n/);
     const ok = !CMD_UNSAFE.test(unquoted) && segments.every((seg, i) => (i === 0 ? READ_ONLY_CMD.test(seg) : READ_ONLY_CMD.test(seg) || FILTER_CMD.test(seg)));
-    if (!ok) return `perseveranza: the loop is being reconciled after a restore; only read-only commands run until .omc-loop/reconcile.json is written (git status/diff/log/show/blame, ls, cat, grep, tasklist/ps, the status/history verbs, piped into filters). This command is refused.`;
+    if (!ok) return `perseveranza: the loop is being reconciled after a restore; only read-only commands run until .perseveranza/reconcile.json is written (git status/diff/log/show/blame, ls, cat, grep, tasklist/ps, the status/history verbs, piped into filters). This command is refused.`;
   }
   return null;
 }

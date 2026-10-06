@@ -25,7 +25,7 @@ export const HUD_AGE_MIN_MS = 10 * 60 * 1000;
 const short = (id) => String(id || '').slice(0, 8);
 const limitOf = (staleMs) => (Number(staleMs) > 0 ? Number(staleMs) : DEFAULT_STALE_MS);
 
-// The activity record (.omc-loop/activity.json, written by the activity hook inside a turn):
+// The activity record (.perseveranza/activity.json, written by the activity hook inside a turn):
 //   { at, session, event: 'tool'|'delegate'|'subagent-stop', tool, agent, pending: [{at, agent}] }
 // `pending` are the subagents launched and not yet back, oldest first: the forensic detail
 // that tells "delegated the review at 11:10 and never returned" from "the session died".
@@ -150,8 +150,9 @@ function activityWhat(a, now, P) {
   return `${what}${pending}`;
 }
 
-function noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt, layers, activity, transcriptAt = 0 }) {
-  const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP }, layers);
+// USER: what the user runs (a takeover, a disarm); the same as LOOP unless the mod's tool is in use
+function noticeVars(state, { planText, now, staleMs, sessionId, LOOP, USER = LOOP, lastPrompt, layers, activity, transcriptAt = 0 }) {
+  const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP, USER }, layers);
   const st = staleness(state, now, staleMs, activity, transcriptAt);
   const c = stepCounts(planText);
   const armed = armedAtMs(state);
@@ -179,13 +180,13 @@ function noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt
 // What another session must know when it starts in a project whose loop it does not own.
 //   sessionId: the session that just started; LOOP: the verb command; lastPrompt: the key of
 //   the last injected instruction (from the journal), if known; layers: prompt pack layers.
-export function sessionNotice(state, { planText = '', now = Date.now(), staleMs = DEFAULT_STALE_MS, sessionId = '', LOOP = 'node omc-loop.mjs', lastPrompt = '', layers = [], activity = null, transcriptAt = 0 } = {}) {
-  const v = noticeVars(state, { planText, now, staleMs, sessionId, LOOP, lastPrompt, layers, activity, transcriptAt });
+export function sessionNotice(state, { planText = '', now = Date.now(), staleMs = DEFAULT_STALE_MS, sessionId = '', LOOP = 'node perseveranza.mjs', USER = LOOP, lastPrompt = '', layers = [], activity = null, transcriptAt = 0 } = {}) {
+  const v = noticeVars(state, { planText, now, staleMs, sessionId, LOOP, USER, lastPrompt, layers, activity, transcriptAt });
   return v.P(`session-${noticeKind(state, now, staleMs, activity, transcriptAt)}`, v);
 }
 
 // The prompt a restored session receives after the watchdog killed a silent turn.
-export function restorePrompt(state, { silentMs = 0, LOOP = 'node omc-loop.mjs', layers = [], activity = null, now = Date.now() } = {}) {
+export function restorePrompt(state, { silentMs = 0, LOOP = 'node perseveranza.mjs', layers = [], activity = null, now = Date.now() } = {}) {
   const P = (key, vars = {}) => renderPrompt(key, { ...vars, LOOP }, layers);
   const a = normalizeActivity(activity);
   const what = a && a.pending.length ? P('hint-restore-pending', { agents: a.pending.map((d) => d.agent || 'subagent').join(', ') }) : '';
@@ -193,7 +194,7 @@ export function restorePrompt(state, { silentMs = 0, LOOP = 'node omc-loop.mjs',
 }
 
 // The owner session came back after a compaction: the phase instruction may be gone.
-export function compactNotice(state, { planText = '', LOOP = 'node omc-loop.mjs', layers = [] } = {}) {
-  const v = noticeVars(state, { planText, now: Date.now(), staleMs: DEFAULT_STALE_MS, sessionId: '', LOOP, lastPrompt: '', layers, activity: null });
+export function compactNotice(state, { planText = '', LOOP = 'node perseveranza.mjs', USER = LOOP, layers = [] } = {}) {
+  const v = noticeVars(state, { planText, now: Date.now(), staleMs: DEFAULT_STALE_MS, sessionId: '', LOOP, USER, lastPrompt: '', layers, activity: null });
   return v.P('session-compact', v);
 }

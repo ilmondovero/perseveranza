@@ -1,7 +1,7 @@
 // Verdict artifacts written by the review / verification agents.
-//   .omc-loop/review.json : { "requestId": <string>, "blocking": <int>, "findings": [...] }
-//   .omc-loop/verify.json : { "requestId": <string>, "pass": <bool>, "findings": [...] }
-//   .omc-loop/verify-<lens>.json : the same, plus "lens" (a final verification by lenses)
+//   .perseveranza/review.json : { "requestId": <string>, "blocking": <int>, "findings": [...] }
+//   .perseveranza/verify.json : { "requestId": <string>, "pass": <bool>, "findings": [...] }
+//   .perseveranza/verify-<lens>.json : the same, plus "lens" (a final verification by lenses)
 // A malformed artifact is never "a pass": it becomes a MISSING outcome (which the machine
 // treats as a failure after one reminder) and the discrepancy is journaled.
 // When the declared verdict and the findings disagree, the STRICTER reading wins.
@@ -85,7 +85,7 @@ export function parseReviewVerdict(text) {
   return { ok: true, blocking: effective, declaredBlocking: blocking, findings: f.findings, requestId: req.requestId, notes };
 }
 
-// .omc-loop/reconcile.json, written by a restored session after a read-only inspection:
+// .perseveranza/reconcile.json, written by a restored session after a read-only inspection:
 //   { "disposition": "complete"|"partial"|"uncertain", "running": [...], "next": "implement"|"review", "summary": "..." }
 // -> { ok: true, disposition, running, next, summary, notes } | { ok: false, error }
 export const DISPOSITIONS = ['complete', 'partial', 'uncertain'];

@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { appendJournal, readJournal, renderHistory } from './journal.mjs';
 import { notify } from './notify.mjs';
 import { gitFinish } from './git.mjs';
-import { archiveRun, archiveFailureNote } from './archive.mjs';
+import { archiveRun, archiveFailureNote, makeDormant } from './archive.mjs';
 import { summarizeExternalOpinions, shortTs } from './util.mjs';
 import { writeAtomic } from './activity.mjs';
+import { writeDurable, UNSAVED_STATE } from './state-file.mjs';
 import { countOpenSteps } from '../core/plan.mjs';
 import { finishProject } from '../core/machine.mjs';
 
@@ -54,10 +55,10 @@ export function writeEscalation(paths, state, why) {
       + `- last test: ${test}\n`
       + `- external models detected: ${(state.options.externals || []).join(', ') || 'none'}\n\n`
       + `## What to look at\n\n`
-      + `- \`.omc-loop/plan.md\` - the steps and what is still open\n`
-      + `- \`.omc-loop/notes.md\` - decisions and traps per step\n`
-      + `- \`.omc-loop/external-*.md\` - diagnoses from external models, if any\n`
-      + `- \`.omc-loop/journal.jsonl\` - every transition (last lines below; \`history\` verb renders it)\n\n`
+      + `- \`.perseveranza/plan.md\` - the steps and what is still open\n`
+      + `- \`.perseveranza/notes.md\` - decisions and traps per step\n`
+      + `- \`.perseveranza/external-*.md\` - diagnoses from external models, if any\n`
+      + `- \`.perseveranza/journal.jsonl\` - every transition (last lines below; \`history\` verb renders it)\n\n`
       + `## How to resume\n\n`
       + `1. Fix the blocked point by hand (start from plan.md + notes.md).\n`
       + `2. Once solved, resume the loop with the \`resume\` verb (it resets the retry counters).\n`
@@ -67,8 +68,34 @@ export function writeEscalation(paths, state, why) {
   } catch { /* the hand-off is a bonus: never block the pause */ }
 }
 
-// env: { paths, holder: { state }, deadline, processEnv, out(json) }
+// The state written (writeDurable: never a torn or emptied target, a pending copy when the
+// last resort fails) and read back: a save that did not land whole is a failed save. A file
+// that reads back as a LATER state (a higher rev: a verb saved right after, on top of this
+// one) is a save that landed.
+// write: (path, text) -> { ok, error } (a test may simulate a failure). -> { ok, error }
+// the Stop's save: merged and attempted again this many times when another writer lands first
+export const SAVE_ROUNDS = 3;
+
+export function saveStateVerified(path, state, write = (p, t) => writeDurable(p, t, { keepPending: true })) {
+  const text = JSON.stringify(state, null, 2);
+  let r;
+  try { r = write(path, text); } catch (e) { r = { ok: false, error: e && e.message }; }
+  if (!r || !r.ok) return { ok: false, error: (r && r.error) || 'write failed', conflict: !!(r && r.conflict) };
+  let back = null;
+  try { back = readFileSync(path, 'utf8'); } catch (e) { return { ok: false, error: `read back: ${e && e.code ? e.code : e && e.message}` }; }
+  if (back === text) return { ok: true, error: null };
+  try { const later = JSON.parse(back); if (Number(later.rev) > Number(state.rev)) return { ok: true, error: null, superseded: true }; } catch { /* torn */ }
+  return { ok: false, error: 'read back: the file does not hold what was written' };
+}
+
+// env: { paths, holder: { state }, deadline, processEnv, io: { writeState, fs }, reconcile }
+// reconcile(state) -> state: called right before each save (the Stop merges what a verb wrote
+// since it read the state, and sets the next rev).
+// After the run env.save is { attempted, ok, error }: whether the last saveState landed
+// (verified). What depends on the save (the archive, the disarm; the Stop's removal of
+// the inbox files) does not proceed on a failed one.
 export function executeEffects(effects, env) {
+  if (!env.save) env.save = { attempted: false, ok: true, error: null };
   const { paths, holder } = env;
   const processEnv = env.processEnv || process.env;
   let output = null;
@@ -76,9 +103,31 @@ export function executeEffects(effects, env) {
   for (const e of effects) {
     switch (e.type) {
       case 'journal': appendJournal(paths.gateDir, e.entry); break;
-      case 'saveState':
-        try { writeFileSync(paths.statePath, JSON.stringify(holder.state, null, 2)); } catch { /* gate gone (archived) */ }
+      case 'saveState': {
+        // whole or not at all, and read back: a state that did not land is said, and nothing
+        // that assumes it landed goes on
+        // reconcile: merged with what a verb wrote meanwhile, and written only over the text
+        // that merge read; when another writer came in between (a conflict), merged again
+        const io = env.io || {};
+        let r = null;
+        for (let round = 0; round < SAVE_ROUNDS; round++) {
+          let expect;
+          if (typeof env.reconcile === 'function') {
+            const m = env.reconcile(holder.state);
+            if (m.abandon) { r = { ok: false, error: m.abandon, abandoned: true }; break; }
+            holder.state = m.state;
+            expect = m.expect;
+          }
+          r = saveStateVerified(paths.statePath, holder.state, io.writeState || ((p, t) => writeDurable(p, t, { fs: io.fs, keepPending: true, expect })));
+          if (!r.conflict) break;
+        }
+        if (r.conflict) r = { ...r, error: `state.json changed under every attempt (${SAVE_ROUNDS})` };
+        env.save = { attempted: true, ok: r.ok, error: r.error, abandoned: !!r.abandoned };
+        if (r.ok && typeof env.saved === 'function') env.saved(holder.state);
+        if (r.abandoned) { appendJournal(paths.gateDir, { type: 'state-save-skipped', why: String(r.error).slice(0, 300), phase: holder.state.phase }); break; }
+        if (!r.ok) appendJournal(paths.gateDir, { type: 'state-save-failed', error: String(r.error).slice(0, 300), phase: holder.state.phase });
         break;
+      }
       case 'dropArtifact':
         try { rmSync(join(paths.gateDir, e.name), { force: true }); } catch { /* already gone */ }
         break;
@@ -113,12 +162,32 @@ export function executeEffects(effects, env) {
         break;
       }
       case 'archiveRun': {
+        // the final state must be on disk to be archived: when state.json refused it, a file of
+        // its own beside it; when that fails too, no archive and no disarm (the next stop retries)
+        // a save abandoned (the loop disarmed meanwhile, or another stop's state on disk): this
+        // stop's final state is not the run's, nothing to archive or disarm
+        if (env.save.abandoned) { archiveResult = { ok: false, error: `not archived: ${env.save.error}` }; appendJournal(paths.gateDir, { type: 'archive-skipped', why: archiveResult.error.slice(0, 300) }); break; }
+        const asidePath = join(paths.gateDir, UNSAVED_STATE);
+        // saved: a side file of an earlier failed attempt of this run is stale, not archived
+        if (!env.save.attempted || env.save.ok) { try { rmSync(asidePath, { force: true }); } catch { /* left: the newer state.json wins on read */ } }
+        if (env.save.attempted && !env.save.ok) {
+          const io = env.io || {};
+          const aside = saveStateVerified(asidePath, holder.state, io.writeState || ((p, t) => writeDurable(p, t, { fs: io.fs })));
+          if (!aside.ok) {
+            archiveResult = { ok: false, error: `final state not saved (${env.save.error}; state.unsaved.json: ${aside.error}): not archived, not disarmed` };
+            appendJournal(paths.gateDir, { type: 'archive-skipped', why: archiveResult.error.slice(0, 300) });
+            break;
+          }
+          appendJournal(paths.gateDir, { type: 'note', text: 'state.json refused the final state: archived with state.unsaved.json' });
+        }
         archiveResult = archiveRun(paths.gateDir, { projectName: paths.projectName, state: holder.state, outcome: e.outcome, env: processEnv });
         break;
       }
       case 'disarm':
         if (archiveResult && !archiveResult.ok) break;
         try { rmSync(paths.gateDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        // a file held open kept part of the gate: nothing left in it may arm the loop again
+        if (existsSync(paths.gateDir)) makeDormant(paths.gateDir);
         break;
       case 'allowStop': break;
       case 'block': output = { decision: 'block', reason: e.reason }; break;

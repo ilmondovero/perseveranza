@@ -30,9 +30,10 @@ export const TRANSITIONS = [
   { phase: 'final-verify', outcome: 'fail-limit',     next: 'final-verify', prompt: null,                    note: 'pause + escalation' },
   { phase: 'final-verify', outcome: 'missing',        next: 'final-verify', prompt: 'verify-missing-outcome', note: 'asked once' },
   { phase: 'final-verify', outcome: 'missing-twice',  next: 'implement',    prompt: 'verify-postfix',        note: 'counts as a failed verification' },
-  { phase: 'git-finish',   outcome: 'retry',          next: 'git-finish',   prompt: null,                    note: 'after resume: retry the closure' },
+  { phase: '*',            outcome: 'subagent-running', next: '=',          prompt: 'subagent-running',      note: 'implement, review or final-verify with a pf-* subagent still running (seen by the mod): wait for it, at most 3 stops in a row; no iteration spent' },
+  { phase: 'git-finish',   outcome: 'retry',         next: 'git-finish',   prompt: null,                    note: 'after resume: retry the closure' },
   { phase: '*',            outcome: 'budget',         next: 'disarm',       prompt: null,                    note: 'iterations or tokens exhausted: archive, disarm, notify' },
-  { phase: '*',            outcome: 'kill',           next: 'disarm',       prompt: null,                    note: 'STOP file or OMC_LOOP_KILL: before any other check' },
+  { phase: '*',            outcome: 'kill',           next: 'disarm',       prompt: null,                    note: 'STOP file or PERSEVERANZA_KILL: before any other check' },
   { phase: '*',            outcome: 'unknown-phase',  next: 'plan',         prompt: 'phase-recovered',       note: 'tampered state: restart from the plan' },
   // after a kill-and-restore (signals.interrupted): a read-only reconciliation decides where to resume
   { phase: '*',            outcome: 'reconcile-missing',   next: '=',         prompt: 'reconcile-missing',     note: 'restored session: reconcile.json missing or invalid, asked once' },

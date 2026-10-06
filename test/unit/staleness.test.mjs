@@ -220,7 +220,7 @@ test('restorePrompt: what a restored session is told, in the language of the pac
   assert.ok(en.includes('Task: ship it. Phase `review`.'));
   assert.ok(en.includes('A delegation was pending and never returned (pf-reviewer)'));
   assert.ok(en.includes('RECONCILE FIRST, READ-ONLY'));
-  assert.ok(en.includes('.omc-loop/reconcile.json'));
+  assert.ok(en.includes('.perseveranza/reconcile.json'));
   assert.ok(en.includes('write the file and stop'));
   assert.ok(!en.includes('{{'));
   const plain = restorePrompt(s, { silentMs: 60_000 });

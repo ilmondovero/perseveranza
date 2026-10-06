@@ -1,7 +1,10 @@
 // Single source of truth for what the plugin ships. Used by:
-//   - install.mjs        (manual install copies exactly these files, uninstall removes them)
+//   - install.mjs        (a manual install copies exactly these files into a plugin directory
+//                         that settings.json loads with CLAUDE_CODE_PLUGIN_DIRS)
 //   - test/packaging     (every listed file exists; every runtime file is listed;
-//                         hooks.json points at a listed file)
+//                         hooks.json names the mod's hooks module and nothing else)
+// The plugin registers no settings hook ("hooks" in hooks.json or settings.json): since 3.0 the
+// loop is driven by the mod alone (hooks/register.js), never by two drivers.
 // Paths are relative to the repository root, forward slashes.
 
 export const RUNTIME_FILES = [
@@ -14,7 +17,14 @@ export const RUNTIME_FILES = [
   'src/core/budget.mjs',
   'src/core/staleness.mjs',
   'src/core/time.mjs',
+  'src/core/subagents.mjs',
   'src/shell/stop.mjs',
+  'src/shell/stop-core.mjs',
+  'src/shell/mod-bridge.mjs',
+  'src/shell/mod-fault.mjs',
+  'src/shell/mod-alive.mjs',
+  'src/shell/usage-inbox.mjs',
+  'src/shell/state-file.mjs',
   'src/shell/session-start.mjs',
   'src/shell/activity.mjs',
   'src/shell/activity-hook.mjs',
@@ -28,9 +38,11 @@ export const RUNTIME_FILES = [
   'src/shell/notify.mjs',
   'src/shell/packs.mjs',
   'src/shell/paths.mjs',
+  'src/shell/legacy.mjs',
+  'src/shell/legacy-hashes.mjs',
   'src/shell/archive.mjs',
   'src/shell/util.mjs',
-  'src/cli/omc-loop.mjs',
+  'src/cli/perseveranza.mjs',
   'src/cli/verbs/arm.mjs',
   'src/cli/verbs/ask.mjs',
   'src/cli/verbs/claim-done.mjs',
@@ -67,25 +79,27 @@ export const AGENT_FILES = [
 
 export const COMMAND_FILES = ['commands/perseveranza.md'];
 
-export const PLUGIN_FILES = ['.claude-plugin/plugin.json', 'hooks/hooks.json'];
-
-// The Stop hook entry point, relative to the repository root.
-export const HOOK_ENTRY = 'src/shell/stop.mjs';
-// The SessionStart hook entry point (a new session learns about a loop it does not own).
-export const SESSION_HOOK_ENTRY = 'src/shell/session-start.mjs';
-// The activity hook entry point (the heartbeat of a turn: delegations, tools, subagent returns).
-export const ACTIVITY_HOOK_ENTRY = 'src/shell/activity-hook.mjs';
-
-// Every hook the plugin registers: hooks/hooks.json must match this table (packaging test)
-// and install.mjs writes exactly these into settings.json.
-export const HOOK_SPECS = [
-  { event: 'Stop', matcher: '', entry: HOOK_ENTRY, timeout: 120 },
-  { event: 'SessionStart', matcher: '', entry: SESSION_HOOK_ENTRY, timeout: 15 },
-  { event: 'PreToolUse', matcher: 'Agent|Task|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
-  { event: 'PostToolUse', matcher: 'Agent|Task|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
-  { event: 'SubagentStop', matcher: '', entry: ACTIVITY_HOOK_ENTRY, timeout: 10 },
+// The mod (Claude Code 2.1.287 or later): hooks/hooks.json names only this hooks module, and
+// the module imports the rest of hooks/lib and src/core by relative path (test/packaging checks
+// that every file it reaches is shipped).
+export const MOD_ENTRY = 'hooks/register.js';
+export const MOD_FILES = [
+  MOD_ENTRY,
+  'hooks/lib/core.js',
+  'hooks/lib/gate.js',
+  'hooks/lib/usage.js',
+  'hooks/lib/activity.js',
+  'hooks/lib/stop.js',
+  'hooks/lib/subagent.js',
+  'hooks/lib/spawn.js',
+  'hooks/lib/session.js',
+  'hooks/lib/tool.js',
+  'hooks/lib/verbs.js',
 ];
+
+export const PLUGIN_FILES = ['.claude-plugin/plugin.json', 'hooks/hooks.json', ...MOD_FILES];
+
 // The CLI entry point (the "verbs"), relative to the repository root.
-export const CLI_ENTRY = 'src/cli/omc-loop.mjs';
+export const CLI_ENTRY = 'src/cli/perseveranza.mjs';
 
 export const ALL_FILES = [...RUNTIME_FILES, ...AGENT_FILES, ...COMMAND_FILES, ...PLUGIN_FILES];

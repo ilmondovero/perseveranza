@@ -38,7 +38,7 @@ export function updateAvailable(root, env = process.env) {
 // If the cache is missing/old, mark it now (throttle) and spawn a detached refresh.
 // A `wx` lock keeps the hook and the statusline from spawning two refreshes.
 export function maybeSpawnRefresh(env = process.env) {
-  if (env.OMC_NO_UPDATE_CHECK) return;
+  if (env.PERSEVERANZA_NO_UPDATE_CHECK) return;
   const c = readCache(env);
   if (c && c.checkedAt && Date.parse(c.checkedAt) > Date.now() - MAX_AGE_MS) return;
   const LOCK = lockPath(env);

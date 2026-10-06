@@ -5,7 +5,7 @@ import { appendJournal } from '../../shell/journal.mjs';
 import { askProvider, providerModels, modelLabel } from '../../providers/registry.mjs';
 import { effectiveEnv, providerTimeoutOverride } from '../../providers/config.mjs';
 
-// Ask an external model and PERSIST the opinion as .omc-loop/external-<slot>-<provider>[-model].md
+// Ask an external model and PERSIST the opinion as .perseveranza/external-<slot>-<provider>[-model].md
 // (prompt + answer), echoing it to the screen too.
 export async function run({ argv, rawArgv, cwd, env }) {
   const paths = gate(cwd);
@@ -39,7 +39,7 @@ export async function run({ argv, rawArgv, cwd, env }) {
     const doc = `# External opinion - ${label}\n\n`
       + `- slot: ${slot}\n- when: ${ts}\n- status: ${r.ok ? 'ok' : 'ERROR'}\n\n`
       + `## Prompt\n\n${prompt}\n\n## Answer\n\n${r.output}\n`;
-    try { writeFileSync(file, doc); console.log(`[saved as .omc-loop/${file.split(/[\\/]/).pop()}]`); }
+    try { writeFileSync(file, doc); console.log(`[saved as .perseveranza/${file.split(/[\\/]/).pop()}]`); }
     catch (e) { console.log(`[could not save the artifact: ${e.message}]`); }
     appendJournal(paths.gateDir, { type: 'ask', provider, model: m ? m.name : null, think: m && m.think !== undefined ? m.think : null, slot, ok: r.ok, chars: String(r.output).length });
     console.log(`\n----- ${label} -----\n${r.output}\n`);

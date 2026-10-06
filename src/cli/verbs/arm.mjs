@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { gate, saveState, VerbError, positiveInt } from '../shared.mjs';
+import { join, resolve } from 'node:path';
+import { gate, writeNewState, VerbError, positiveInt } from '../shared.mjs';
 import { defaultState, COMPLEXITIES, LENSES, AUTO_LENSES_HIGH, ADVISOR_MODEL_RE, DEFAULT_ADVISOR_MODEL } from '../../core/state.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
 import { spawnWatchdog } from '../../shell/watchdog.mjs';
@@ -10,7 +10,10 @@ import { baselineDirty } from '../../shell/git.mjs';
 import { detectAvailable, hasBinary, modelLabel, PROVIDERS, checkProvider } from '../../providers/registry.mjs';
 import { effectiveEnv, disabledProviders, detectLang, lastChecks, recordCheck, disableProvider, providerTimeoutOverride, reachabilitySummary } from '../../providers/config.mjs';
 import { packPath } from '../../shell/packs.mjs';
-import { ROOT } from '../../shell/paths.mjs';
+import { ROOT, home } from '../../shell/paths.mjs';
+import { legacyRunNotice, legacyEnvNotice } from '../../shell/legacy.mjs';
+import { readModFault, modFaultText, clearModFault } from '../../shell/mod-fault.mjs';
+import { currentSession, readAlive, pruneAlive, aliveDir, MOD_OFF_CAUSES } from '../../shell/mod-alive.mjs';
 import { currentVersion, updateAvailable, maybeSpawnRefresh } from '../../update.mjs';
 
 export const OPTIONS = {
@@ -30,7 +33,46 @@ export const OPTIONS = {
   'advisor-model': { type: 'string' },
   force: { type: 'boolean' },
   check: { type: 'boolean' },
+  'no-mod-check': { type: 'boolean' },
 };
+
+// Is the perseveranza mod alive in the session that arms? (mod-alive.mjs) -> what arm does:
+//   { refuse: text }                      inside a Claude Code session whose mod left no sign of
+//                                         life: nothing would drive the loop (3.0 has no
+//                                         settings hooks), so arm says why and how to go on;
+//   { loopMode: 'tool', note }            the mod is alive here: the instructions name its tool;
+//   { loopMode: 'shell', note, warn? }    --no-mod-check, or no session at all (a terminal, a
+//                                         script): armed, the instructions name the CLI, and a
+//                                         terminal is warned that only a session with the mod
+//                                         drives the loop.
+export function modCheck(env, { noModCheck = false, now = Date.now() } = {}) {
+  const session = currentSession(env);
+  if (session.id) pruneAlive(env, { now, keep: session.id });
+  if (noModCheck) {
+    return { loopMode: 'shell', note: `Mod check skipped (--no-mod-check): the instructions name the CLI (${session.id ? `session ${session.id.slice(0, 8)}` : 'no Claude Code session'}).` };
+  }
+  if (!session.id) {
+    return {
+      loopMode: 'shell',
+      warn: `WARNING: not inside a Claude Code session (no ${session.bad ? 'valid ' : ''}CLAUDE_CODE_SESSION_ID${session.bad ? `: "${session.bad}"` : ''}), so the perseveranza mod could not be checked. The loop is driven only by a Claude Code session (CLI, 2.1.287 or later) with the perseveranza plugin loaded; its instructions will name the CLI command.`,
+    };
+  }
+  const alive = readAlive(session.id, env);
+  if (alive.alive) {
+    const cc = alive.info && typeof alive.info.claudeCode === 'string' ? ` on Claude Code ${alive.info.claudeCode.slice(0, 40)}` : '';
+    return { loopMode: 'tool', note: `Mod: alive in this session (${session.id.slice(0, 8)}${cc}): the instructions name the \`perseveranza\` tool (mcp__perseveranza__perseveranza) for the loop's own verbs; the suite (test) and the external models (ask) stay shell commands run with Bash, and the CLI stays the fallback.` };
+  }
+  return {
+    refuse: [
+      `perseveranza NOT armed: the perseveranza mod is not running in this Claude Code session (${session.id.slice(0, 8)}: no sign of life in ${alive.path || aliveDir(env)}).`,
+      'Since 3.0 the mod is the only driver of the loop: armed without it, nothing would run the phases.',
+      'Probable causes:',
+      ...MOD_OFF_CAUSES.map((c) => `  - ${c}`),
+      'How to go on: fix the cause and start a new session (or /clear), then arm again; check with `claude plugin validate` and the line `mod:` of `status` once armed.',
+      'To arm anyway (a test, or a loop another session with the mod will drive): add --no-mod-check.',
+    ].join('\n'),
+  };
+}
 
 export async function run({ argv, cwd, env }) {
   let parsed;
@@ -39,6 +81,9 @@ export async function run({ argv, cwd, env }) {
   const { values: v, positionals } = parsed;
   const task = positionals.join(' ').trim();
   if (!task) throw new VerbError('Missing the task description: arm "<task>"');
+  // before anything is written: a loop nothing would drive is not armed
+  const mod = modCheck(env, { noModCheck: !!v['no-mod-check'] });
+  if (mod.refuse) throw new VerbError(mod.refuse);
   if (v.complexity && !COMPLEXITIES.includes(v.complexity)) throw new VerbError('Invalid --complexity: use low|medium|high');
   // the final verification lenses: a list, or "auto" (by complexity, when the round is asked)
   let verifiers = null;
@@ -48,21 +93,28 @@ export async function run({ argv, cwd, env }) {
     if (!asked.length || unknown.length) throw new VerbError(`Invalid --verifiers${unknown.length ? ` (${unknown.join(', ')})` : ''}: a comma-separated list of ${LENSES.join(', ')}, or auto`);
     verifiers = [...new Set(asked)];
   }
-  // the internal advisor: on by default; its model from the flag, else OMC_ADVISOR_MODEL, else opus
+  // the internal advisor: on by default; its model from the flag, else PERSEVERANZA_ADVISOR_MODEL, else opus
   const advisorFlag = v.advisor == null ? 'on' : v.advisor.trim().toLowerCase();
   if (advisorFlag !== 'on' && advisorFlag !== 'off') throw new VerbError('Invalid --advisor: use on|off');
   if (v['advisor-model'] != null && !ADVISOR_MODEL_RE.test(v['advisor-model'].trim())) throw new VerbError('Invalid --advisor-model: a model name such as opus, sonnet or haiku (letters, digits, . _ : - [ ])');
-  const envModel = typeof env.OMC_ADVISOR_MODEL === 'string' ? env.OMC_ADVISOR_MODEL.trim() : '';
+  const envModel = typeof env.PERSEVERANZA_ADVISOR_MODEL === 'string' ? env.PERSEVERANZA_ADVISOR_MODEL.trim() : '';
   const envModelBad = !!envModel && !ADVISOR_MODEL_RE.test(envModel);
   const advisorModel = v['advisor-model'] != null ? v['advisor-model'].trim() : envModel && !envModelBad ? envModel : DEFAULT_ADVISOR_MODEL;
   const paths = gate(cwd);
+  // a project rooted in the home directory: its loop folder would be ~/.perseveranza itself,
+  // and disarming would archive (move) the config and the runs archive with the run
+  if (samePath(paths.gateDir, home(env))) {
+    throw new VerbError(`Cannot arm here: the loop folder of this directory would be ${home(env)}, which holds the perseveranza config and the runs archive. Arm inside a project directory.`);
+  }
   if (existsSync(join(paths.gateDir, RETAINED_STATE))) {
-    throw new VerbError('A previous run is retained in .omc-loop after an archive failure. Fix the archive destination and run `disarm` to archive it before arming a new task.');
+    throw new VerbError('A previous run is retained in .perseveranza after an archive failure. Fix the archive destination and run `disarm` to archive it before arming a new task.');
   }
   if (existsSync(paths.statePath) && !v.force) {
     throw new VerbError('perseveranza is ALREADY armed in this project. Use `status` to see it, `disarm` to stop it, or `arm --force` to overwrite it (the current loop is lost).');
   }
   if (!existsSync(paths.gateDir)) mkdirSync(paths.gateDir, { recursive: true });
+  // the mod's fault marker of a run that is gone: reported, then cleared (it is not this run's)
+  const leftoverFault = readModFault(paths.gateDir);
 
   const provEnv = effectiveEnv(env);
   const disabled = disabledProviders(env);
@@ -101,6 +153,7 @@ export async function run({ argv, cwd, env }) {
       verifiers,
       advisor: advisorFlag === 'on',
       advisorModel,
+      loopMode: mod.loopMode,
     },
     limits: {
       maxIterations: v.max ? positiveInt(v.max, 25) : 25,
@@ -112,10 +165,16 @@ export async function run({ argv, cwd, env }) {
     armedAt: new Date().toISOString(),
     engineVersion: currentVersion(ROOT),
   });
-  saveState(paths, state);
+  writeNewState(paths, state);
   appendJournal(paths.gateDir, { type: 'note', text: `armed: ${task}`, options: state.options, limits: state.limits, force: !!v.force });
   // the plan of the first turn is written under the command's instructions: its advisor hint is this arm's
   appendJournal(paths.gateDir, { type: 'advisor-hint', slot: 'plan', reason: !state.options.advisor ? 'off' : externals.length ? 'fallback' : 'no-external', ...(state.options.advisor ? { model: advisorModel } : {}), via: 'arm' });
+  if (leftoverFault) {
+    const text = modFaultText(leftoverFault);
+    clearModFault(paths.gateDir);
+    appendJournal(paths.gateDir, { type: 'note', text: `a previous run's mod fault was cleared: ${text}` });
+    console.log(`Note: a previous run left a mod fault (.perseveranza/mod-fault.json): ${text}. Cleared; check that \`node\` runs for Claude Code (PERSEVERANZA_NODE) before relying on the mod.`);
+  }
   spawnWatchdog(paths.gateDir, env);
 
   console.log(`perseveranza ARMED (max ${state.limits.maxIterations} iterations${v.max ? '' : ', adaptive after the plan'}, ${state.limits.maxRetries} fixes per step${maxTokens ? `, ${maxTokens} tokens` : ''}${state.options.commitSteps ? ', commit per step' : ''}). Task: ${task}`);
@@ -135,12 +194,14 @@ export async function run({ argv, cwd, env }) {
   }
   console.log(`Final verification lenses: ${verifiers ? verifiers.join(', ') : `auto (${AUTO_LENSES_HIGH.join(', ')} with complexity high, otherwise general)`}`);
   console.log(state.options.advisor
-    ? `Internal advisor: on (model ${advisorModel}, agent pf-advisor)${envModelBad ? `; OMC_ADVISOR_MODEL "${envModel}" is not a model name, ignored` : ''}. ${externals.length ? 'If no external model answers on the plan, before' : 'Before'} stopping with the plan ask pf-advisor with model=${advisorModel} (clean context) for a critique of task + plan: it writes .omc-loop/advisor-plan-0.md. It is consultative (a missing opinion does not block) and returns from the 2nd fix of a step.`
+    ? `Internal advisor: on (model ${advisorModel}, agent pf-advisor)${envModelBad ? `; PERSEVERANZA_ADVISOR_MODEL "${envModel}" is not a model name, ignored` : ''}. ${externals.length ? 'If no external model answers on the plan, before' : 'Before'} stopping with the plan ask pf-advisor with model=${advisorModel} (clean context) for a critique of task + plan: it writes .perseveranza/advisor-plan-0.md. It is consultative (a missing opinion does not block) and returns from the 2nd fix of a step.`
     : 'Internal advisor: off (--advisor off)');
   if (state.options.testCmd) console.log(`Test suite: ${state.options.testCmd} (claim-done will require a fresh green run through the test verb)`);
+  console.log(mod.warn || mod.note);
   console.log(`Instruction language: ${lang}${lang === 'en' ? ' (shipped defaults)' : ` (packs/${lang}.json)`}`);
   if (state.baselineDirty.length) console.log(`Note: ${state.baselineDirty.length} file(s) already modified before the task; the final commit may include them.`);
-  console.log("Initial phase: plan. Write the plan to .omc-loop/plan.md as a '- [ ] step' checklist, then stop: from there the Stop hook drives.");
+  for (const l of [...legacyRunNotice(cwd), ...legacyEnvNotice(env)]) console.log(l);
+  console.log("Initial phase: plan. Write the plan to .perseveranza/plan.md as a '- [ ] step' checklist, then stop: from there the Stop hook drives.");
   maybeSpawnRefresh(env);
   const upd = updateAvailable(ROOT, env);
   if (upd) console.log(`⬆ perseveranza v${upd} is available — update from /plugin`);
@@ -148,3 +209,9 @@ export async function run({ argv, cwd, env }) {
 }
 
 export { join };
+
+function samePath(a, b) {
+  // resolve() normalises separators and drops a trailing one; Windows paths ignore case
+  const [x, y] = [resolve(a), resolve(b)];
+  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+}

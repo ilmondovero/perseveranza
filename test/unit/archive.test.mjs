@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { project, gate, writeState } from '../helpers/cli.mjs';
+import { ARCHIVE_GATE_DIRNAME } from '../../src/shell/paths.mjs';
 import { defaultState } from '../../src/core/state.mjs';
 import { archiveRun, listRuns, RETAINED_STATE } from '../../src/shell/archive.mjs';
 
@@ -74,7 +75,7 @@ test('archive with locked originals after a complete copy is published once and 
   assert.equal(result.leftover, gate(p, ''));
   const runs = listRuns(p.env);
   assert.equal(runs.length, 1);
-  assert.equal(fs.readFileSync(join(runs[0].dir, 'omc-loop', 'notes.md'), 'utf8'), 'precious notes');
+  assert.equal(fs.readFileSync(join(runs[0].dir, ARCHIVE_GATE_DIRNAME, 'notes.md'), 'utf8'), 'precious notes');
   assert.equal(fs.existsSync(gate(p, 'state.json')), false, 'the leftover gate must be dormant');
   assert.equal(fs.existsSync(gate(p, RETAINED_STATE)), false, 'nothing to recover: the archive is complete');
 });

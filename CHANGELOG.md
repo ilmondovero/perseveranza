@@ -3,6 +3,509 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## Non rilasciato (3.0.0)
+
+La 3.0 fa di Perseveranza una **mod** di Claude Code: un solo modulo dentro Claude Code guida il
+loop, al posto dei cinque hook di impostazioni della 2.x, e vede quello che un hook non vedeva
+(i subagent ancora al lavoro, i token per agente). Porta il comando `/pf` per l'utente e lo
+strumento `perseveranza` per Claude, e rinomina tutto ciò che portava il nome di un altro
+strumento. Due rotture dichiarate; la migrazione è più sotto in questa sezione e nei README
+("Migrazione dalla 2.x alla 3.0").
+
+### Rotture
+
+- **Il loop lo guida la mod, non più gli hook di impostazioni.** `hooks/hooks.json` dichiara solo
+  il modulo della mod (`"modules": ["./register.js"]`). Servono **Claude Code 2.1.287 o
+  successivo** e **la CLI** (`claude`, anche `claude -p`): l'app Desktop e l'estensione VS Code
+  non hanno `$.process.run`, con cui la mod raggiunge il motore. Dove le mod sono spente
+  (`--bare`, `--safe-mode`, `disableAllHooks`, una policy, l'interruttore remoto) il loop non è
+  guidato: nessun hook di impostazioni fa da riserva, perché due guidatori dello stesso loop
+  sarebbero un guasto.
+- **Nomi nuovi, senza ripiego.** La cartella del loop (`.perseveranza/`), il CLI
+  (`src/cli/perseveranza.mjs`), la cartella del run nell'archivio (`loop/`) e le variabili
+  d'ambiente (`PERSEVERANZA_*`) portavano ancora il prefisso di oh-my-claudecode, un altro
+  plugin: chi trovava quei nomi non poteva sapere a quale strumento appartenessero. I vecchi
+  nomi non si leggono più, nemmeno come ripiego silenzioso: un ripiego terrebbe vivi due nomi
+  per sempre e renderebbe ambiguo quale vale. Tabella completa in "Migrazione".
+- **L'installazione manuale non scrive più hook.** `node install.mjs` copia il plugin in
+  `~/.claude/perseveranza/` e lo fa caricare con `CLAUDE_CODE_PLUGIN_DIRS` nell'`env` di
+  `~/.claude/settings.json` (il modo documentato per un plugin fuori da un marketplace); toglie
+  gli hook di impostazioni delle installazioni 1.x e 2.x. Comando e agenti vivono nella cartella
+  del plugin (gli agenti si chiamano `perseveranza:pf-*` come dal marketplace), non più in
+  `~/.claude/commands` e `~/.claude/agents`.
+- **`arm` rifiuta se la mod non gira** nella sessione di Claude Code da cui arma: senza la mod
+  nessuno guiderebbe il loop. Dice le cause probabili e come procedere; `--no-mod-check` arma
+  comunque. Fuori da una sessione (un terminale, uno script) arma con un avviso.
+- **Le istruzioni del loop nominano lo strumento** quando la mod è viva: Claude manda i verbi
+  dello stato del loop allo strumento `perseveranza`, e lancia con Bash solo la suite (`test`) e
+  i modelli esterni (`ask`). Un prompt pack personalizzato che usa `{{LOOP}}` resta valido;
+  `{{USER}}` (nuovo) è la forma per ciò che tocca all'utente.
+
+### Novità
+
+- **`/pf <verbo>`**, il comando per l'utente: stato, journal, archivio, `arm`, `disarm`,
+  `pause`/`resume [--takeover]`, i segnali (`report`, `complexity`, `claim-done`), `test` e
+  `ask`. Risponde subito, anche a turno in corso, **senza un turno del modello** (in
+  `claude -p "/pf status"`: costo 0, il codice d'uscita del verbo). `/perseveranza <task>`
+  resta il comando che avvia un task.
+- **Lo strumento `perseveranza`** (`mcp__perseveranza__perseveranza`) per Claude: i verbi che
+  leggono o muovono lo stato del loop, con argomenti controllati prima di avviare qualunque
+  processo, senza shell, solo su un loop di questa sessione. Non esegue niente che i permessi di
+  Bash governerebbero (uno strumento di una mod gira senza prompt dei permessi).
+- **Uno Stop aspetta un subagent `pf-*` ancora al lavoro**: la macchina chiede di aspettarlo
+  invece di mandare in review il nulla o contare un verdetto mancante (al più 3 attese per
+  richiesta), e lo Stop stesso aspetta fino a 30 s (`PERSEVERANZA_SUBAGENT_WAIT_MS`) che il
+  verdetto arrivi.
+- **Giudici rimandati indietro**: un `pf-reviewer` o `pf-verifier` che si ferma senza il
+  verdetto richiesto torna al lavoro con il motivo, al massimo due volte.
+- **Token esatti, per agente**: ogni richiesta al modello, del ciclo principale e di ogni
+  subagent, cache compresa; niente più lettura delle trascrizioni. `status` mostra la
+  ripartizione.
+- **Il modello dei subagent `pf-*`** è quello della complessità del run, imposto allo spawn.
+- **Niente processi dove non c'è un loop**: senza `.perseveranza/state.json` la mod non avvia
+  nessun `node` (prima: un processo per ogni evento di ogni sessione).
+- **`status`** ha la riga `mod:` (la versione di Claude Code su cui gira) e mostra
+  `.perseveranza/mod-fault.json`, la traccia di uno Stop che non ha raggiunto il motore.
+- **Il journal dice da dove arriva un verbo** (`via: 'tool'` o `'command'`).
+- `PERSEVERANZA_NODE`: il `node` che la mod usa, se non è quello sul `PATH`.
+- **`npm run test:mod`**: `claude plugin validate --strict`, `claude plugin test` e un e2e con un
+  `claude -p` vero; senza `claude` sul `PATH` ogni passo dice `SKIPPED`.
+
+### Correzioni
+
+- **Lo stato non si perde né si sovrascrive**: ogni file di stato si scrive in modo atomico e
+  riletto (un disco pieno svuotava `state.json`), con una copia `.pending` che sopravvive a un
+  kill; un verbo rilegge lo stato prima di scrivere (prima un `test` lungo azzerava i token
+  contati nel frattempo) e due Stop sovrapposti non si sovrascrivono più.
+- **I token non si perdono e non si contano due volte**: una casella di posta senza lock
+  (`.perseveranza/usage-inbox/`) al posto della scrittura concorrente di `state.json` (prima 8
+  flush paralleli da 100 davano 500-600); conteggi limitati, un valore ostile conta 0. Resta
+  solo l'istante senza lock descritto nei limiti, dove l'errore va per difetto.
+- **Una review ancora in corso non è più "mancante"**: prima le attese si consumavano in pochi
+  secondi e la review finiva contata come fallita.
+- Il task di un run 2.x stampato da `arm` e `status` non porta più sequenze di escape nel
+  terminale.
+
+### Migrazione
+
+| prima (2.x) | dalla 3.0 |
+|---|---|
+| `.omc-loop/` (cartella del loop nel progetto) | `.perseveranza/` |
+| `<run>/omc-loop/` (nell'archivio `~/.perseveranza/runs/`) | `<run>/loop/` |
+| `src/cli/omc-loop.mjs` | `src/cli/perseveranza.mjs` |
+| `OMC_LOOP_STALE_MS` | `PERSEVERANZA_STALE_MS` |
+| `OMC_LOOP_KILL` | `PERSEVERANZA_KILL` |
+| `OMC_LOOP_NO_NOTIFY` | `PERSEVERANZA_NO_NOTIFY` |
+| `OMC_LOOP_NO_WATCHDOG` | `PERSEVERANZA_NO_WATCHDOG` |
+| `OMC_LOOP_RESTORE` | `PERSEVERANZA_RESTORE` |
+| `OMC_LOOP_RESTORE_AFTER_MS` | `PERSEVERANZA_RESTORE_AFTER_MS` |
+| `OMC_LOOP_CLAUDE_BIN` | `PERSEVERANZA_CLAUDE_BIN` |
+| `OMC_ASK_TIMEOUT_MS` | `PERSEVERANZA_ASK_TIMEOUT_MS` |
+| `OMC_ASK_RETRIES` | `PERSEVERANZA_ASK_RETRIES` |
+| `OMC_ADVISOR_MODEL` | `PERSEVERANZA_ADVISOR_MODEL` |
+| `OMC_PROMPT_PACK` | `PERSEVERANZA_PROMPT_PACK` |
+| `OMC_ACTIVITY_HEARTBEAT_MS` | `PERSEVERANZA_ACTIVITY_HEARTBEAT_MS` |
+| `OMC_TEST_TIMEOUT_MS` | `PERSEVERANZA_TEST_TIMEOUT_MS` |
+| `OMC_HOOK_TIMEOUT_MS` | `PERSEVERANZA_HOOK_TIMEOUT_MS` |
+| `OMC_STATUSLINE_BASE_TIMEOUT_MS` | `PERSEVERANZA_STATUSLINE_BASE_TIMEOUT_MS` |
+| `OMC_NO_UPDATE_CHECK` | `PERSEVERANZA_NO_UPDATE_CHECK` |
+| hook di impostazioni (Stop, SessionStart, Pre/PostToolUse, SubagentStop) | la mod, `hooks/register.js` |
+| i verbi, per l'utente: il CLI | `/pf <verbo>`, o il CLI |
+
+`PERSEVERANZA_HOME` e `PERSEVERANZA_LANG` non cambiano. Cosa fare:
+
+1. **Aggiornare**: dal marketplace `claude plugin update perseveranza@perseveranza`; da
+   un'installazione manuale, `node install.mjs` (toglie anche gli hook di impostazioni e i file
+   delle installazioni 1.x e 2.x). Hook scritti a mano verso `src/shell/stop.mjs`,
+   `src/shell/session-start.mjs` o `src/shell/activity-hook.mjs` vanno tolti a mano.
+2. **Variabili**: rinominarle. Una vecchia ancora impostata non ha effetto; `arm` e `status` la
+   nominano accanto al nome nuovo.
+3. **Un loop armato con la 2.x** resta in `.omc-loop/` e la 3.0 non lo guida: `arm` e `status`
+   lo segnalano con il task; copiare ciò che serve e cancellare la cartella a mano. Il commit di
+   chiusura non la include mai. `runs list` / `runs show` leggono ancora i run archiviati dalla
+   2.x, in sola lettura.
+4. **Script e alias** che chiamano il vecchio CLI, e **prompt pack** che citano la vecchia
+   cartella, vanno aggiornati.
+
+I vecchi nomi vivono in un solo modulo, `src/shell/legacy.mjs`, che non scrive mai. `arm`
+rifiuta anche una cartella la cui `.perseveranza/` sarebbe la home `~/.perseveranza/`: con il
+nome nuovo le due coinciderebbero e il disarmo archivierebbe config e archivio insieme al run.
+
+### Limiti
+
+- Solo la CLI di Claude Code, 2.1.287 o successiva; né Desktop né VS Code.
+- Con le mod spente (flag, policy, interruttore remoto) il loop non è guidato. `status` lo lascia
+  vedere e la sentinella avvisa del silenzio.
+- Il recupero di uno Stop fallito vale una volta per turno dell'utente: un motore che si guasta a
+  metà loop lascia fermare Claude (con la traccia nel journal o in `mod-fault.json`).
+- La mod perde con il suo processo i fatti non ancora scritti: fino a 15 s di token e 30 s di
+  battito.
+- Fra l'ultimo controllo dello stato e il rename resta una finestra senza lock: di solito un
+  istante, su una CPU satura quanto lo scrittore resta fermo fra le due chiamate (misurati
+  1,6 s). Un verbo sovrascritto lì perde la sua modifica. Uno Stop sovrascritto lì riconta i
+  suoi token allo Stop dopo, tranne se un terzo Stop ha già cancellato i file della casella che
+  contava: quei token si perdono. L'errore va sempre per difetto (un token non si conta mai due
+  volte) e servono più scrittori sovrapposti. Nello stress della verifica finale (Stop, flush e
+  verbi sovrapposti in processi veri, 6 loop di CPU, pause iniettate fra le chiamate di sistema)
+  2 giri su 171 hanno perso 7 e 14 token su 4563; con il doppio del carico un giro ne ha persi
+  1607.
+- Un reload azzera i conteggi `askedTimes` dei giudici: al più 2 rinvii in più a un giudice.
+
+### Dettagli delle fasi
+
+Per chi segue il codice: cosa è cambiato in ogni fase di `docs/PIANO-MOD.md`, dove stanno anche
+i fatti verificati, le prove e i limiti di ciascuna.
+
+#### Fase 1 della mod
+
+Il nucleo additivo e il ponte che la mod userà. **Nessun cambio di comportamento** con gli
+hook di impostazioni: i fatti nuovi li vede solo la mod (fase 2), e senza di loro la macchina
+decide come prima.
+
+- **`subagent-running`.** Se a uno Stop un subagent del ruolo della fase (`pf-executor` in
+  `implement`, `pf-reviewer` in `review`, `pf-verifier` in `final-verify`, anche con il
+  prefisso `perseveranza:`) risulta ancora `running` in `ctx.backgroundTasks`, la macchina
+  chiede di aspettarlo invece di mandare in review il nulla o contare un esito mancante; gli
+  altri `pf-*` non fanno attendere. Al massimo 3 attese per richiesta di verdetto
+  (`counters.subagentWaits`, azzerato da una nuova richiesta o da un cambio di fase, non da
+  `missing`), e nessuna attesa dopo 5 stop di fila senza lavoro (`counters.quietStops`: si
+  azzera solo con lavoro vero, cioè albero cambiato, test registrato, verdetto o `report`
+  instradato, claim; mai con un'attesa, `missing`, `missing-twice` o `idle`): un subagent
+  bloccato dà al più 3 attese in tutta la serie senza lavoro. Un'attesa non spende iterazioni, non sposta l'albero di riferimento
+  (le modifiche fatte nel frattempo vanno in review, non in `idle`), non consuma né sposta
+  alcun file di verdetto e lascia aperto il giro delle lenti. Un verdetto letto, un `report` o
+  un `claim-done` decidono comunque. Riga nuova nella tabella delle transizioni.
+- **Token della mod.** `ctx.usage` con `source: 'mod'`: la ripartizione `byAgent` (per
+  `agentId`) è la lettura, i totali ne sono almeno la somma e gli agenti oltre il tetto
+  finiscono in `other` invece di sparire, così il budget conta ogni token. `status` lo dice.
+- **`src/core/subagents.mjs`** (puro, senza `node:`): `routeModel` (modello di
+  `pf-reviewer`/`pf-verifier`/`pf-executor` per complessità, `MODEL_ROUTING.execute` nuovo) e
+  `subagentVerdictCheck` (il verdetto che un giudice deve lasciare: assente, malformato o
+  stantio non va bene; dopo 2 richiami lascia andare; senza id di richiesta non trattiene).
+- **`{{LOOP}}` come strumento.** `ctx.loopMode = 'tool'` rende i verbi come "lo strumento
+  `perseveranza` (verbo e argomenti): report pass" (chiave `loop-tool`, en e it).
+- **Ponte `src/shell/mod-bridge.mjs`.** JSON su stdin, JSON su stdout, mai un'eccezione:
+  `stop` (la logica di `stop.mjs`, ora in `stop-core.mjs` con `stop.mjs` involucro sottile),
+  `subagent-stop` (il motivo nella lingua del loop), `activity-flush`, `usage-flush`.
+  Lo stato si scrive ora in modo atomico anche dallo Stop (file temporaneo + rename), e ogni
+  salvataggio si rilegge: uno stato che non è arrivato intero su disco è un salvataggio
+  fallito (`state-save-failed` nel journal). Dopo un salvataggio fallito non si cancella
+  nessun file della casella e non si archivia né disarma (l'archivio procede solo se lo stato
+  finale riesce almeno in `state.unsaved.json`, accanto a `state.json`).
+- **Casella di posta dei token** (`.perseveranza/usage-inbox/`, `src/shell/usage-inbox.mjs`), senza
+  lock. `usage-flush` non tocca mai `state.json`: crea un file suo, atomico. Lo Stop, unico
+  scrittore dello stato oltre ai verbi, elenca la casella prima di leggere lo stato, somma i
+  delta e salva con i nomi contati in `state.usageInboxSeen`. Il file lo cancella uno Stop
+  successivo, solo se lo stato che ha caricato lo nomina: un crash o un salvataggio
+  sovrascritto non fanno contare due volte un file né perdere i suoi token (il limite che
+  resta è descritto più sotto). Un file illeggibile (vecchio di 5 s) diventa
+  `<nome>.invalid` e si annota. `status` mostra anche i token ancora in casella. Prima, flush
+  e Stop sovrapposti perdevano token (8 flush paralleli da 100 davano 500-600). I nomi
+  contati escono da `state.usageInboxSeen` solo quando il loro file risulta davvero assente
+  (un file che Google Drive o un antivirus non lascia cancellare non si riconta mai); nessun
+  taglio per numero, solo una guardia a 5000 annotata nel journal. Ogni file porta sessione e
+  arm (`state.armedAt`): un file di un'altra sessione o di un'altra armata si scarta. Un flush
+  senza loop risponde `no-loop` e non crea nulla. Con `state.json` bloccato (EBUSY) o corrotto il
+  delta si accoda comunque (`armUnknown`): `no-loop` vuol dire nessun run (la cartella si crea solo dentro un
+  `.perseveranza/` che esiste ancora, mai ricorsivamente).
+- **Conti dei token limitati.** Ogni conteggio è un intero finito non negativo
+  (`tokenCount`); un valore troppo grande satura a `Number.MAX_SAFE_INTEGER` invece di
+  diventare `Infinity` e poi 0; ogni campo di un delta della mod è troncato a 1e12 e
+  annotato (`usage-clamped`); le somme saturano; un valore ostile (negativo, NaN, stringa)
+  conta 0 e non toglie mai nulla al totale. Una stringa conta solo se è fatta di cifre
+  decimali (con decimali facoltativi): niente `0x10`, `0b11`, esponenti, segni o spazi, che
+  `Number()` leggerebbe.
+
+- **Lo stato non si perde.** Tutti i file di stato si scrivono in un modo solo
+  (`src/shell/state-file.mjs`):
+  - un temporaneo riletto, e se non arriva intero non si tocca nulla: prima un disco pieno
+    svuotava `state.json`;
+  - il rename riprovato;
+  - la scrittura sul posto solo dopo che la copia completa è diventata `state.json.pending`,
+    che il caricamento dopo promuove se la scrittura si interrompe, anche con un kill -9
+    (`state-recovered`);
+  - prima di ogni tentativo, nuovi tentativi compresi, si ricontrolla che il file sia ancora
+    quello letto: se un altro ha salvato nel frattempo, il verbo riparte dal suo stato e lo
+    Stop rifà l'unione, invece di sovrascriverlo.
+
+  I verbi non salvano più una copia vecchia: `updateState` rilegge lo stato subito prima di
+  scrivere, con un `rev` incrementato a ogni salvataggio e fino a 3 tentativi. Prima un
+  `test` lungo riportava a zero i token contati da uno Stop durante la suite. Lo Stop tiene
+  ciò che un verbo ha scritto mentre girava (`state-merged`). I file della casella si
+  cancellano solo quando lo stato su disco li nomina. Dopo un archivio fallito, `status` e
+  `disarm` usano lo stato più recente del run. `arm` toglie ciò che un run vecchio lascia. Un
+  gate che un file bloccato tiene in vita dopo il disarmo riceve `state.disarmed.mark` e non
+  si riarma più.
+
+  Due Stop sovrapposti non si sovrascrivono più: chi trova il salvataggio dell'altro prima di
+  scrivere riparte da quello, chi lo trova al salvataggio abbandona il suo. Un file della
+  casella dei token lo cancella solo uno Stop successivo, e solo perché lo stato che ha caricato
+  lo nomina. Così un salvataggio sovrascritto perde nome e token insieme, e il file si conta
+  dopo, una volta sola. Anche il delta portato da `stop` passa dalla casella. Uno Stop non
+  riscrive uno stato che un `disarm` ha tolto mentre girava. Un EBUSY in lettura non fa
+  promuovere una copia vecchia. `arm` rifiuta se il marcatore di disarmo resta, e
+  `disarm --no-archive` con lo stato bloccato dice che non ha disarmato.
+
+  Il delta portato da `stop` si scrive nella casella per primo, anche quando `state.json` resta
+  bloccato (EBUSY): il file dice `armUnknown` e vale per il run armato prima della sua
+  scrittura. Prima, uno Stop che usciva con `state-busy` perdeva quel delta. Un file della
+  casella si conta solo se è ancora su disco dopo la lettura dello stato: uno Stop che l'ha
+  elencato mentre un altro lo contava e poi lo cancellava non lo conta di nuovo. Il delta si
+  scrive una volta per Stop, non a ogni ripartenza. La rilettura dello stato prima del
+  salvataggio riprova tre volte. Se lo stato resta illeggibile, il salvataggio si abbandona
+  e il journal ne dice il motivo vero: bloccato, tolto o disarmato. I token non si perdono:
+  li conta lo Stop dopo.
+
+  Il bridge non confonde più uno `state.json` bloccato con un loop assente. `usage-flush`
+  accoda il delta (`armUnknown`). `subagent-stop` rimanda indietro un giudice con il motivo,
+  al massimo due volte. `activity-flush` risponde `busy` con `retry: true`. Uno Stop il cui
+  delta non entra nella casella lo dice nella risposta (`usageDropped`), e la mod lo rimanda.
+  Tre risposte per il delta di uno Stop o di un flush:
+  - accodato: si conta una volta;
+  - scartato (`usageDropped`, o `{ ok: false }` al flush): il guasto è avvenuto prima che un
+    file col nome della casella potesse esistere, quindi nessuno Stop l'ha visto e la mod lo
+    rimanda;
+  - non confermato (`usageUnverified`, o `unverified: true` al flush): il file è stato scritto
+    sul posto senza conferma, uno Stop può averlo già contato, e la mod non lo rimanda.
+
+  Un delta scartato non si conta mai. Uno non confermato che non è arrivato intero si perde:
+  lo Stop e il flush lo annotano nel journal, se il journal si può scrivere. Senza risposta (timeout, crash) la mod non rimanda. Uno `state.json`
+  corrotto vale come bloccato, non come loop assente. Una lettura rifiutata di un file della
+  casella non lo scarta più come `.invalid`; se dura, il journal lo annota una volta e `status`
+  lo elenca. La nota si scrive prima del marcatore o dello spostamento, da qualunque Stop
+  incontri il file per primo (anche di un'altra sessione, o uno che esce perché lo stato è
+  bloccato). Un `background_tasks` ostile, per esempio con `status` non stringa, non fa più
+  fallire lo Stop: la voce si ignora.
+
+  Resta un limite, documentato: l'istante fra l'ultimo controllo e il rename (due chiamate,
+  nessun lock). Un verbo sovrascritto proprio lì perde la sua modifica. I token si perdono solo
+  con tre scrittori sovrapposti e uno di essi fermo fra due chiamate di sistema, e sempre per
+  difetto. La durabilità vale
+  contro la morte del processo, non contro una mancanza di corrente.
+
+#### Fase 2 della mod: perseveranza guida il loop come mod di Claude Code
+
+**Rottura voluta**: il plugin non registra più hook di impostazioni. `hooks/hooks.json` nomina
+solo il modulo della mod (`"modules": ["./register.js"]`), che richiede Claude Code 2.1.287 o
+successivo e gira solo nella CLI (`claude`, anche `claude -p`): la mod raggiunge il loop con
+`$.process.run`, che l'app Desktop e l'estensione VS Code non hanno. Dove le mod sono spente
+(`--bare`, `--safe-mode`, `disableAllHooks`, una policy) il loop non è guidato. Prima c'erano
+cinque hook di impostazioni (Stop, SessionStart, Pre/PostToolUse, SubagentStop), ciascuno un
+processo `node` a ogni evento; adesso c'è un solo guidatore, e un progetto senza un loop
+armato non avvia nessun processo: conta `.perseveranza/state.json` (o la sua copia `.pending`
+di un salvataggio interrotto, se il run non è stato disarmato), non la cartella, che esiste
+anche in `~/.perseveranza` e in un progetto dopo un run archiviato. L'installazione manuale (`install.mjs`) ha
+scritto gli hook di impostazioni fino alla fase 4.
+
+- **Stop** (`classic.Stop`): il ponte (`src/shell/mod-bridge.mjs`) esegue la logica di
+  `stop.mjs` con i fatti che solo la mod vede (i subagent ancora in corsa, i token esatti per
+  agente). Se il ponte non risponde, un solo blocco di recupero, e solo per il loop di questa
+  sessione; con `stop_hook_active` già vero lascia fermare (mai un blocco infinito), e una
+  sessione senza loop, o con il loop di un'altra sessione, non si blocca mai. Quel fermarsi non
+  è muto: il guasto va nel journal o, se il ponte non risponde nemmeno a quello (`node`
+  irraggiungibile), in `.perseveranza/mod-fault.json`, che `status` mostra, la notifica del
+  watchdog nomina, lo Stop successivo annota e toglie, e `arm` segnala se è rimasto. Lo Stop
+  aspetta (al più 5 s) un flush dei token già partito, così un delta rifiutato dal ponte parte
+  con lui.
+- **Giudici** (`classic.SubagentStop`): un `pf-reviewer` o `pf-verifier` che si ferma senza il
+  verdetto richiesto (assente, vecchio, illeggibile) viene rimandato indietro con il motivo, al
+  massimo due volte; prima l'esito `missing` arrivava solo allo Stop del ciclo principale.
+- **Modelli** (`agent.spawn`): i subagent `pf-*` girano sul modello di `MODEL_ROUTING` per la
+  complessità del run, non più solo su quello suggerito dal prompt (riga `model-route` nel
+  journal). Se il routing fallisce vale il modello del prompt.
+- **Token** (`turn.step`): ogni richiesta al modello, del ciclo principale e di ogni subagent,
+  cache compresa, contata per agente; niente più lettura delle trascrizioni. `status` mostra la
+  ripartizione.
+- **Battito** (`tool.call`, `SubagentStop`): deleghe, ritorni e attività in `activity.json`,
+  con debounce (2 s per deleghe e ritorni, al più ogni 30 s per il resto). Il ritorno chiude la
+  delega di QUEL subagent (per `agent_id`, legato alla chiamata Agent da `agent.spawn`), una
+  volta, e solo quando il subagent è lasciato andare: due verificatori in parallelo restano
+  distinti, e un giudice rimandato indietro resta in attesa.
+- **Riconciliazione** (`tool.call`): durante la riconciliazione dopo un ripristino gli strumenti
+  che modificano restano rifiutati, come con il `PreToolUse` di prima.
+- **Avviso di sessione** (`classic.SessionStart`): lo stesso testo di `session-start.mjs` per
+  un loop che la sessione non possiede, e dopo una compattazione.
+- **Versione di Claude Code** (`session.start`): una versione vecchia o illeggibile è detta
+  sotto il prompt e nel journal; `status` ha la riga `mod:` con la versione su cui gira la mod.
+  Le righe della mod nel journal sono solo della sessione che possiede il loop (portano la
+  sessione); `status` legge solo quelle.
+- Versione 3.0.0 in `plugin.json`, `package.json` e nei badge dei README.
+- `PERSEVERANZA_NODE`: il `node` che la mod usa per il ponte, se non è quello sul PATH.
+- Il task di un run 2.x stampato da `arm` e `status` non porta più sequenze di escape, caratteri
+  di controllo o a capo nel terminale.
+- Test: `npm run test:mod` (`claude plugin validate --strict`, `claude plugin test` con
+  `test/mod/*.test.ts`, e un e2e con un `claude -p` vero che porta un mini-task dal piano al
+  commit finale); senza `claude` sul PATH ogni passo dice `SKIPPED`. `npm test` resta locale e
+  deterministico. Dettagli, prove e limiti in `docs/PIANO-MOD.md` ("Stato fase 2").
+
+#### Fase 3 della mod: lo strumento `perseveranza`, il comando `/pf`, `arm` che controlla la mod
+
+- **Lo strumento** `mcp__perseveranza__perseveranza`: Claude esegue i verbi che leggono o
+  muovono lo stato del loop (`status`, `history`, `explain`, `report`, `complexity`,
+  `claim-done`, `pause`, `resume`) con argomenti tipizzati invece di comporre
+  `node ".../perseveranza.mjs" ...` in Bash: `{"verb": "report", "args": "pass"}` (le parole
+  dell'istruzione così come sono) o `{"verb": "report", "outcome": "pass"}`. La mod controlla
+  tutto **prima** di avviare un processo (Claude Code non applica lo schema), poi esegue il CLI
+  con `$.process.run`, una lista di argomenti e nessuna shell, nella cartella della sessione.
+  Uno strumento di una mod gira **senza il prompt dei permessi**, quindi non esegue niente che i
+  permessi di Bash governerebbero: la suite (`test`) e i modelli esterni (`ask`, che avvia la
+  CLI di un agente) restano comandi di shell che Claude lancia con Bash, e lo strumento li
+  rifiuta; `arm`, `disarm` e `resume --takeover` sono dell'utente; su un loop di un'altra
+  sessione ogni verbo che cambia qualcosa è rifiutato. Il CLI rifiuta a sua volta tutto questo
+  quando l'esecuzione dice di venire dallo strumento (`PERSEVERANZA_VIA=tool`). Senza un loop
+  armato ogni verbo tranne `status` è rifiutato e nessun `node` parte. Un errore dello
+  strumento è un risultato d'errore, mai un'eccezione: il CLI resta il ripiego nominato.
+- **Il comando** `/pf <verbo> [argomenti]` per l'utente: i verbi dello strumento più `test`,
+  `ask`, `arm` (con gli argomenti del CLI), `disarm`, `resume --takeover` e `runs`; gira
+  subito anche a turno in corso, e la risposta è testo nella trascrizione, **senza un turno del
+  modello** (in `claude -p "/pf status"`: 0 turni, costo 0, il codice d'uscita del verbo). Un
+  verbo che non prende parole rifiuta quelle in più (`/pf disarm la sveglia` non disarma
+  niente). Claude non può eseguirlo (Claude Code rifiuta un comando di una mod dallo strumento
+  `Skill`), e `arm`, `disarm`, `test`, `ask` e la presa di un loop girano solo per quello che
+  l'utente digita (non per il `$.command.run` di un altro plugin). Si chiama `/pf` perché un
+  comando registrato prende il nome al comando markdown omonimo: `/perseveranza <task>` resta
+  il comando che avvia un task.
+- **`arm` controlla la mod**: dentro una sessione di Claude Code (`CLAUDE_CODE_SESSION_ID`,
+  che Claude Code dà alla Bash ed è lo stesso id di `$.session.id()`) cerca il segno di vita che
+  la mod scrive all'avvio di ogni sessione della CLI, `~/.perseveranza/mod-alive/<sessione>.json`
+  (`PERSEVERANZA_HOME` se impostata). Se manca **rifiuta** e dice le cause probabili e come
+  procedere: senza la mod nessuno guiderebbe il loop. `--no-mod-check` arma comunque; fuori da
+  una sessione (un terminale, uno script) `arm` arma con un avviso. Nelle sessioni disegnate
+  solo da Desktop o VS Code la mod non lascia il segno (`$.process.run` è "solo CLI"). I segni
+  di vita vecchi (30 giorni) e quelli oltre i 100 si potano, da `arm` e, quando sono troppi,
+  dalla mod all'avvio.
+- **Le istruzioni nominano lo strumento** (`options.loopMode: 'tool'`, scelto da `arm` quando la
+  mod è viva) solo se anche chi guida lo Stop ha lo strumento; altrimenti il comando di shell,
+  identico a prima byte per byte. In modalità strumento la suite e i modelli esterni sono il
+  comando di shell "da eseguire con Bash", e quello che tocca all'utente (approvare il piano,
+  riprendere, disarmare, prendere un loop) è `/pf`: la nuova variabile di prompt `USER`, nei
+  pacchetti en/it.
+- **Uno Stop aspetta un subagent `pf-*` ancora al lavoro** (fino a 30 s,
+  `PERSEVERANZA_SUBAGENT_WAIT_MS`, mai oltre la scadenza dello Stop): se il suo verdetto arriva
+  intanto, lo Stop lo legge subito. Prima le tre attese concesse si consumavano in pochi secondi
+  e una review ancora in corso finiva contata come mancante due volte, cioè fallita.
+- **Il journal dice da dove arriva un verbo**: `via: 'tool'` o `'command'` (`/pf`), anche nel
+  riassunto archiviato (`verbs`, `tests[].via`).
+- `commands/perseveranza.md`, gli agenti `pf-*` e i README: lo strumento per i verbi del loop,
+  Bash per `test` e `ask`, `/pf` per l'utente. Dettagli, prove e limiti in
+  `docs/PIANO-MOD.md` ("Stato fase 3", "Correzioni dopo la verifica 3").
+
+#### Fase 4 della mod: il pacchetto
+
+- **`install.mjs`** carica il plugin con `CLAUDE_CODE_PLUGIN_DIRS` (vedi "Rotture"): copia la
+  cartella del plugin (il manifest), aggiunge la sua cartella alla lista nell'`env` di
+  `settings.json` lasciando le altre voci e le altre chiavi, toglie gli hook di impostazioni
+  1.x/2.x (solo un comando che esegue esattamente uno dei loro script:
+  `LEGACY_SETTINGS_HOOK_SCRIPTS` in `src/shell/legacy.mjs`), i file della 1.x e le copie 2.x di
+  comando e agenti (solo le nostre, riconosciute dal contenuto). Legge e controlla
+  `settings.json` prima di toccare qualunque cosa (non JSON, non un oggetto, `env` o la lista
+  di un tipo sbagliato, non scrivibile: rifiuta e non cambia niente). Al primo cambiamento ne fa
+  una copia che non sovrascrive più; lo scrive solo se cambia, con un rename, tenendo permessi,
+  BOM e link simbolico. Sostituisce o toglie solo una cartella sua: un marcatore
+  (`.perseveranza-install.json`, i file con la loro impronta) o, per la 2.x, soltanto file suoi;
+  rifiuta un checkout git, un link o una junction, il checkout da cui gira, un marcatore corrotto,
+  e all'installazione file non suoi. La copia si prepara a parte, si verifica e prende il posto
+  della vecchia con due rename; `settings.json` si scrive dopo; un'installazione interrotta si
+  ripara alla successiva. `--uninstall` toglie la voce (e la chiave, e `env`, se restano
+  vuote), i file del marcatore (non i tuoi) e gli avanzi.
+  Provato con un `claude -p` vero in una home temporanea: `/pf` e lo strumento rispondono,
+  `arm` trova la mod; dopo `--uninstall` `/pf` non c'è più.
+- **`manifest.mjs`** non dichiara più hook (`HOOK_SPECS` e le loro entrate tolti); un test
+  controlla che né il manifest né `install.mjs` ne dichiarino, e `test/packaging/install.test.mjs`
+  prova l'installazione in una home temporanea (installare, reinstallare, disinstallare, JSON
+  ostile, `settings.json` assente o non scrivibile, avanzi 1.x/2.x).
+- **Riferimenti controllati**: `test/packaging/references.test.mjs` verifica che ogni percorso,
+  verbo del CLI, di `/pf` e dello strumento, variabile, script npm, agente, link e ancora citati
+  da README, comando, agenti e prompt esistano.
+- **Il segno di vita resta giovane**: la mod lo riscrive alle chiamate di strumenti della
+  sessione (al più ogni 10 minuti) e la potatura non tocca mai un file di meno di un giorno.
+  Prima una sessione lunga perdeva il suo file dietro a cento `claude -p` più giovani, e il suo
+  `arm` rifiutava.
+- **`/pf runs show`** accetta gli id come li stampa `runs list` (`<progetto>/<data>`), con
+  una convalida stretta (al più una `/`, niente `..` o percorsi assoluti).
+- **Il bench** arma con `--no-mod-check` e senza `CLAUDE_CODE_SESSION_ID` nell'ambiente dei
+  suoi processi: lanciato da dentro una sessione di Claude Code non trova più la sessione
+  sbagliata.
+- Il test di `restore.mjs` che voleva "nessun Claude Code sopra" un processo del test accetta il
+  Claude Code vero sopra la suite (lanciata da una sessione, da una copia, la ricerca lo
+  raggiungeva): mai il processo di partenza né un `node` qualunque.
+- README (it/en) con la sezione della mod: cos'è, requisiti, installazione, uso, sicurezza,
+  risoluzione dei problemi, limiti, migrazione. `npm run test:mod` passa
+  `ENABLE_CLAUDEAI_MCP_SERVERS=0` ai suoi processi e nomina l'interruttore remoto quando è lui a
+  fermarlo.
+- **Correzioni dopo la verifica finale** (dettagli in `docs/PIANO-MOD.md`):
+  - `install.mjs` non cancella più una `<claude>/perseveranza` che non riconosce come sua:
+    prima la toglieva ricorsivamente, anche se era un checkout con lavoro non salvato. Il
+    marcatore, i rifiuti, il recupero delle interruzioni e il trattamento di `settings.json`
+    sono quelli descritti sopra. Un `settings.json` che è un link a un file inesistente ora è
+    rifiutato; prima il link veniva sostituito da un file.
+  - L'istante senza lock dello stato è descritto con la direzione giusta: può far perdere
+    token, mai contarli due volte, e su una CPU satura dura secondi (vedi "Limiti"). Un test
+    fissa la sequenza dei tre scrittori.
+  - I test che dipendevano dai tempi di una macchina carica ora aspettano i fatti: il verdetto
+    arriva dentro l'attesa del ponte, le durate sono quelle misurate dal ponte e il watchdog si
+    attende finché esce. Un figlio `node` che finisce senza scrivere nulla viene rilanciato.
+  - I test rimuovono le loro cartelle temporanee.
+- **Correzioni dopo la verifica dell'installatore** (manual-inst1, dettagli in
+  `docs/PIANO-MOD.md`). La pulizia dei residui 1.x/2.x riconosceva i file per nome o per un
+  contenuto approssimato, e poteva cancellare file dell'utente. Ora `install.mjs` **cancella
+  solo** (a) i file del suo marcatore ancora intatti, (b) i file vecchi identici byte per byte a
+  quelli di una release passata (`src/shell/legacy-hashes.mjs`, generata dalla storia git da
+  `scripts/legacy-hashes.mjs` e confrontata con git da `test/packaging/legacy-hashes.test.mjs`),
+  (c) gli avanzi di una sua esecuzione interrotta, riconosciuti dal file sentinella che ci
+  scrive per primo e solo se quel processo non c'è più. Tutto il resto lo **segnala**, mai lo
+  cancella. In concreto:
+  - i file in `~/.claude/hooks/` con il nome di un file 1.x restano se il contenuto non è
+    quello di una release (prima si cancellavano per nome);
+  - un agente `pf-*` in `~/.claude/agents/` che cita `.perseveranza/` (la cartella della 3.0,
+    quindi una copia personalizzata) non viene più preso per una copia 2.x;
+  - una cartella `perseveranza.old-*` o `perseveranza.tmp-*` non sua (senza sentinella, o con il
+    processo ancora vivo, o con nome e sentinella diversi) resta dov'è; una rimozione che non
+    riesce a togliere un file tiene marcatore e sentinella, così la successiva la finisce;
+  - modificare un file dell'installazione, disinstallare (il file resta, il marcatore se ne va)
+    e reinstallare non cancella più il file modificato: una cartella senza marcatore si
+    sostituisce solo se ogni file è di una release, altrimenti l'installazione rifiuta e lo dice.
+- **Lucchetto**: due `install.mjs` sulla stessa cartella di configurazione non girano insieme
+  (`<claude>/.perseveranza-install.lock`, una cartella creata in modo atomico con il pid del
+  proprietario). Il secondo aspetta fino a 10 s e poi si ferma spiegando cosa fare; un lucchetto
+  il cui processo non c'è più si riprende subito, uno di un processo vivo dopo 5 minuti (pid
+  riusato). Prima la pulizia di un'installazione cancellava la copia in preparazione dell'altra.
+- **`settings.json` modificato come testo** (seconda verifica dell'installatore,
+  manual-inst2): si scrive o si toglie la nostra voce e si tolgono gli hook vecchi, e ogni altro
+  byte resta com'era. Prima il file veniva riscritto: gli array in linea si espandevano,
+  `"a":1` diventava `"a": 1`, `-0`, `1.0`, `1E5` e `1e20` diventavano `0`, `1`, `100000` e
+  `100000000000000000000`, e dopo un `1e20` ogni `--uninstall` si rifiutava. Il risultato deve
+  dare esattamente le impostazioni attese, altrimenti si rifiuta (solo se una chiave da cambiare
+  è scritta due volte). Installare e disinstallare restituisce gli stessi byte, tranne: la voce
+  aggiunta è scritta come i membri accanto; il valore di `CLAUDE_CODE_PLUGIN_DIRS`, quando
+  cambia, è in JSON standard; un file vuoto diventa `{}` e un `"env": {}` vuoto già presente
+  sparisce.
+- La voce di `CLAUDE_CODE_PLUGIN_DIRS` si confronta sul **percorso reale**: la stessa cartella
+  scritta con un nome 8.3, una junction o `subst` non si aggiunge una seconda volta (Claude Code
+  caricava la mod due volte), e `--uninstall` toglie ogni grafia. Le altre voci della lista
+  restano come sono scritte, spazi compresi.
+- **La copia di sicurezza della 3.0** si chiama `settings.json.bak-perseveranza-3.0` e si fa
+  anche quando c'è il `settings.json.bak-perseveranza` della 2.x (che resta com'è): prima chi
+  veniva dalla 2.x non aveva nessuna copia del file di prima della 3.0. Non si scrive mai sopra
+  o attraverso qualcosa che ha già quel nome; se `settings.json` l'aveva creato l'installazione
+  non si fa nessuna copia e `--uninstall` lo cancella quando contiene solo la nostra voce.
+- **Un hook 1.x/2.x** si toglie da `settings.json` solo se lo script che esegue è ancora
+  loro (non c'è più, o è identico a una release): uno che esegue un loro script modificato resta
+  ed è elencato.
+- Se `~/.claude/hooks`, `agents` o `commands` è un **link o una junction**, lì dentro non si
+  cancella niente (prima una copia identica a una release veniva tolta dalla cartella di
+  destinazione, per esempio un repository di dotfiles).
+- Un **lucchetto con un proprietario corrotto** (pid o ora non numerici, JSON non valido, vuoto,
+  troppo grande, un'ora nel futuro) si tratta come uno senza proprietario: dopo pochi secondi si
+  riprende, e intanto il messaggio dice di toglierlo. Prima finiva con "Invalid time value".
+- La tabella delle impronte vecchie si calcola dai commit raggiungibili da 2.6.0
+  (`LEGACY_ANCHORS` in `scripts/legacy-hashes.mjs`), non da tutti i ref del clone: un ramo o uno
+  stash locale non la cambia più.
+- **Reinstallare la stessa versione non riscrive niente**: con il marcatore e ogni impronta
+  uguali alla sorgente non copia nulla (né impronte né date cambiano) e lo dice.
+- La CI clona con tutta la storia (`fetch-depth: 0`): i test ricostruiscono le installazioni
+  1.x e 2.x con i loro installatori, letti da git.
+
 ## 2.6.0
 
 La fase 1 di `docs/PIANO-GIUDICI-PARALLELI.md`: la verifica finale con più lenti, e due

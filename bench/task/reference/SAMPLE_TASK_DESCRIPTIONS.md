@@ -43,7 +43,7 @@ I test nascosti (14 casi) bloccano il comportamento attuale, inclusi i casi limi
 
 1. Per ogni mini-task: copiare il template in un workdir usa-e-getta, armare il loop
    (`--max 10 --external off --no-git-finish`, suite visibile come `--test`), scrivere
-   il `PROMPT_PACK` in `.omc-loop/prompts.json`, lanciare `claude -p` e attendere.
+   il `PROMPT_PACK` in `.perseveranza/prompts.json`, lanciare `claude -p` e attendere.
 2. Registrare in `submission.json`: `name`, `workdir`, `closed` (loop chiuso da solo),
    `iterations`, `escalated`, `max`.
 3. La leva di miglioramento tra le generazioni e' SOLO il `PROMPT_PACK` (vedi task.md):

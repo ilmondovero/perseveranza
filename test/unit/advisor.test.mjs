@@ -42,7 +42,7 @@ test('fix after a review: every combination of externals x advisor x attempt', (
           assert.ok(r.reason.includes('model=sonnet'), `${label}: the chosen model`);
           assert.ok(r.reason.includes('pf-advisor'), label);
           assert.ok(r.reason.includes('is NOT a finding and does NOT block'), label);
-          assert.ok(r.reason.includes('.omc-loop/notes.md'), label);
+          assert.ok(r.reason.includes('.perseveranza/notes.md'), label);
           assert.ok(r.reason.includes('ill-posed'), `${label}: the plan can be the problem`);
         } else assert.equal(entries[0].model, undefined);
       }
@@ -72,7 +72,7 @@ test('fix after the final verification: every combination of externals x advisor
         }
         if (again && advisor) {
           assert.ok(r.reason.includes('model=opus'), label);
-          assert.ok(r.reason.includes('.omc-loop/verify-12.json'), `${label}: the rejected rounds are passed to the advisor`);
+          assert.ok(r.reason.includes('.perseveranza/verify-12.json'), `${label}: the rejected rounds are passed to the advisor`);
         }
       }
     }
@@ -110,12 +110,12 @@ test('the advisor of the fix reads every failed attempt of the step; a pass forg
   s = { ...r1.state, phase: 'review', counters: { ...r1.state.counters, iterations: 6 } };
   const r2 = run(s, REJECT_REVIEW);
   assert.deepEqual(r2.state.priorReviews, ['review-4.json', 'review-6.json']);
-  assert.ok(r2.reason.includes('.omc-loop/review-4.json, .omc-loop/review-6.json'), 'both attempts named');
+  assert.ok(r2.reason.includes('.perseveranza/review-4.json, .perseveranza/review-6.json'), 'both attempts named');
   assert.ok(r2.reason.includes('NOT to propose again an approach that already failed'));
   // a missing outcome counted as a failure leaves no file: the pattern still points at them
   const r3 = run(mk({ phase: 'review', counters: { retries: 1 }, flags: { repeated: true } }));
   assert.equal(r3.outcome, 'missing-twice');
-  assert.ok(r3.reason.includes('.omc-loop/review-*.json'));
+  assert.ok(r3.reason.includes('.perseveranza/review-*.json'));
   // the step passes: the next step starts with a clean record
   const pass = run({ ...r2.state, phase: 'review' }, { artifacts: { review: '{"blocking":0}' } });
   assert.equal(pass.outcome, 'pass');
@@ -169,7 +169,7 @@ test('prompts: the advisor hints declare their placeholders, both packs carry th
     for (const key of ['hint-advisor-plan', 'hint-advisor-fix', 'hint-advisor-verify-fix']) {
       assert.equal(typeof prompts[key], 'string', key);
       for (const name of ['advisorFallback', 'advisorRef', 'advisorModel', 'advisorN']) assert.ok(prompts[key].includes(`{{${name}}}`), `${key} lacks {{${name}}}`);
-      assert.ok(prompts[key].includes('.omc-loop/notes.md'), key);
+      assert.ok(prompts[key].includes('.perseveranza/notes.md'), key);
     }
     for (const key of ['hint-advisor-fix', 'hint-advisor-verify-fix']) assert.ok(prompts[key].includes('{{priorAttempts}}'), key);
     assert.equal(typeof prompts['hint-advisor-fallback'], 'string');

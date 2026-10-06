@@ -1,9 +1,10 @@
-# stato locale del loop e della sessione OMC (mai da committare)
+# stato locale del loop (.perseveranza/ in ogni progetto, anche in questo: mai da committare)
+.perseveranza/
+
+# stato di altri strumenti locali
 .omc/
-.omc-loop/
 
 # config locali con segreti: la config vera vive FUORI dal repo (~/.perseveranza/config.json)
-.perseveranza/
 *.local.json
 config.local.json
 
@@ -13,3 +14,9 @@ minitask-runs/
 
 # bytecode Python (py_compile del bench)
 __pycache__/
+
+# written by Claude Code each time the mod is loaded with --plugin-dir (the e2e of the mod, a
+# developer's session): the type declarations of the version in use, and a tsconfig.json at the
+# root that extends them (only when the repository has none of its own)
+.claude-plugin/types/
+/tsconfig.json

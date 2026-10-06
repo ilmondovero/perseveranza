@@ -4,7 +4,9 @@ import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync, realpathSyn
 import { join } from 'node:path';
 import { project, cli, arm, fire, sessionStart, activity, readActivity, watchdog, readState, writeState, patchState, writePlan, writeArtifact, requestIdFrom, gate, journal, spawnSync, CLI, WATCHDOG, freshDir } from '../helpers/cli.mjs';
 import { spawn } from 'node:child_process';
-import { ROOT } from '../../src/shell/paths.mjs';
+import { ROOT, ARCHIVE_GATE_DIRNAME } from '../../src/shell/paths.mjs';
+import { currentVersion } from '../../src/update.mjs';
+import { alive } from '../../src/shell/watchdog.mjs';
 
 const PLAN = '- [ ] one\n- [ ] two\n';
 
@@ -96,7 +98,7 @@ test('advisor: the 2nd fix without externals carries the advisor hint with the a
   assert.equal(r.state.priorReviews.length, 2);
   for (const n of r.state.priorReviews) {
     assert.ok(existsSync(gate(p, n)), `${n} kept on disk for the advisor`);
-    assert.ok(r.reason.includes(`.omc-loop/${n}`), `${n} handed to the advisor`);
+    assert.ok(r.reason.includes(`.perseveranza/${n}`), `${n} handed to the advisor`);
   }
   const hints = journal(p).filter((e) => e.type === 'advisor-hint');
   assert.ok(hints.some((e) => e.slot === 'fix' && e.reason === 'no-external' && e.model === 'sonnet'), JSON.stringify(hints));
@@ -122,7 +124,7 @@ test('advisor: the 2nd fix without externals carries the advisor hint with the a
   assert.ok(journal(off).some((e) => e.type === 'advisor-hint' && e.slot === 'fix' && e.reason === 'off'));
 });
 
-test('kill switch via STOP file and OMC_LOOP_KILL, also on a corrupt state; run archived', () => {
+test('kill switch via STOP file and PERSEVERANZA_KILL, also on a corrupt state; run archived', () => {
   const p = project();
   arm(p);
   writeFileSync(gate(p, 'STOP'), '');
@@ -132,7 +134,7 @@ test('kill switch via STOP file and OMC_LOOP_KILL, also on a corrupt state; run 
   assert.ok(cli(p, 'runs').out.includes('killed'));
   const q = project();
   arm(q);
-  const r2 = fire(q, {}, { OMC_LOOP_KILL: '1' });
+  const r2 = fire(q, {}, { PERSEVERANZA_KILL: '1' });
   assert.equal(r2.state, null);
   const c = project();
   arm(c);
@@ -294,7 +296,7 @@ test('SessionStart hook: dormant, silent for the owner, a notice for a foreign s
   // another session, owner fired a moment ago: informed, not asked to take over
   const live = sessionStart(p, { session_id: 'B', source: 'startup' }).text;
   assert.ok(live.includes('driven by another session (session A'));
-  assert.ok(live.includes('do not touch .omc-loop/'));
+  assert.ok(live.includes('do not touch .perseveranza/'));
   assert.ok(!live.includes('ABANDONED'));
   // the owner silent for 20 h: the abandoned-loop question
   patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
@@ -309,7 +311,7 @@ test('SessionStart hook: dormant, silent for the owner, a notice for a foreign s
   assert.equal(stale.out.hookSpecificOutput.hookEventName, 'SessionStart');
   assert.ok(journal(p).some((e) => e.type === 'session' && e.event === 'seen' && e.to === 'B' && e.stale === true && e.kind === 'abandoned'));
   // custom threshold: 30 h makes the same loop look alive
-  assert.ok(!sessionStart(p, { session_id: 'B' }, { OMC_LOOP_STALE_MS: String(30 * 3600 * 1000) }).text.includes('ABANDONED'));
+  assert.ok(!sessionStart(p, { session_id: 'B' }, { PERSEVERANZA_STALE_MS: String(30 * 3600 * 1000) }).text.includes('ABANDONED'));
   // the state is never touched by the notice
   assert.equal(readState(p).owner.sessionId, 'A');
   // paused for 20 h: a human is expected, not an orphan
@@ -387,7 +389,8 @@ test('prompt pack: project override and language pack change the wording, header
   arm(p);
   writeFileSync(gate(p, 'prompts.json'), JSON.stringify({ prompts: { 'plan-write': 'CUSTOM PLAN {{LOOP}}' } }));
   const r = fire(p);
-  assert.ok(r.reason.startsWith('[perseveranza v2.'));
+  // the header carries the plugin's own version (plugin.json), never a pinned one
+  assert.ok(r.reason.startsWith(`[perseveranza v${currentVersion(ROOT)} `), r.reason.slice(0, 60));
   assert.ok(r.reason.includes('CUSTOM PLAN node "'));
   assert.equal(r.state.phase, 'plan');
   const q = project();
@@ -395,7 +398,7 @@ test('prompt pack: project override and language pack change the wording, header
   arm(q);
   const r2 = fire(q);
   assert.ok(r2.reason.includes('FASE: plan'), r2.reason.slice(0, 200));
-  assert.ok(r2.reason.startsWith('[perseveranza v2.'), 'header stays');
+  assert.ok(r2.reason.startsWith(`[perseveranza v${currentVersion(ROOT)} `), 'header stays');
   const bad = project();
   arm(bad);
   writeFileSync(gate(bad, 'prompts.json'), '{broken');
@@ -453,7 +456,7 @@ test('a consumed verdict is kept as review-<n>.json / verify-<n>.json and the fi
   const kept = gate(p, `review-${it}.json`);
   assert.ok(existsSync(kept), 'review-<n>.json kept');
   assert.equal(JSON.parse(readFileSync(kept, 'utf8')).findings[0].desc, 'wrong');
-  assert.ok(r.reason.includes(`.omc-loop/review-${it}.json`), r.reason);
+  assert.ok(r.reason.includes(`.perseveranza/review-${it}.json`), r.reason);
   assert.ok(journal(p).some((j) => j.type === 'verdict' && j.savedAs === `review-${it}.json` && j.details[0].desc === 'wrong'));
   // the history renders where it went
   assert.ok(cli(p, 'history').out.includes(`-> review-${it}.json`));
@@ -611,18 +614,18 @@ test('watchdog: alerts on real silence, re-sleeps on life, yields to a newer one
   fire(p, { session_id: 'A' });
   patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
   // 1 s threshold (the parse floor): the silence is real, the watchdog speaks at once
-  let r = watchdog(p, { OMC_LOOP_STALE_MS: '1000' });
+  let r = watchdog(p, { PERSEVERANZA_STALE_MS: '1000' });
   assert.equal(r.code, 0);
   let w = journal(p).find((e) => e.type === 'watchdog');
   assert.ok(w, 'journaled');
   assert.ok(w.silentMs > 19 * 3600 * 1000);
-  assert.equal(w.via, 'fire'); assert.equal(w.phase, 'implement'); assert.equal(w.notified, false, 'OMC_LOOP_NO_NOTIFY in the tests');
+  assert.equal(w.via, 'fire'); assert.equal(w.phase, 'implement'); assert.equal(w.notified, false, 'PERSEVERANZA_NO_NOTIFY in the tests');
   assert.ok(w.text.includes('Loop silent for 20h00m') && w.text.includes('phase implement, 0/2 steps') && w.text.includes('resume --takeover'), w.text);
   assert.ok(cli(p, 'history').out.includes('WATCHDOG: silent for 20h00m'));
   // life inside the turn: it re-sleeps until the activity is stale, then speaks about the delegation
   activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'pf-reviewer' } });
   const t0 = Date.now();
-  r = watchdog(p, { OMC_LOOP_STALE_MS: '1000' });
+  r = watchdog(p, { PERSEVERANZA_STALE_MS: '1000' });
   assert.ok(Date.now() - t0 >= 900, 'slept until the activity went stale');
   const ws = journal(p).filter((e) => e.type === 'watchdog');
   assert.equal(ws.length, 2);
@@ -632,13 +635,13 @@ test('watchdog: alerts on real silence, re-sleeps on life, yields to a newer one
   assert.ok(cli(p, 'history').out.includes('pf-reviewer delegated and not back'));
   // a newer watchdog owns the gate: this one exits without a word
   writeFileSync(gate(p, 'watchdog.json'), JSON.stringify({ pid: 999999, spawnedAt: new Date().toISOString() }));
-  r = watchdog(p, { OMC_LOOP_STALE_MS: '1000' });
+  r = watchdog(p, { PERSEVERANZA_STALE_MS: '1000' });
   assert.equal(r.code, 0);
   assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 2);
   writeFileSync(gate(p, 'watchdog.json'), '{broken');
   // paused: a human is expected, the watchdog has nothing to say
   cli(p, 'pause');
-  watchdog(p, { OMC_LOOP_STALE_MS: '1000' });
+  watchdog(p, { PERSEVERANZA_STALE_MS: '1000' });
   assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 2);
   cli(p, 'resume');
   // the summary keeps the alerts
@@ -648,43 +651,51 @@ test('watchdog: alerts on real silence, re-sleeps on life, yields to a newer one
   assert.equal(summary.watchdogAlerts.length, 2);
   assert.deepEqual(summary.watchdogAlerts[1].pending, ['pf-reviewer']);
   // disarmed: nothing to watch
-  assert.equal(watchdog(p, { OMC_LOOP_STALE_MS: '1000' }).code, 0);
+  assert.equal(watchdog(p, { PERSEVERANZA_STALE_MS: '1000' }).code, 0);
   // no gate dir at all: exits 2 without an argument, 0 with a missing one
   assert.equal(spawnSync(process.execPath, [WATCHDOG], { encoding: 'utf8', env: p.env }).status, 2);
 });
 
-test('the Stop hook and arm spawn ONE live watchdog per loop unless OMC_LOOP_NO_WATCHDOG; a foreign or pausing Stop spawns none', () => {
+test('the Stop hook and arm spawn ONE live watchdog per loop unless PERSEVERANZA_NO_WATCHDOG; a foreign or pausing Stop spawns none', () => {
   const p = project();
-  const env = { ...p.env }; delete env.OMC_LOOP_NO_WATCHDOG;
+  const env = { ...p.env }; delete env.PERSEVERANZA_NO_WATCHDOG;
   // a 1 s threshold makes the spawned watchdog speak and exit almost at once, leaving no stray process
-  env.OMC_LOOP_STALE_MS = '1000';
+  env.PERSEVERANZA_STALE_MS = '1000';
   const wait = (ms) => spawnSync(process.execPath, ['-e', `setTimeout(()=>{},${ms})`]);
   const r = spawnSync(process.execPath, [CLI, 'arm', 'spawned', '--external', 'off', '--no-git-finish'], { cwd: p.dir, encoding: 'utf8', env });
   assert.equal(r.code ?? r.status, 0, r.stdout + r.stderr);
   const wd = JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8'));
   assert.ok(wd.pid > 0 && wd.spawnedAt);
-  // the incumbent is alive (napping its second): a Stop right now spawns nothing
-  fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
-  assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, wd.pid, 'one live watchdog per loop');
+  // the waits below end as soon as their condition holds; their limit is only for a loaded
+  // machine, slow to start node
+  const until = (cond, ms = 60000) => { const end = Date.now() + ms; while (Date.now() < end && !cond()) wait(200); return cond(); };
   // give the detached watchdog its second to speak and leave
-  const until = Date.now() + 15000; // generous: a loaded CI runner is slow to start node, the loop leaves as soon as it can
-  while (Date.now() < until && !journal(p).some((e) => e.type === 'watchdog')) wait(200);
-  assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 1, 'the detached watchdog really runs and journals, once');
-  wait(300);
+  assert.ok(until(() => journal(p).some((e) => e.type === 'watchdog')), 'the detached watchdog really runs and journals');
+  assert.ok(until(() => !alive(wd.pid)), 'and then exits');
+  assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 1, 'once');
+  // a live incumbent: a Stop spawns nothing (a process that surely outlives the Stop stands
+  // for it; the 1 s watchdog itself may be gone before a slow Stop starts)
+  const incumbent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  const incumbentAt = new Date().toISOString();
+  try {
+    writeFileSync(gate(p, 'watchdog.json'), JSON.stringify({ pid: incumbent.pid, spawnedAt: incumbentAt }));
+    fire(p, { session_id: 'A' }, { PERSEVERANZA_NO_WATCHDOG: '', PERSEVERANZA_STALE_MS: '1000' });
+    assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, incumbent.pid, 'one live watchdog per loop');
+  } finally { incumbent.kill(); }
+  assert.ok(until(() => !alive(incumbent.pid)));
   // it exited: a foreign Stop still spawns nothing, the owner's Stop spawns a new one
-  fire(p, { session_id: 'B' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
-  assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, wd.pid, 'a foreign Stop spawns nothing');
-  fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
+  fire(p, { session_id: 'B' }, { PERSEVERANZA_NO_WATCHDOG: '', PERSEVERANZA_STALE_MS: '1000' });
+  assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, incumbent.pid, 'a foreign Stop spawns nothing');
+  fire(p, { session_id: 'A' }, { PERSEVERANZA_NO_WATCHDOG: '', PERSEVERANZA_STALE_MS: '1000' });
   const wd2 = JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8'));
-  assert.notEqual(wd2.pid, wd.pid, 'the incumbent is gone: a fresh one');
-  const until2 = Date.now() + 15000;
-  while (Date.now() < until2 && journal(p).filter((e) => e.type === 'watchdog').length < 2) wait(200);
+  assert.ok(wd2.pid > 0 && wd2.spawnedAt !== incumbentAt, 'the incumbent is gone: a fresh one');
+  assert.ok(until(() => journal(p).filter((e) => e.type === 'watchdog').length >= 2));
   assert.equal(journal(p).filter((e) => e.type === 'watchdog').length, 2);
-  wait(300);
+  assert.ok(until(() => !alive(wd2.pid)));
   // a Stop that pauses the loop (escalation) spawns none: a human is expected
   patchState(p, (s) => { s.phase = 'review'; s.counters.retries = 3; s.limits.maxRetries = 3; });
   writeArtifact(p, 'review.json', { blocking: 1 });
-  const paused = fire(p, { session_id: 'A' }, { OMC_LOOP_NO_WATCHDOG: '', OMC_LOOP_STALE_MS: '1000' });
+  const paused = fire(p, { session_id: 'A' }, { PERSEVERANZA_NO_WATCHDOG: '', PERSEVERANZA_STALE_MS: '1000' });
   assert.equal(paused.state.signals.paused, true);
   assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, wd2.pid, 'no watchdog for a paused loop');
 });
@@ -696,7 +707,7 @@ test('the test verb beats while the suite runs, so a long suite is not a silent 
   patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
   assert.ok(cli(p, 'status').out.includes('STALE'));
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, [CLI, 'test', '--', 'node -e "setTimeout(()=>{}, 3500)"'], { cwd: p.dir, encoding: 'utf8', env: { ...p.env, OMC_ACTIVITY_HEARTBEAT_MS: '1000' } });
+  const r = spawnSync(process.execPath, [CLI, 'test', '--', 'node -e "setTimeout(()=>{}, 3500)"'], { cwd: p.dir, encoding: 'utf8', env: { ...p.env, PERSEVERANZA_ACTIVITY_HEARTBEAT_MS: '1000' } });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const a = readActivity(p);
   assert.ok(a && a.tool.startsWith('test verb: node -e'), JSON.stringify(a));
@@ -734,10 +745,10 @@ test('the transcript is the third sign of life: recorded by the Stop hook, read 
   // the gap starts at the last sign of life: none here, the turn was writing
   fire(p, { session_id: 'A', transcript_path: transcript });
   assert.ok(!journal(p).some((e) => e.type === 'gap'));
-  // OMC_LOOP_RESTORE on: the hook looks for the Claude Code process above it. Under a plain
+  // PERSEVERANZA_RESTORE on: the hook looks for the Claude Code process above it. Under a plain
   // test runner there is none (0); under a Claude Code session running the suite it finds
   // that very session, with its start time: the walk works end to end either way.
-  fire(p, { session_id: 'A', transcript_path: transcript }, { OMC_LOOP_RESTORE: '1' });
+  fire(p, { session_id: 'A', transcript_path: transcript }, { PERSEVERANZA_RESTORE: '1' });
   const o = readState(p).owner;
   assert.ok(o.claudePid === 0 || (o.claudePid > 0 && typeof o.claudeStartedAt === 'string'), JSON.stringify(o));
 });
@@ -754,7 +765,7 @@ test('restore.mjs: what Claude Code looks like, the walk starts above the hook, 
   assert.equal(looksLikeClaude('claude', '/usr/local/bin/claude'), true);
   assert.equal(looksLikeClaude('node', 'node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'), true);
   assert.equal(looksLikeClaude('node.exe', 'node "C:\\Users\\x\\.claude\\plugins\\cache\\perseveranza\\perseveranza\\2.4.0\\src\\shell\\stop.mjs"'), false, 'the Stop hook of the installed plugin');
-  assert.equal(looksLikeClaude('node.exe', 'node C:\\x\\.claude\\plugins\\p\\src\\shell\\watchdog.mjs C:\\proj\\.omc-loop'), false, 'the watchdog');
+  assert.equal(looksLikeClaude('node.exe', 'node C:\\x\\.claude\\plugins\\p\\src\\shell\\watchdog.mjs C:\\proj\.perseveranza'), false, 'the watchdog');
   assert.equal(looksLikeClaude('node', 'node /home/x/.claude/mcp/some-server.js'), false, 'an MCP server under ~/.claude');
   assert.equal(looksLikeClaude('bash.exe', 'bash -c claude'), false);
   // a dummy that looks like the npm package
@@ -769,7 +780,14 @@ test('restore.mjs: what Claude Code looks like, the walk starts above the hook, 
   assert.equal(sameProcess({ ...info, startedAt: null }, info.startedAt), false);
   assert.equal(sameProcess(info, info.startedAt), true);
   assert.equal(sameProcess(info, new Date(Date.parse(info.startedAt) - 60_000).toISOString()), false, 'a different start: a reused pid');
-  assert.equal(findClaudeProcess(dummy.pid), null, 'the starting process is never a candidate');
+  // The walk goes up from the parent of the pid it is given. Run inside a Claude Code session
+  // (a Bash call of it), the suite has a real Claude Code above it, and a walk from below may
+  // reach it within its 12 levels: that one is right to find. So: never the starting process,
+  // never a plain node parent, and if anything, the Claude Code above this very test.
+  const around = findClaudeProcess(process.pid);
+  const above = (found) => found === null || (around !== null && found.pid === around.pid);
+  const fromDummy = findClaudeProcess(dummy.pid);
+  assert.ok(above(fromDummy) && (!fromDummy || fromDummy.pid !== dummy.pid), `the starting process is never a candidate: ${JSON.stringify(fromDummy)}`);
   const child = spawn(process.execPath, ['-e', `require('child_process').spawnSync(process.execPath, ['-e', 'setTimeout(()=>{}, 4000)'], { stdio: 'ignore' })`], { stdio: 'ignore' });
   spawned.push(child);
   await new Promise((r) => setTimeout(r, 1200));
@@ -777,7 +795,8 @@ test('restore.mjs: what Claude Code looks like, the walk starts above the hook, 
     ? spawnSync('powershell', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${child.pid} }).ProcessId`], { encoding: 'utf8' })
     : spawnSync('pgrep', ['-P', String(child.pid)], { encoding: 'utf8' })).stdout || '').trim().split(/\s+/)[0];
   if (grandchild) {
-    assert.equal(findClaudeProcess(Number(grandchild)), null, 'plain node parents: nothing found');
+    const fromGrandchild = findClaudeProcess(Number(grandchild));
+    assert.ok(above(fromGrandchild), `plain node parents: none of them found: ${JSON.stringify(fromGrandchild)}`);
   }
   assert.equal(processInfo(process.pid).alive, true);
   assert.equal(killTree(dummy.pid), true);
@@ -787,9 +806,9 @@ test('restore.mjs: what Claude Code looks like, the walk starts above the hook, 
   // re-arm: a live incumbent is kept unless `replace` is asked (the watchdog re-arming
   // after a restore is itself the incumbent)
   const { spawnWatchdog, alive } = await import('../../src/shell/watchdog.mjs');
-  const emptyGate = join(freshDir('prs-gate-'), '.omc-loop');
+  const emptyGate = join(freshDir('prs-gate-'), '.perseveranza');
   mkdirSync(emptyGate, { recursive: true });
-  const envOn = { ...process.env, OMC_LOOP_NO_WATCHDOG: '' };
+  const envOn = { ...process.env, PERSEVERANZA_NO_WATCHDOG: '' };
   const incumbent = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
   spawned.push(incumbent);
   await new Promise((r) => setTimeout(r, 500));
@@ -801,7 +820,7 @@ test('restore.mjs: what Claude Code looks like, the walk starts above the hook, 
   incumbent.kill();
   await new Promise((r) => setTimeout(r, 1500)); // no state.json in that gate: the new one exits at once
   assert.equal(alive(fresh), false, 'a watchdog on an unarmed gate leaves');
-  assert.equal(spawnWatchdog(emptyGate, { OMC_LOOP_NO_WATCHDOG: '1' }), 0);
+  assert.equal(spawnWatchdog(emptyGate, { PERSEVERANZA_NO_WATCHDOG: '1' }), 0);
   const env = cleanEnv({ PATH: 'x', CLAUDE_CONFIG_DIR: 'keep', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_MESSAGING_SOCKET: 's', CLAUDE_CODE_BRIDGE_SESSION_ID: 'b', CLAUDE_CODE_SESSION_ID: 'i', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'gone' });
   assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CONFIG_DIR', 'PATH'], 'everything Claude Code sets about its own session is stripped; the user config dir is not');
 });
@@ -833,7 +852,7 @@ test('a replacement watchdog gives the restored session a fresh startup interval
   assert.notEqual(future.via, 'restore');
 });
 
-test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens the session with the restore prompt, guards pid reuse and the restore limit', async (t) => {
+test('watchdog with PERSEVERANZA_RESTORE: kills the recorded Claude process, reopens the session with the restore prompt, guards pid reuse and the restore limit', async (t) => {
   // a failed assertion must not leave the spawned processes alive: they would keep the test
   // file (and the whole e2e run) from ever exiting
   const spawned = [];
@@ -846,8 +865,8 @@ test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens
   // a fake claude that records how it was called
   const out = join(freshDir('prs-fake-'), 'call.json');
   const fake = join(freshDir('prs-fake-'), 'claude.mjs');
-  writeFileSync(fake, `import { writeFileSync } from 'node:fs'; writeFileSync(process.env.OMC_FAKE_OUT, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null, sock: process.env.CLAUDE_CODE_MESSAGING_SOCKET ?? null }));`);
-  const env = { OMC_LOOP_RESTORE: '1', OMC_LOOP_RESTORE_AFTER_MS: '1000', OMC_LOOP_CLAUDE_BIN: fake, OMC_FAKE_OUT: out, OMC_LOOP_STALE_MS: '1000', CLAUDE_CODE_CHILD_SESSION: 'inherited', CLAUDE_CODE_MESSAGING_SOCKET: 'inherited' };
+  writeFileSync(fake, `import { writeFileSync } from 'node:fs'; writeFileSync(process.env.FAKE_CLAUDE_OUT, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), child: process.env.CLAUDE_CODE_CHILD_SESSION ?? null, sock: process.env.CLAUDE_CODE_MESSAGING_SOCKET ?? null }));`);
+  const env = { PERSEVERANZA_RESTORE: '1', PERSEVERANZA_RESTORE_AFTER_MS: '1000', PERSEVERANZA_CLAUDE_BIN: fake, FAKE_CLAUDE_OUT: out, PERSEVERANZA_STALE_MS: '1000', CLAUDE_CODE_CHILD_SESSION: 'inherited', CLAUDE_CODE_MESSAGING_SOCKET: 'inherited' };
   // the hung "Claude Code": a dummy whose command line looks like the npm package
   const dummy = spawn(process.execPath, ['-e', '/* @anthropic-ai/claude-code/cli.js dummy */ setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
   spawned.push(dummy);
@@ -868,7 +887,7 @@ test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens
   assert.equal(w.restore.killed, true); assert.equal(w.restore.wasAlive, true); assert.equal(w.restore.how, 'direct');
   assert.equal(processInfo(dummy.pid).alive, false, 'the hung process tree is gone');
   assert.ok(w.text.includes('Terminated the hung session; reopened it'), w.text);
-  assert.equal(w.restore.watchdog, 0, 'the re-arm ran (OMC_LOOP_NO_WATCHDOG=1 in the tests makes it a no-op: see the spawnWatchdog test)');
+  assert.equal(w.restore.watchdog, 0, 'the re-arm ran (PERSEVERANZA_NO_WATCHDOG=1 in the tests makes it a no-op: see the spawnWatchdog test)');
   const until = Date.now() + 10000;
   while (Date.now() < until && !existsSync(out)) await new Promise((res) => setTimeout(res, 100));
   assert.ok(existsSync(out), 'the fake claude was launched');
@@ -952,7 +971,7 @@ test('watchdog with OMC_LOOP_RESTORE: kills the recorded Claude process, reopens
   patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = alive2.pid; s.owner.claudeStartedAt = processInfo(alive2.pid).startedAt; });
   writeFileSync(gate(p, 'watchdog.json'), '');
   const before = existsSync(out) ? readFileSync(out, 'utf8') : '';
-  watchdog(p, { OMC_LOOP_STALE_MS: '1000', OMC_LOOP_CLAUDE_BIN: fake, OMC_FAKE_OUT: out });
+  watchdog(p, { PERSEVERANZA_STALE_MS: '1000', PERSEVERANZA_CLAUDE_BIN: fake, FAKE_CLAUDE_OUT: out });
   const w6 = journal(p).filter((e) => e.type === 'watchdog').pop();
   assert.equal(w6.action, 'alerted'); assert.equal(w6.restore, null);
   assert.ok(w6.text.includes('Check the session'));
@@ -1071,13 +1090,13 @@ test('reconciliation through the real hooks: mutating tools refused, inspection 
   patchState(p, (s) => { s.signals.interrupted = { at: new Date().toISOString(), silentMs: 31 * 60 * 1000, phase: 'implement', pending: ['pf-reviewer'] }; });
   const deny = (r) => { const o = JSON.parse(r.raw); return o.hookSpecificOutput.permissionDecision === 'deny' ? o.hookSpecificOutput.permissionDecisionReason : null; };
   // the one write the reconciliation exists to produce is allowed, in every path shape
-  for (const file_path of [join(p.dir, '.omc-loop', 'reconcile.json'), '.omc-loop/reconcile.json', `${p.dir.replace(/\\/g, '/')}/.omc-loop/reconcile.json`]) {
+  for (const file_path of [join(p.dir, '.perseveranza', 'reconcile.json'), '.perseveranza/reconcile.json', `${p.dir.replace(/\\/g, '/')}/.perseveranza/reconcile.json`]) {
     assert.equal(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path, content: '{}' } }).raw, '', `allowed: Write ${file_path}`);
     assert.equal(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path } }).raw, '', `allowed: Edit ${file_path}`);
   }
-  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(p.dir, '.omc-loop', 'plan.md') } })), 'any other file is refused');
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(p.dir, '.perseveranza', 'plan.md') } })), 'any other file is refused');
   // refused: edits, writes, delegations, mutating and chained commands
-  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'x' } })).includes('Edit is refused until .omc-loop/reconcile.json'));
+  assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'x' } })).includes('Edit is refused until .perseveranza/reconcile.json'));
   assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: 'x' } })));
   assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'pf-executor' } })));
   assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })).includes('only read-only commands'));
@@ -1091,7 +1110,7 @@ test('reconciliation through the real hooks: mutating tools refused, inspection 
   }
   assert.ok(deny(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'PowerShell', tool_input: { command: 'Get-ChildItem *.mjs | ForEach-Object { $_.Delete() }' } })), 'no scriptblocks');
   // allowed: inspection, filters, the read-only verbs, a format string with angle brackets, a path with spaces
-  for (const command of ['git status', 'git diff --stat', 'git log --oneline -5 | head -3', 'cat .omc-loop/notes.md', 'tasklist | findstr node', 'ls -la', `node "${CLI}" status`, 'Get-Process node | Select-Object Id', 'git log --pretty=format:"%h %an <%ae>" -5', 'node "C:/Program Files/omc/src/cli/omc-loop.mjs" history --tail 5', 'grep -rn foo src/', 'rg foo | head', 'sed -n 1,20p f', 'git branch --show-current', 'git log --oneline | grep -i del']) {
+  for (const command of ['git status', 'git diff --stat', 'git log --oneline -5 | head -3', 'cat .perseveranza/notes.md', 'tasklist | findstr node', 'ls -la', `node "${CLI}" status`, 'Get-Process node | Select-Object Id', 'git log --pretty=format:"%h %an <%ae>" -5', 'node "C:/Program Files/tools/src/cli/perseveranza.mjs" history --tail 5', 'grep -rn foo src/', 'rg foo | head', 'sed -n 1,20p f', 'git branch --show-current', 'git log --oneline | grep -i del']) {
     const r = activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: command.startsWith('Get-') ? 'PowerShell' : 'Bash', tool_input: { command } });
     assert.equal(r.raw, '', `allowed: ${command}`);
   }
@@ -1105,7 +1124,7 @@ test('reconciliation through the real hooks: mutating tools refused, inspection 
   assert.ok(r.reason.includes('RECONCILIATION (after a restore)'), r.reason);
   assert.equal(r.state.phase, 'implement');
   // the file, written THROUGH the hook's permission (the harness only mirrors what Write would do)
-  assert.equal(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(p.dir, '.omc-loop', 'reconcile.json'), content: '{}' } }).raw, '');
+  assert.equal(activity(p, { session_id: 'A', hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: join(p.dir, '.perseveranza', 'reconcile.json'), content: '{}' } }).raw, '');
   writeArtifact(p, 'reconcile.json', { disposition: 'partial', running: [], next: 'implement', summary: 'one file of two edited' });
   r = fire(p, { session_id: 'A' });
   assert.equal(r.state.phase, 'implement');
@@ -1124,12 +1143,12 @@ test('reconciliation through the real hooks: mutating tools refused, inspection 
   assert.ok(readFileSync(gate(p, 'ESCALATION.md'), 'utf8').includes('node server.js --port 3000'));
 });
 
-// the archived .omc-loop of the only run in a test home
+// the archived loop folder of the only run in a test home
 function archivedGate(p) {
   const base = join(p.home, 'runs');
   const proj = readdirSync(base)[0];
   const stamp = readdirSync(join(base, proj))[0];
-  return join(base, proj, stamp, 'omc-loop');
+  return join(base, proj, stamp, ARCHIVE_GATE_DIRNAME);
 }
 
 // plan -> one reviewed step -> claim -> cleanup -> final-verify, returning the last fire
@@ -1153,7 +1172,7 @@ test('a final verification by three lenses through the real hook: a missing lens
   assert.deepEqual(r.state.verdictLenses, ['correctness', 'security', 'tests']);
   const id = requestIdFrom(r.reason);
   assert.equal(id, r.state.verdictRequestId, r.reason);
-  for (const l of ['correctness', 'security', 'tests']) assert.ok(r.reason.includes(`.omc-loop/verify-${l}.json with requestId ${id}`), `${l}: ${r.reason}`);
+  for (const l of ['correctness', 'security', 'tests']) assert.ok(r.reason.includes(`.perseveranza/verify-${l}.json with requestId ${id}`), `${l}: ${r.reason}`);
   assert.ok(cli(p, 'status').out.includes('lenses:      expected correctness, security, tests; arrived none'));
   // two lenses write, one (the security verifier, launched in the background) does not
   writeArtifact(p, 'verify-correctness.json', { requestId: id, lens: 'correctness', pass: true, findings: [] });
@@ -1195,7 +1214,7 @@ test('lenses through the real hook: a lens missing twice rejects, the merged fin
   assert.equal(r.state.counters.finalFails, 1);
   const kept = r.state.priorVerifies[0];
   assert.match(kept, /^verify-\d+\.json$/);
-  assert.ok(r.reason.includes(`.omc-loop/${kept}`), r.reason);
+  assert.ok(r.reason.includes(`.perseveranza/${kept}`), r.reason);
   const doc = JSON.parse(readFileSync(gate(p, kept), 'utf8'));
   assert.equal(doc.result, 'missing-twice');
   assert.deepEqual(doc.lenses.missing, ['tests']);
@@ -1210,7 +1229,7 @@ test('lenses through the real hook: a lens missing twice rejects, the merged fin
   cli(p, 'claim-done');
   r = fire(p);
   assert.equal(r.state.phase, 'final-verify', r.reason);
-  assert.ok(r.reason.includes(`their findings are in .omc-loop/${kept}`), r.reason);
+  assert.ok(r.reason.includes(`their findings are in .perseveranza/${kept}`), r.reason);
   // an agent that wrote verify.json for the round (it did not read the lenses): lens-fallback
   writeArtifact(p, 'verify.json', { requestId: requestIdFrom(r.reason), pass: true });
   r = fire(p);

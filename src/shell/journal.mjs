@@ -1,4 +1,4 @@
-// The run journal: .omc-loop/journal.jsonl, one JSON object per line, append-only.
+// The run journal: .perseveranza/journal.jsonl, one JSON object per line, append-only.
 // Never throws: a journal that cannot be written must not break the hook.
 import { appendFileSync, readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -6,9 +6,16 @@ import { formatAge } from '../core/time.mjs';
 
 export const JOURNAL_FILE = 'journal.jsonl';
 
+// Who ran the verbs of this process: 'tool' (the mod's `perseveranza` tool) or 'command' (the
+// /pf command), set once by the CLI from PERSEVERANZA_VIA; every line this process
+// journals then carries it (`via`), unless the line says its own.
+let processVia = null;
+export const JOURNAL_VIAS = ['tool', 'command'];
+export function setJournalVia(via) { processVia = JOURNAL_VIAS.includes(via) ? via : null; }
+
 export function appendJournal(gateDir, entry) {
   try {
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...(processVia ? { via: processVia } : {}), ...entry });
     appendFileSync(join(gateDir, JOURNAL_FILE), `${line}\n`);
     return true;
   } catch { return false; }
@@ -87,6 +94,7 @@ export function formatEntry(e) {
     case 'archive': return `${ts} | archived to ${e.dir}`;
     case 'signal': return `${ts} | ${e.verb}${e.value ? ` ${e.value}` : ''}`;
     case 'note': return `${ts} | ${e.text}`;
+    case 'mod-fault': return `${ts} | MOD FAULT: ${e.unreadable ? 'a marker that cannot be read' : `${e.hook || 'classic.Stop'} could not reach its helper${e.error ? ` (${e.error})` : ''}${e.at ? ` at ${String(e.at).replace('T', ' ').slice(0, 19)}` : ''}, ${e.recovery ? 'recovery asked' : 'the session was let stop'}`}`;
     default: return `${ts} | ${e.type}${e.raw ? ` ${e.raw}` : ''}`;
   }
 }

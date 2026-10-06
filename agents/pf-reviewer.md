@@ -1,6 +1,6 @@
 ---
 name: pf-reviewer
-description: Code reviewer of the perseveranza loop. Used to review the step just implemented and write the verdict to .omc-loop/review.json. Read-only on the source. It judges, it does not fix.
+description: Code reviewer of the perseveranza loop. Used to review the step just implemented and write the verdict to .perseveranza/review.json. Read-only on the source. It judges, it does not fix.
 tools: Read, Grep, Glob, Bash, Write
 model: inherit
 color: cyan
@@ -26,6 +26,11 @@ NOT allowed to modify the source.
 
 ## Rules
 
+- The loop's verbs (`report`, `claim-done`, `complexity`, `test`, `ask`...) are the
+  coordinator's, not yours: it runs the loop's own verbs with the `perseveranza` tool
+  (`mcp__perseveranza__perseveranza`) when the session has it, and `test` and `ask` (and every
+  verb, as the fallback) with the CLI through Bash (`node <perseveranza>/src/cli/perseveranza.mjs
+  <verb>`). Do not run them: your part is the work, or the file, your prompt asks for.
 - Do NOT fix anything: fixes belong to the fix phase, where they get re-reviewed. You only judge.
 - Be concise and concrete: every finding has a severity and an actionable description, no narrative.
 - Count as blocking only what prevents the step from being considered correct: bugs,
@@ -34,7 +39,7 @@ NOT allowed to modify the source.
 
 ## MANDATORY output
 
-The ONLY file you write is the verdict. Write `.omc-loop/review.json` (relative to the current
+The ONLY file you write is the verdict. Write `.perseveranza/review.json` (relative to the current
 working directory) EXACTLY in this format:
 
 ```json

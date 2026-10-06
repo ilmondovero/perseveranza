@@ -6,7 +6,12 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-export const GATE_DIRNAME = '.omc-loop';
+// The loop's folder in a project (state, plan, notes, journal, verdicts). Not to be confused
+// with home(): ~/.perseveranza is the user's (config, runs archive), and `arm` refuses a
+// project whose loop folder would be that one (a project rooted in the home directory).
+export const GATE_DIRNAME = '.perseveranza';
+// The loop folder's name inside an archived run: <runs>/<project>/<stamp>/loop/.
+export const ARCHIVE_GATE_DIRNAME = 'loop';
 
 export function home(env = process.env) {
   return env.PERSEVERANZA_HOME || join(homedir(), '.perseveranza');
@@ -33,5 +38,5 @@ export function gatePaths(cwd) {
 
 // The command Claude runs for the verbs (used inside injected instructions).
 export function loopCommand(root = ROOT) {
-  return `node "${join(root, 'src', 'cli', 'omc-loop.mjs')}"`;
+  return `node "${join(root, 'src', 'cli', 'perseveranza.mjs')}"`;
 }

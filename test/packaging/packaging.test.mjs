@@ -1,14 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { ROOT } from '../../src/shell/paths.mjs';
-import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, ALL_FILES, HOOK_ENTRY, SESSION_HOOK_ENTRY, ACTIVITY_HOOK_ENTRY, HOOK_SPECS, CLI_ENTRY } from '../../manifest.mjs';
+import * as manifest from '../../manifest.mjs';
+import { RUNTIME_FILES, AGENT_FILES, COMMAND_FILES, PLUGIN_FILES, ALL_FILES, CLI_ENTRY, MOD_ENTRY, MOD_FILES } from '../../manifest.mjs';
 import { toMarkdown } from '../../src/core/transitions.mjs';
 import { validatePack, missingKeys, PROMPT_KEYS, PROMPT_EXPECTED, DEFAULT_PROMPTS } from '../../src/core/prompts.mjs';
-import { VERBS } from '../../src/cli/omc-loop.mjs';
+import { VERBS } from '../../src/cli/perseveranza.mjs';
+import { cmpSemver } from '../../src/update.mjs';
 
 function walk(dir, out = []) {
   for (const n of readdirSync(dir)) {
@@ -30,32 +32,58 @@ test('every runtime file under src/ and packs/ is in the manifest', () => {
   for (const f of onDisk) assert.ok(RUNTIME_FILES.includes(f), `${f} is not in manifest.mjs`);
 });
 
-test('hooks.json is exactly the manifest HOOK_SPECS table (entries, matchers, timeouts)', () => {
+test('hooks.json names the mod and nothing else: no settings hook is registered by the plugin (never two drivers)', () => {
   const h = JSON.parse(readFileSync(join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
-  const flat = [];
-  for (const [event, groups] of Object.entries(h.hooks)) {
-    for (const g of groups) for (const c of g.hooks) flat.push({ event, matcher: g.matcher ?? '', command: c.command, timeout: c.timeout, type: c.type });
+  assert.deepEqual(Object.keys(h).sort(), ['description', 'modules']);
+  assert.deepEqual(h.modules, ['./register.js']);
+  assert.equal(`hooks/${h.modules[0].slice(2)}`, MOD_ENTRY);
+  assert.ok(!('hooks' in h), 'no classic hook (Stop, SessionStart, PreToolUse, PostToolUse, SubagentStop)');
+  for (const event of ['Stop', 'SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop']) assert.ok(!readFileSync(join(ROOT, 'hooks', 'hooks.json'), 'utf8').includes(`"${event}"`), event);
+});
+
+test('no classic hook is declared anywhere: not by the manifest, not by install.mjs (the mod alone drives the loop)', () => {
+  for (const name of ['HOOK_SPECS', 'HOOK_ENTRY', 'SESSION_HOOK_ENTRY', 'ACTIVITY_HOOK_ENTRY']) assert.ok(!(name in manifest), `manifest exports ${name}`);
+  const install = readLf(join(ROOT, 'install.mjs')).replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(!/HOOK_SPECS|hooks\[[^\]]*\]\.push|\.hooks\s*\?\?=|type:\s*'command'/.test(install), 'install.mjs writes no settings hook');
+  assert.ok(install.includes("'CLAUDE_CODE_PLUGIN_DIRS'"));
+  // what it writes, for real: test/packaging/install.test.mjs (a settings.json with no "hooks")
+});
+
+// The relative imports of a module file (static import declarations; a hooks module may have no other).
+const importsOf = (text) => [...text.matchAll(/^\s*import\s[^;]*?from\s+['"]([^'"]+)['"]/gm), ...text.matchAll(/^\s*import\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+
+test('the mod: every file under hooks/ is in the manifest, and every file it imports is shipped', () => {
+  const onDisk = walk(join(ROOT, 'hooks')).map(rel).filter((f) => f !== 'hooks/hooks.json');
+  assert.deepEqual(onDisk.sort(), [...MOD_FILES].sort());
+  for (const f of MOD_FILES) assert.ok(PLUGIN_FILES.includes(f), f);
+  const shipped = new Set([...RUNTIME_FILES, ...PLUGIN_FILES]);
+  const seen = new Set();
+  const visit = (file) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    assert.ok(shipped.has(file), `${file} is reached by the mod but not shipped`);
+    for (const spec of importsOf(readFileSync(join(ROOT, file), 'utf8'))) {
+      if (spec === 'claude-code') continue;
+      assert.ok(spec.startsWith('./') || spec.startsWith('../'), `${file}: a hooks module imports only relative paths (${spec})`);
+      visit(join(dirname(file), spec).replaceAll('\\', '/'));
+    }
+  };
+  visit(MOD_ENTRY);
+  assert.ok(seen.has('src/core/subagents.mjs'), 'the mod reuses the pure core');
+  // what the mod reaches runs with no Node API and no timer globals
+  for (const file of seen) {
+    const text = readFileSync(join(ROOT, file), 'utf8').replace(/\/\/.*$/gm, '');
+    assert.ok(!/from\s+['"]node:/.test(text), `${file} imports node:`);
+    assert.ok(!/process\.(env|cwd|exit|argv|platform)|require\(|setTimeout\(|setInterval\(|import\(/.test(text), `${file} uses a Node API, a timer global or a dynamic import`);
   }
-  assert.equal(flat.length, HOOK_SPECS.length);
-  for (const spec of HOOK_SPECS) {
-    const found = flat.find((f) => f.event === spec.event && f.matcher === spec.matcher);
-    assert.ok(found, `${spec.event}/${spec.matcher} missing from hooks.json`);
-    assert.equal(found.type, 'command');
-    assert.ok(found.command.includes(`\${CLAUDE_PLUGIN_ROOT}/${spec.entry}`), `${spec.event} command`);
-    assert.equal(found.timeout, spec.timeout);
-    assert.ok(RUNTIME_FILES.includes(spec.entry), `${spec.entry} not shipped`);
-  }
-  assert.equal(HOOK_SPECS.find((s) => s.event === 'Stop').timeout, 120, 'the Stop deadline the shell keeps a margin from');
-  assert.ok(HOOK_SPECS.filter((s) => s.event !== 'Stop').every((s) => s.timeout <= 30), 'every other hook is short');
-  assert.equal(HOOK_SPECS.find((s) => s.event === 'PreToolUse').matcher, 'Agent|Task|Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit', 'delegations, and every tool a reconciliation must refuse');
-  assert.ok(!/Read|Grep|Glob/.test(HOOK_SPECS.find((s) => s.event === 'PostToolUse').matcher), 'the cheap, frequent tools do not pay for a heartbeat');
-  assert.equal(HOOK_ENTRY, 'src/shell/stop.mjs'); assert.equal(SESSION_HOOK_ENTRY, 'src/shell/session-start.mjs'); assert.equal(ACTIVITY_HOOK_ENTRY, 'src/shell/activity-hook.mjs');
 });
 
 test('plugin.json, package.json and the README badge agree on the version', () => {
   const plugin = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
   assert.equal(plugin.version, pkg.version);
+  // the 3.0 names and the mod: the bench refuses an engine below 3.0.0
+  assert.ok(cmpSemver(plugin.version, '3.0.0') >= 0, plugin.version);
   for (const readme of ['README.md', 'README.en.md']) {
     const text = readFileSync(join(ROOT, readme), 'utf8');
     assert.ok(text.includes(`versione-${plugin.version}-`) || text.includes(`version-${plugin.version}-`), `${readme} badge != ${plugin.version}`);
@@ -68,7 +96,7 @@ test('the command references the CLI entry and every verb it documents exists', 
   for (const v of ['arm', 'test', 'report', 'complexity', 'claim-done', 'ask', 'pause', 'resume', 'disarm', 'status']) {
     assert.ok(text.includes(v), `command does not mention verb ${v}`);
   }
-  for (const m of text.matchAll(/omc-loop\.mjs"? (\w[\w-]*)/g)) {
+  for (const m of text.matchAll(/perseveranza.mjs"? (\w[\w-]*)/g)) {
     if (m[1] === 'and') continue;
     assert.ok(VERBS.includes(m[1]) || m[1] === '<verb>', `command mentions unknown verb ${m[1]}`);
   }
@@ -101,7 +129,7 @@ test('the advisor agent ships: consultative, read-only, one free-text file, no v
   assert.ok(/^tools: Read, Grep, Glob, Bash, Write$/m.test(fm));
   assert.ok(/^model: inherit$/m.test(fm));
   assert.ok(/^effort: high$/m.test(fm));
-  assert.ok(text.includes('.omc-loop/advisor-<slot>-<n>.md'));
+  assert.ok(text.includes('.perseveranza/advisor-<slot>-<n>.md'));
   assert.ok(text.includes('No JSON, no request id, no verdict'));
   assert.ok(text.includes('NOT allowed to modify'));
   for (const section of ['Diagnosis / critique', 'The 3 main risks', 'What I would change', 'What I could not verify']) assert.ok(text.includes(section), section);
@@ -163,62 +191,14 @@ test('the final verification by lenses: prompts in both languages hand out the l
   assert.deepEqual(lensless.missingPlaceholders, [{ key: 'final-verify-lenses', placeholder: 'lensList' }]);
   // the verifier agent knows the lens files
   const verifier = readLf(join(ROOT, AGENT_FILES.find((a) => a.endsWith('pf-verifier.md'))));
-  assert.ok(verifier.includes('## Lenses') && verifier.includes('.omc-loop/verify-<lens>.json') && verifier.includes('"lens": "<your lens>"'));
-});
-
-test('install.mjs copies exactly the manifest, registers the hook, and uninstalls cleanly', () => {
-  const cdir = mkdtempSync(join(tmpdir(), 'prs-claude-'));
-  mkdirSync(join(cdir, 'hooks'), { recursive: true });
-  writeFileSync(join(cdir, 'hooks', 'loop-drive.mjs'), '// v1 leftover');
-  writeFileSync(join(cdir, 'settings.json'), JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node "/old/hooks/loop-drive.mjs"' }] }] }, keep: true }));
-  const r = spawnSync(process.execPath, [join(ROOT, 'install.mjs'), '--claude-dir', cdir], { encoding: 'utf8' });
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  for (const f of [...RUNTIME_FILES, ...PLUGIN_FILES]) assert.ok(existsSync(join(cdir, 'perseveranza', f)), f);
-  assert.ok(!existsSync(join(cdir, 'hooks', 'loop-drive.mjs')), 'v1 leftover removed');
-  const st = JSON.parse(readFileSync(join(cdir, 'settings.json'), 'utf8'));
-  assert.equal(st.keep, true);
-  assert.equal(st.hooks.Stop.length, 1);
-  assert.ok(st.hooks.Stop[0].hooks[0].command.replaceAll('\\', '/').includes(HOOK_ENTRY));
-  assert.equal(st.hooks.Stop[0].hooks[0].timeout, 120);
-  for (const spec of HOOK_SPECS) {
-    const group = st.hooks[spec.event].find((g) => g.matcher === spec.matcher);
-    assert.ok(group, `${spec.event}/${spec.matcher} registered`);
-    assert.ok(group.hooks[0].command.replaceAll('\\', '/').includes(spec.entry));
-    assert.equal(group.hooks[0].timeout, spec.timeout);
-  }
-  assert.equal(st.hooks.SessionStart.length, 1);
-  const cmd = readFileSync(join(cdir, 'commands', 'perseveranza.md'), 'utf8');
-  assert.ok(!cmd.includes('${CLAUDE_PLUGIN_ROOT}'));
-  assert.ok(cmd.includes(CLI_ENTRY));
-  for (const a of AGENT_FILES) assert.ok(existsSync(join(cdir, 'agents', a.split('/').pop())));
-  // the installed hook runs (dormant)
-  const hook = spawnSync(process.execPath, [join(cdir, 'perseveranza', HOOK_ENTRY)], { input: JSON.stringify({ cwd: cdir }), encoding: 'utf8' });
-  assert.equal(hook.status, 0);
-  assert.equal(hook.stdout, '');
-  const ss = spawnSync(process.execPath, [join(cdir, 'perseveranza', SESSION_HOOK_ENTRY)], { input: JSON.stringify({ cwd: cdir, session_id: 'x' }), encoding: 'utf8' });
-  assert.equal(ss.status, 0);
-  assert.equal(ss.stdout, '');
-  const ah = spawnSync(process.execPath, [join(cdir, 'perseveranza', ACTIVITY_HOOK_ENTRY)], { input: JSON.stringify({ cwd: cdir, session_id: 'x', hook_event_name: 'PostToolUse', tool_name: 'Bash' }), encoding: 'utf8' });
-  assert.equal(ah.status, 0);
-  assert.equal(ah.stdout, '');
-  const u = spawnSync(process.execPath, [join(ROOT, 'install.mjs'), '--claude-dir', cdir, '--uninstall'], { encoding: 'utf8' });
-  assert.equal(u.status, 0, u.stdout + u.stderr);
-  assert.ok(!existsSync(join(cdir, 'perseveranza')));
-  for (const a of AGENT_FILES) assert.ok(!existsSync(join(cdir, 'agents', a.split('/').pop())), `${a} removed`);
-  assert.ok(AGENT_FILES.includes('agents/pf-advisor.md'));
-  const after = JSON.parse(readFileSync(join(cdir, 'settings.json'), 'utf8')).hooks;
-  for (const spec of HOOK_SPECS) assert.equal(after[spec.event].length, 0, `${spec.event}: the list existed (install created it): kept, emptied`);
-  // a settings.json that never had SessionStart does not gain an empty one on uninstall
-  writeFileSync(join(cdir, 'settings.json'), JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: `node "${join(cdir, 'perseveranza', HOOK_ENTRY)}"` }] }] } }));
-  const u2 = spawnSync(process.execPath, [join(ROOT, 'install.mjs'), '--claude-dir', cdir, '--uninstall'], { encoding: 'utf8' });
-  assert.equal(u2.status, 0, u2.stdout + u2.stderr);
-  const hooks2 = JSON.parse(readFileSync(join(cdir, 'settings.json'), 'utf8')).hooks;
-  assert.deepEqual(Object.keys(hooks2), ['Stop']);
-  assert.equal(hooks2.Stop.length, 0);
+  assert.ok(verifier.includes('## Lenses') && verifier.includes('.perseveranza/verify-<lens>.json') && verifier.includes('"lens": "<your lens>"'));
 });
 
 test('the statusline runs dormant and the CLI answers status when not armed', () => {
-  const sl = spawnSync(process.execPath, [join(ROOT, 'src', 'hud', 'statusline.mjs')], { input: JSON.stringify({ cwd: tmpdir() }), encoding: 'utf8', env: { ...process.env, PERSEVERANZA_HOME: mkdtempSync(join(tmpdir(), 'prs-h-')) } });
-  assert.equal(sl.status, 0);
-  assert.equal(sl.stdout, '');
+  const home = mkdtempSync(join(tmpdir(), 'prs-h-'));
+  try {
+    const sl = spawnSync(process.execPath, [join(ROOT, 'src', 'hud', 'statusline.mjs')], { input: JSON.stringify({ cwd: tmpdir() }), encoding: 'utf8', env: { ...process.env, PERSEVERANZA_HOME: home } });
+    assert.equal(sl.status, 0);
+    assert.equal(sl.stdout, '');
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });

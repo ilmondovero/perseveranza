@@ -1,3 +1,5 @@
+> Nota 3.0.0: i nomi `.omc-loop`/`OMC_*` citati qui sono stati rinominati in `.perseveranza`/`PERSEVERANZA_*`, e il CLI `src/cli/omc-loop.mjs` in `src/cli/perseveranza.mjs` (vedi tabella nel CHANGELOG).
+
 # Perseveranza v2 — piano per rifarlo da zero
 
 Piano di riscrittura come lo imposterei io, partendo da un repo vuoto ma con l'esperienza

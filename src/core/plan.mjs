@@ -1,4 +1,4 @@
-// Checklist counting for .omc-loop/plan.md. Pure and dependency-free.
+// Checklist counting for .perseveranza/plan.md. Pure and dependency-free.
 // Robust to markdown variants: -, * or + markers, indentation, spaces inside the box
 // ("- [x ]"), and checkboxes inside fenced code blocks are NOT counted.
 

@@ -1,3 +1,5 @@
+> Nota 3.0.0: i nomi `.omc-loop`/`OMC_*` citati qui sono stati rinominati in `.perseveranza`/`PERSEVERANZA_*`, e il CLI `src/cli/omc-loop.mjs` in `src/cli/perseveranza.mjs` (vedi tabella nel CHANGELOG).
+
 # Segnalazione — loop orfano: la sessione muore, il loop resta armato e nessuno lo riprende
 
 Data: 2026-09-07. Progetto: `C:\2026\splitwise`. Engine: 2.0.2 (2.1.0 non cambia il comportamento).

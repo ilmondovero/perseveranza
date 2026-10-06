@@ -16,8 +16,8 @@
 // The http transport takes a model list where each entry can carry its reasoning effort:
 // see parseModels() below.
 //
-// Timeout per opinion: OMC_ASK_TIMEOUT_MS (default 180 s, floor 1 s), per-provider override
-// in config ("providers.timeouts"). A timeout or a network error is retried OMC_ASK_RETRIES
+// Timeout per opinion: PERSEVERANZA_ASK_TIMEOUT_MS (default 180 s, floor 1 s), per-provider override
+// in config ("providers.timeouts"). A timeout or a network error is retried PERSEVERANZA_ASK_RETRIES
 // times (default 1): a slow CLI or a dropped connection is not a verdict on the provider.
 // A non-zero exit, an HTTP error or a policy refusal is NOT retried: the answer is what it is.
 //
@@ -129,19 +129,19 @@ export function providerModels(id, env = {}) {
 }
 
 export function askTimeoutMs(env = {}, override = null) {
-  return override ?? parseTimeoutMs(env.OMC_ASK_TIMEOUT_MS, 180000);
+  return override ?? parseTimeoutMs(env.PERSEVERANZA_ASK_TIMEOUT_MS, 180000);
 }
 
 export function askRetries(env = {}, override = null) {
   if (Number.isInteger(override) && override >= 0) return override;
-  const n = Math.trunc(Number(env.OMC_ASK_RETRIES));
+  const n = Math.trunc(Number(env.PERSEVERANZA_ASK_RETRIES));
   return Number.isFinite(n) && n >= 0 ? Math.min(n, 5) : 1;
 }
 
 // How to raise the timeout, spelled out where the failure is reported: a bare ETIMEDOUT
 // sent a real run looking for a broken CLI when the provider was only slow.
 function timeoutHint(id, timeoutMs) {
-  return `timeout after ${Math.round(timeoutMs / 1000)}s (raise it with OMC_ASK_TIMEOUT_MS or "providers.timeouts.${id}" in the config)`;
+  return `timeout after ${Math.round(timeoutMs / 1000)}s (raise it with PERSEVERANZA_ASK_TIMEOUT_MS or "providers.timeouts.${id}" in the config)`;
 }
 
 // The model can arrive already parsed (from models()), as a spec string ("glm-5.3#low"), or

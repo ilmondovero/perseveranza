@@ -16,6 +16,8 @@ jobs:
         node: [20, 22]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # test/packaging/legacy-hashes.test.mjs and install.test.mjs read the git history
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -25,7 +27,7 @@ jobs:
           git config --global user.email "ci@example.invalid"
       - run: npm test
         env:
-          OMC_LOOP_NO_NOTIFY: "1"
+          PERSEVERANZA_NO_NOTIFY: "1"
 
   bench-dry:
     name: bench (dry run, no claude)

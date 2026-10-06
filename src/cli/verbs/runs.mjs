@@ -24,7 +24,7 @@ export function run({ argv, env }) {
     if (!r) throw new VerbError(`Run not found: ${id}`);
     console.log(`Run ${r.id}  (${r.dir})\n`);
     console.log(JSON.stringify(r.summary, null, 2));
-    const gate = join(r.dir, 'omc-loop');
+    const gate = r.gateDir;
     const hist = renderHistory(readJournal(gate), argv.includes('--all') ? 0 : 25);
     if (hist) console.log(`\nJournal${argv.includes('--all') ? '' : ' (last 25)'}:\n${hist}`);
     const plan = join(gate, 'plan.md');

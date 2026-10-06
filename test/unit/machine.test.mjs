@@ -208,7 +208,7 @@ test('review.json blocking>0: the fix instruction points at the kept findings fi
   const r = run(mk({ phase: 'review', counters: { iterations: 4 } }), { artifacts: { review: '{"blocking":1,"findings":[{"severity":"critical","desc":"off by one","file":"a.js:3"}]}' } });
   assert.equal(r.outcome, 'fail');
   assert.ok(r.effects.some((e) => e.type === 'keepArtifact' && e.as === 'review-4.json'));
-  assert.ok(r.reason.includes('.omc-loop/review-4.json'), r.reason);
+  assert.ok(r.reason.includes('.perseveranza/review-4.json'), r.reason);
   const v = journal(r).find((j) => j.type === 'verdict');
   assert.deepEqual(v.details, [{ severity: 'critical', desc: 'off by one', file: 'a.js:3' }]);
   // outcome recorded through the verb: no file to point at
@@ -221,7 +221,7 @@ test('verify.json is kept as verify-<n>.json and the post-fix instruction points
   const r = run(mk({ phase: 'final-verify', counters: { iterations: 9 } }), { artifacts: { verify: '{"pass":false,"findings":[{"severity":"critical","desc":"x"}]}' } });
   assert.equal(r.outcome, 'fail');
   assert.ok(r.effects.some((e) => e.type === 'keepArtifact' && e.name === 'verify.json' && e.as === 'verify-9.json'));
-  assert.ok(r.reason.includes('.omc-loop/verify-9.json'));
+  assert.ok(r.reason.includes('.perseveranza/verify-9.json'));
 });
 
 test('review.json blocking>0 -> fix on the same step, retries++', () => {
@@ -364,7 +364,7 @@ test('cleanup -> final-verify with the security lens only for high complexity', 
   // high complexity: the single verifier gets the security hint; by default (2.6) the round is
   // split into lenses, and the security lens is one of them
   assert.ok(run(mk({ phase: 'cleanup', complexity: 'high', options: { verifiers: ['general'] } })).reason.includes('security lens'));
-  assert.ok(run(mk({ phase: 'cleanup', complexity: 'high' })).reason.includes('[lens security: writes .omc-loop/verify-security.json'));
+  assert.ok(run(mk({ phase: 'cleanup', complexity: 'high' })).reason.includes('[lens security: writes .perseveranza/verify-security.json'));
   assert.ok(run(mk({ phase: 'cleanup', complexity: 'low' })).reason.includes('model=sonnet'));
 });
 
@@ -803,6 +803,7 @@ test('every regular transition row is reachable through step()', () => {
   note(run(mk({ phase: 'final-verify' })));
   note(run(mk({ phase: 'final-verify', flags: { repeated: true } })));
   note(run(mk({ phase: 'git-finish' })));
+  note(run(mk({ phase: 'review' }), { backgroundTasks: [{ id: 't1', type: 'subagent', status: 'running', agent_type: 'pf-reviewer', description: 'review' }] }));
   note(run(mk({ counters: { iterations: 99 } })));
   note(run(mk({ phase: 'weird' })));
   note(run(mk({ phase: 'review', signals: { interrupted: INTERRUPTED } })));

@@ -1,12 +1,12 @@
 import { rmSync } from 'node:fs';
-import { gate, requireState, saveState, signal } from '../shared.mjs';
+import { gate, requireState, changeState, signal } from '../shared.mjs';
 import { describeLastFire, formatAge, DEFAULT_STALE_MS } from '../../core/staleness.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
 import { parseTimeoutMs } from '../../shell/util.mjs';
 import { readLife } from '../../shell/life.mjs';
 
 //   resume              close the pause: retry counters reset, ESCALATION.md removed
-//   resume --takeover   release the owner session: for a while (OMC_LOOP_STALE_MS) the next
+//   resume --takeover   release the owner session: for a while (PERSEVERANZA_STALE_MS) the next
 //                       Stop in this project, whichever session it comes from, claims the
 //                       loop from its current phase. The only way another session takes a
 //                       loop over; nothing does it implicitly. A takeover of a loop that was
@@ -14,26 +14,31 @@ import { readLife } from '../../shell/life.mjs';
 //                       the hand-off note are kept.
 export function run({ argv, cwd, env = process.env }) {
   const paths = gate(cwd);
-  const s = requireState(paths);
+  requireState(paths);
   const takeover = argv.includes('--takeover');
-  const staleMs = parseTimeoutMs(env.OMC_LOOP_STALE_MS, DEFAULT_STALE_MS);
-  const closingPause = s.signals.paused === true;
-  if (closingPause) s.signals.resumedAt = Date.now(); // the next fire marks the gap as a pause
-  s.signals.paused = false;
-  s.flags.repeated = false;
-  if (closingPause || !takeover) {
-    s.counters.retries = 0;
-    s.counters.finalFails = 0;
-    s.counters.staleGates = 0;
-  }
-  if (takeover && s.owner.sessionId) {
-    const from = s.owner.sessionId;
-    s.owner.releasedFrom = from;
-    s.owner.sessionId = null;
-    appendJournal(paths.gateDir, { type: 'session', event: 'released', from: from.slice(0, 8), ageMs: s.owner.lastFireAt > 0 ? Math.max(0, Date.now() - s.owner.lastFireAt) : null });
-  }
-  if (takeover && s.owner.releasedFrom) s.owner.releasedAt = Date.now(); // (re)opens the window
-  saveState(paths, s);
+  const staleMs = parseTimeoutMs(env.PERSEVERANZA_STALE_MS, DEFAULT_STALE_MS);
+  // decided on the state reread right before the write (changeState): a Stop may have saved
+  let closingPause = false;
+  let released = null;
+  const s = changeState(paths, (st) => {
+    closingPause = st.signals.paused === true;
+    released = null;
+    if (closingPause) st.signals.resumedAt = Date.now(); // the next fire marks the gap as a pause
+    st.signals.paused = false;
+    st.flags.repeated = false;
+    if (closingPause || !takeover) {
+      st.counters.retries = 0;
+      st.counters.finalFails = 0;
+      st.counters.staleGates = 0;
+    }
+    if (takeover && st.owner.sessionId) {
+      released = { from: st.owner.sessionId, lastFireAt: st.owner.lastFireAt };
+      st.owner.releasedFrom = st.owner.sessionId;
+      st.owner.sessionId = null;
+    }
+    if (takeover && st.owner.releasedFrom) st.owner.releasedAt = Date.now(); // (re)opens the window
+  });
+  if (released) appendJournal(paths.gateDir, { type: 'session', event: 'released', from: released.from.slice(0, 8), ageMs: released.lastFireAt > 0 ? Math.max(0, Date.now() - released.lastFireAt) : null });
   // the escalation hand-off belongs to the pause just closed: remove it so none goes stale
   if (closingPause || !takeover) { try { rmSync(paths.escalationPath, { force: true }); } catch { /* already gone */ } }
   signal(paths, 'resume', takeover ? '--takeover' : '');
