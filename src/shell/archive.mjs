@@ -60,8 +60,32 @@ export function archiveFailureNote(result) {
     + `${result.disarmed ? 'Loop disarmed' : 'Could not disarm the loop'}; fix the archive destination and retry disarm.`;
 }
 
+// The last final verification of the run, from the journal: its verdict, and what the stop did
+// with it (a pass it could not keep is 'pass-stale', with the gate that voided it).
+// -> { outcome, pass, stale, ts } | null (no final verification was judged)
+export function lastFinalVerify(journal) {
+  const t = [...journal].reverse().find((j) => j.type === 'transition' && j.from === 'final-verify' && j.to !== 'final-verify');
+  if (!t) return null;
+  const pass = t.outcome === 'pass' || t.outcome === 'pass-stale';
+  return { outcome: t.outcome, pass, stale: t.outcome === 'pass-stale' ? (t.gate || 'unknown') : null, ts: t.ts || null };
+}
+
+// One line for a run that did not end with `done`, when its end could be misread: a budget
+// stop is not a failed verification. -> text | null
+export function outcomeNote(outcome, journal, last = lastFinalVerify(journal)) {
+  if (typeof outcome !== 'string' || !outcome.startsWith('budget-')) return null;
+  const b = [...journal].reverse().find((j) => j.type === 'budget' && !j.adaptive);
+  const why = `stopped by the ${outcome.slice('budget-'.length)} budget${b && b.detail ? ` (${b.detail})` : ''}`;
+  if (!last) return `${why}, before any final verification`;
+  if (last.stale) return `${why}; last final verification: pass (stale: ${last.stale}): the work passed, the pass did not cover the tree at the stop, nothing was committed`;
+  if (last.pass) return `${why}; last final verification: pass`;
+  return `${why}; last final verification: rejected (${last.outcome})`;
+}
+
 export function buildSummary(state, journal, outcome) {
   const transitions = journal.filter((j) => j.type === 'transition');
+  const finalVerify = lastFinalVerify(journal);
+  const note = outcomeNote(outcome, journal, finalVerify);
   const tests = journal.filter((j) => j.type === 'test');
   const verdicts = journal.filter((j) => j.type === 'verdict');
   const asks = journal.filter((j) => j.type === 'ask');
@@ -70,6 +94,8 @@ export function buildSummary(state, journal, outcome) {
   return {
     task: state?.task ?? '',
     outcome,
+    ...(note ? { outcomeNote: note } : {}),
+    finalVerify,
     phaseAtEnd: state?.phase ?? null,
     complexity: state?.complexity ?? null,
     iterations: state?.counters?.iterations ?? 0,

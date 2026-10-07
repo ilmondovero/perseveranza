@@ -58,3 +58,10 @@ number routes the loop (0 = step promoted, >0 = back to the fix). Mark blocking 
 Copy the caller's verdict request ID exactly into `requestId`; it binds this verdict to the
 review round that requested it.
 Write the file and finish; do not leave the verdict only in the message.
+
+Write it ONCE, with the Write tool and the relative path above, as your last action. Do not
+read it back, look for it or write it again: the loop takes the file as soon as it lands (it
+is renamed, e.g. to `review-4.json`), so a verdict you no longer find was received, not lost.
+Never build its path from `pwd` or other shell output: in Git Bash on Windows `pwd` prints a
+POSIX path (`/tmp/...`, `/c/...`) that the Write tool resolves elsewhere (`C:\tmp\...`),
+outside the project, where the write is refused.

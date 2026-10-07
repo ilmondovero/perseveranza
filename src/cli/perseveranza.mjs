@@ -4,6 +4,7 @@
 //   arm "<task>" [--max N] [--max-retries N] [--complexity low|medium|high] [--commit]
 //                [--external off] [--test "cmd"] [--no-git-finish] [--no-push]
 //                [--approve-plan] [--budget-tokens N] [--lang xx] [--force]
+//                [--ignore <path>[,<path>]] (untracked files there are not the work)
 //   test -- <command>          run the suite HERE and record the real exit code
 //   report pass|fail           outcome of the current phase (review / final verification)
 //   complexity low|medium|high task complexity (routes the models)

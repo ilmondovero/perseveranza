@@ -1,10 +1,11 @@
 // tool.call: the reconciliation guard (while a restored loop is being reconciled, a tool that
 // would mutate is refused: activity-hook.mjs's reconcileDecision, asked of the bridge's
 // 'tool-check'), then the heartbeat. The guard asks only for the tools it could refuse, only
-// where a loop is armed (gate.js hasGate); it is fail-open like the settings hook was (a failure is
-// journaled as mod-hook-skipped and the tool runs).
+// where a loop is armed (gate.js hasGate), and only when state.json does not already say the
+// loop is not being reconciled (needsGuard: read with $.fs.read, no process); it is fail-open
+// like the settings hook was (a failure is journaled as mod-hook-skipped and the tool runs).
 import { MUTATING_TOOLS, QUICK_TIMEOUT_MS, isObj } from './core.js';
-import { call, hasGate, skipped } from './gate.js';
+import { call, hasGate, skipped, gateFile, STATE_FILES } from './gate.js';
 import { noteTool, scheduleActivity } from './activity.js';
 import { refreshAlive } from './verbs.js';
 
@@ -26,8 +27,24 @@ export async function guardTool(io, mod, e, session) {
   return askGuard(io, mod, cwd, session, e.tool, toolInput(e));
 }
 
+// Does the guard need the bridge at all? Only a loop being reconciled after a restore
+// (signals.interrupted, written by the watchdog) refuses anything, and that is in state.json,
+// which $.fs.read reads without a process. A node process per Edit/Write/Bash/Agent call was
+// ~130 ms each on an idle machine and timed out (8 s) under load in a real run. -> true unless
+// state.json reads as a loop state that is not being reconciled: absent (a pending copy only),
+// unreadable, truncated, not a state (no phase): the bridge decides, with its retries, as before.
+export async function needsGuard(io, cwd) {
+  let raw;
+  try { raw = JSON.parse(await io.read(gateFile(cwd, STATE_FILES.state))); } catch { return true; }
+  if (!isObj(raw) || typeof raw.phase !== 'string') return true;
+  const i = isObj(raw.signals) ? raw.signals.interrupted : null;
+  // the bridge's normalizeState: any object (an array too) is an interruption, anything else none
+  return !!i && typeof i === 'object';
+}
+
 // The bridge's reconciliation guard for one call (op 'tool-check'). Fail-open. -> reason | null
 export async function askGuard(io, mod, cwd, session, tool, input) {
+  if (!(await needsGuard(io, cwd))) return null;
   const r = await call(io, mod, 'tool-check', { cwd, event: { session_id: session, tool, input }, timeoutMs: QUICK_TIMEOUT_MS });
   if (!r.answer || r.answer.ok !== true) {
     await skipped(io, mod, cwd, 'tool.call', r.error || String(r.answer && r.answer.error));

@@ -4,7 +4,7 @@ import { writeFileSync, rmSync, readFileSync, readdirSync, existsSync, renameSyn
 import { join } from 'node:path';
 import { appendJournal, readJournal, renderHistory } from './journal.mjs';
 import { notify } from './notify.mjs';
-import { gitFinish } from './git.mjs';
+import { gitFinish, volatilePaths } from './git.mjs';
 import { archiveRun, archiveFailureNote, makeDormant } from './archive.mjs';
 import { summarizeExternalOpinions, shortTs } from './util.mjs';
 import { writeAtomic } from './activity.mjs';
@@ -154,7 +154,7 @@ export function executeEffects(effects, env) {
         const externalNote = externalGateNote(paths.gateDir, s.options.externals);
         const g = s.options.gitFinish === false
           ? { ran: false }
-          : gitFinish(paths.cwd, { task: s.task, push: s.options.gitPush !== false, baselineDirty: s.baselineDirty, externalNote, deadline: env.deadline });
+          : gitFinish(paths.cwd, { task: s.task, push: s.options.gitPush !== false, baselineDirty: s.baselineDirty, externalNote, deadline: env.deadline, volatile: volatilePaths({ env: processEnv, extra: s.options.fingerprintIgnore }).paths });
         const r = finishProject(s, g, { projectName: paths.projectName, externalNote, retry: e.retry === true });
         holder.state = r.state;
         const o = executeEffects(r.effects, env);

@@ -57,6 +57,13 @@ working directory) EXACTLY in this format:
 blocking defect or red test → `pass: false`. A `critical` finding with `pass: true` is read
 as a rejection: the loop takes the stricter reading. This file closes the loop (`true`) or
 sends it back to the fix (`false`). Write the file and finish.
+
+Write it ONCE, with the Write tool and the relative path above, as your last action. Do not
+read it back, look for it or write it again: the loop takes the file as soon as it lands (it
+is renamed, e.g. to `verify-7.json`), so a verdict you no longer find was received, not lost.
+Never build its path from `pwd` or other shell output: in Git Bash on Windows `pwd` prints a
+POSIX path (`/tmp/...`, `/c/...`) that the Write tool resolves elsewhere (`C:\tmp\...`),
+outside the project, where the write is refused.
 Copy the caller's verdict request ID exactly into `requestId`; it binds this verdict to the
 verification round that requested it.
 

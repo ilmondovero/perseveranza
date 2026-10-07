@@ -162,6 +162,89 @@ describe('tool.call', () => {
   })
 })
 
+// The guard reads state.json itself ($.fs.read): a node process only when the loop is being
+// reconciled (signals.interrupted), or when the state cannot say it is not (the bridge decides).
+describe('tool.call: a node process only when the guard may refuse', () => {
+  const STATE = (signals: any = {}) => JSON.stringify({ schemaVersion: 2, phase: 'implement', owner: { sessionId: 'S1' }, signals: { lastReport: 'none', claimedDone: false, paused: false, resumedAt: 0, interrupted: null, ...signals } })
+  const INTERRUPTED = { at: '2026-10-07T06:00:00.000Z', silentMs: 900000, phase: 'implement', pending: [] }
+  const REFUSE = (q: any) => (q.op === 'tool-check' ? { ok: true, deny: 'perseveranza: reconciling', outcome: 'refused' } : { ok: true, outcome: 'activity' })
+
+  test('a loop not being reconciled: no process for any mutating tool, every tool runs', async ($, on) => {
+    const w = world(on, { stateText: STATE(), answer: REFUSE })
+    for (const tool of ['Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Agent', 'Task']) await $.tool.call({ tool, command: 'x' } as any)
+    expect(w.reqs).toHaveLength(0)
+    expect(w.ran).toHaveLength(8)
+    expect(w.reads.filter((p) => p.endsWith('/.perseveranza/state.json'))).toHaveLength(8)
+  })
+
+  test('a typical turn (40 Edit/Write/Bash calls in 2 minutes): only the debounced heartbeats start node', async ($, on) => {
+    const w = world(on, { stateText: STATE(), answer: REFUSE })
+    for (let i = 0; i < 40; i++) {
+      await $.tool.call({ tool: ['Edit', 'Write', 'Bash', 'Read'][i % 4], command: 'x', file_path: 'a.js' } as any)
+      await w.clock.advance(3000)
+    }
+    await w.clock.advance(31000)
+    expect(w.ops('tool-check')).toHaveLength(0)
+    // one heartbeat per ACTIVITY_HEARTBEAT_MS (30 s) at most: 120 s of calls + the tail
+    expect(w.reqs.length).toBeLessThanOrEqual(5)
+    expect(w.reqs.every((q) => q.op === 'activity-flush')).toBe(true)
+    expect(w.ran).toHaveLength(40)
+  })
+
+  test('a loop being reconciled (signals.interrupted): the bridge is asked, and refuses', async ($, on) => {
+    const w = world(on, { stateText: STATE({ interrupted: INTERRUPTED }), answer: REFUSE })
+    const r: any = await $.tool.call({ tool: 'Write', file_path: 'a', content: 'x' } as any)
+    expect(w.ops('tool-check')).toHaveLength(1)
+    expect(w.ran).toHaveLength(0)
+    expect(JSON.stringify(r)).toContain('reconciling')
+  })
+
+  // what the bridge's normalizeState reads as an interruption: any object, an array too
+  for (const [name, interrupted] of [['an array', []], ['an empty object', {}]] as const) {
+    test(`signals.interrupted as ${name}: asked`, async ($, on) => {
+      const w = world(on, { stateText: STATE({ interrupted }), answer: REFUSE })
+      await $.tool.call({ tool: 'Bash', command: 'ls' } as any)
+      expect(w.ops('tool-check')).toHaveLength(1)
+    })
+  }
+  for (const [name, interrupted] of [['true', true], ['a string', 'yes'], ['0', 0], ['absent', undefined]] as const) {
+    test(`signals.interrupted ${name} (no interruption to the bridge either): not asked`, async ($, on) => {
+      const w = world(on, { stateText: STATE({ interrupted }), answer: REFUSE })
+      await $.tool.call({ tool: 'Bash', command: 'ls' } as any)
+      expect(w.ops('tool-check')).toHaveLength(0)
+      expect(w.ran).toHaveLength(1)
+    })
+  }
+
+  // the state cannot say: the bridge decides, with its retries (the 3.0.1 behaviour)
+  for (const [name, text] of [['truncated', STATE().slice(0, 40)], ['empty', ''], ['not a state (no phase)', JSON.stringify({ owner: { sessionId: 'S1' } })], ['an array', '[]'], ['null', 'null']] as const) {
+    test(`state.json ${name}: asked`, async ($, on) => {
+      const w = world(on, { stateText: text, answer: REFUSE })
+      await $.tool.call({ tool: 'Edit', file_path: 'a', old_string: 'a', new_string: 'b' } as any)
+      expect(w.ops('tool-check')).toHaveLength(1)
+      expect(w.ran).toHaveLength(0)
+    })
+  }
+
+  test('state.json unreadable, or only its pending copy there: asked', async ($, on) => {
+    const w = world(on, { files: ['state.json.pending'], answer: REFUSE })
+    await $.tool.call({ tool: 'Edit', file_path: 'a', old_string: 'a', new_string: 'b' } as any)
+    expect(w.ops('tool-check')).toHaveLength(1)
+    expect(w.ran).toHaveLength(0)
+  })
+
+  test('the reconciliation starts mid-session: the next call reads it (nothing is cached)', async ($, on) => {
+    let text = STATE()
+    const w = world(on, { stateText: () => text, answer: REFUSE })
+    await $.tool.call({ tool: 'Bash', command: 'ls' } as any)
+    expect(w.ops('tool-check')).toHaveLength(0)
+    text = STATE({ interrupted: INTERRUPTED })
+    await $.tool.call({ tool: 'Bash', command: 'ls' } as any)
+    expect(w.ops('tool-check')).toHaveLength(1)
+    expect(w.ran).toHaveLength(1)
+  })
+})
+
 describe('what each hook does when the gate check itself fails', () => {
   test('tool.call: the guard still asks the bridge (it knows whether a loop is reconciling)', async ($, on) => {
     const w = world(on, { gate: 'throw', answer: (q) => (q.op === 'tool-check' ? { ok: true, deny: 'perseveranza: reconciling', outcome: 'refused' } : { ok: true }) })

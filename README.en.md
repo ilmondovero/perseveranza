@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-3.0.1-blue)
+![version](https://img.shields.io/badge/version-3.0.2-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-mod%20%E2%89%A5%202.1.287-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -119,7 +119,7 @@ itself: at the end of every response the mod injects the next phase's instructio
 progress line on top:
 
 ```
-[perseveranza v3.0.1 · ▸impl ▰▰▱▱▱ 2/5 · it7/23 · 84k tok] Task: add pagination…
+[perseveranza v3.0.2 · ▸impl ▰▰▱▱▱ 2/5 · it7/23 · 84k tok] Task: add pagination…
 ```
 
 When it is done you get the notification "Project finished and verified · commit+push confirmed".
@@ -312,7 +312,10 @@ final verification splits into three lenses working side by side (see below).
   verification was requested, nothing is committed and the loop goes back to implement: a
   new claim-done is needed. The code is everything git does not ignore, documentation
   aside: build and test output belongs in `.gitignore`, or the verifier's own runs change
-  it. After four passes that do not cover the tree, with no rejection in between, the loop
+  it. Other tools' state does not count when it is untracked: oh-my-claudecode's state folder,
+  `.claude/settings.local.json`, `.claude/scheduled_tasks.lock`, and what `arm --ignore` or
+  `PERSEVERANZA_FINGERPRINT_IGNORE` add (a tracked file there still counts, and the closing
+  commit takes its changes; the untracked ones it leaves alone). After four passes that do not cover the tree, with no rejection in between, the loop
   pauses for a human.
   Outside git there is no snapshot to compare.
 
@@ -322,7 +325,7 @@ The options of `/perseveranza`:
 
 | option | effect |
 |---|---|
-| `--max N` | iteration cap (otherwise adaptive: `8 + 3 × steps`, at most 60) |
+| `--max N` | iteration cap (otherwise adaptive: `8 + 3 × steps`, at most 60); cleanup, final verification and git closure get 3 more, and so does the Stop that carries a `claim-done`; a verification that sends the loop back to implement is under the full cap again |
 | `--budget-tokens N` | token cap, measured from the session transcript and those of its subagents |
 | `--max-retries N` | fixes granted per step before the pause (default 3) |
 | `--commit` | atomic commit after every validated step |
@@ -334,6 +337,7 @@ The options of `/perseveranza`:
 | `--advisor-model <name>` | model of the internal advisor (default `PERSEVERANZA_ADVISOR_MODEL`, else `opus`) |
 | `--check` | probe the detected providers now: start only with those that answer |
 | `--no-git-finish` / `--no-push` | no commit+push at the end / local commit only |
+| `--ignore <path>[,...]` | the **untracked** files under that path (or folder) are not the work: out of the tree's snapshot and of the closing commit, besides oh-my-claudecode's state folder, `.claude/settings.local.json` and `.claude/scheduled_tasks.lock`. Relative to the project, never `..`, `.`, absolute or a glob; repeatable |
 | `--lang en` | instructions in English (default: Italian) |
 
 The verbs Claude, and you, use to talk to the loop (`node "<root>/src/cli/perseveranza.mjs" <verb>`):
@@ -383,6 +387,34 @@ tool.
 - **`node` reachable for Claude Code** (on its `PATH`, or `PERSEVERANZA_NODE`).
 - `claude -p --setting-sources project` reads no user settings, where both the installed plugins
   and the `env` of `install.mjs` live: there the mod loads only with `--plugin-dir`.
+- **Bash permission for `arm`, `test` and `ask`.** They are shell commands Claude runs with Bash
+  (`node "<root>/src/cli/perseveranza.mjs" arm ...`), so your Bash permissions govern them: an
+  interactive session asks you, while `claude -p` needs them granted beforehand, since nobody
+  answers the prompt (`--permission-mode acceptEdits` covers file edits, not Bash), and without
+  `arm` the loop never starts. The minimal rule, in `~/.claude/settings.json` or in the
+  project's `.claude/settings.json`:
+
+  ```json
+  {
+    "permissions": {
+      "allow": [
+        "Bash(node *perseveranza.mjs* arm *)",
+        "Bash(node *perseveranza.mjs* test --if-needed -- npm test)",
+        "Bash(node *perseveranza.mjs* ask *)"
+      ]
+    }
+  }
+  ```
+
+  Careful: `test -- <cmd>` runs `<cmd>`, so a `test *` rule is as good as allowing any
+  command; better name the suite (as above). `ask` starts the CLI of an external model (codex,
+  agy, claude, ollama). Claude sends the other verbs with the `perseveranza` tool, which asks no
+  permission. In `claude -p` the same goes on the command line:
+  `--allowedTools "Bash(node *perseveranza.mjs*)" "Bash(npm test)" Agent` (or
+  `--allowedTools Bash Agent`, which grants the whole shell). A rule for `arm` holds afterwards
+  too: a loop stopped by its budget can be armed again by the model itself (seen in a `-p` run,
+  when the notice of a subagent still at work reopened the turn). If you do not want that, drop
+  the rule once started, or arm yourself with `/pf arm` and grant only `test` and `ask`.
 
 ### Using the mod
 
@@ -490,6 +522,40 @@ in, by design).
 
 **`/pf` does not exist.** The mod is not loaded in that session: the same causes as the table.
 
+**In `claude -p` the loop does not start: `arm` denied (`permission_denials` in the JSON
+output).** `arm` is a shell command and in a non-interactive run nobody grants the Bash
+permission: add the rule of [Requirements](#requirements) or `--allowedTools`.
+
+**Every turn is slow (tens of seconds).** Every turn of the loop is a Claude Code turn, and pays
+for every hook of your settings and plugins: on a machine with some thirty hooks (oh-my-claudecode
+and others) a turn cost about 30 s and every tool call 2–3 s more, nearly all of it in the hooks
+(a small task, 44 turns, 38 minutes). The mod itself adds little: one `node` process per Stop and
+one per heartbeat (at most every 30 s), none for tool calls unless the loop is being reconciled
+after a restore. For a headless run do **not** use `"disableAllHooks": true` or
+`--bare`/`--safe-mode`: they turn the mod off too, and nothing drives the loop. Leave the user
+settings out and load perseveranza alone:
+
+```
+claude -p "/perseveranza <task>" --setting-sources project --plugin-dir "<perseveranza root>" \
+  --strict-mcp-config --allowedTools "Bash(node *perseveranza.mjs*)" "Bash(npm test)" Agent
+```
+
+with `ENABLE_CLAUDEAI_MCP_SERVERS=0` in the environment. `--setting-sources project` leaves out
+the hooks and plugins of the user settings (perseveranza too, when installed from the
+marketplace: hence `--plugin-dir`, the plugin's folder, for example
+`~/.claude/plugins/cache/perseveranza/perseveranza/<version>`), and with them the user's
+permissions and `env`: grant the permissions on the command line. The project's hooks
+(`.claude/settings.json`) stay.
+
+**The final verification passes but the loop goes back to implement (`pass-stale`,
+`gate=code-changed`) with nobody touching the code.** Something git does not ignore changes in
+the project while the loop works: build or test output, or another tool's state. The tree's
+snapshot already leaves out the **untracked** files of oh-my-claudecode's state folder,
+`.claude/settings.local.json` and `.claude/scheduled_tasks.lock`, which hooks rewrite at every
+call; for other paths arm with `--ignore <path>` (or `PERSEVERANZA_FINGERPRINT_IGNORE`), or put
+them in `.gitignore`. `history` shows the snapshots of the `test` lines and the `pass-stale`
+transitions; `arm` prints the list of the paths left out (the "Not the work" line).
+
 ### Known limits
 
 - The CLI only: neither the Desktop app nor the VS Code extension.
@@ -579,6 +645,7 @@ All optional, all prefixed `PERSEVERANZA_`. Switches are on with `1` (also `true
 | `PERSEVERANZA_HOOK_TIMEOUT_MS` | `120000` | the deadline of the logic of one Stop; with the mod no more than `120000` (the mod waits for the bridge 125 s at most) |
 | `PERSEVERANZA_SUBAGENT_WAIT_MS` | `30000` | how long a Stop waits for a `pf-*` subagent still at work (its verdict, or its return) before answering; `0` does not wait |
 | `PERSEVERANZA_NODE` | `node` on the `PATH` | the `node` (an absolute path) the mod starts the bridge and the CLI with, when the one on Claude Code's `PATH` does not do |
+| `PERSEVERANZA_FINGERPRINT_IGNORE` | none | comma-separated paths, as `arm --ignore`, whose untracked files do not count as work (validated: a `..`, `.`, absolute path or glob is dropped and `arm` says so). Set it where Claude Code starts, so both the Stop and the `test` verb see it; `--ignore` saves it in the run's state |
 | `PERSEVERANZA_STATUSLINE_BASE_TIMEOUT_MS` | `5000` | time granted to the existing statusline the HUD composes with |
 | `PERSEVERANZA_NO_UPDATE_CHECK` | off | no check for new versions (any value) |
 

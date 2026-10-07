@@ -350,6 +350,23 @@ test('disarm archives the run by default, --no-archive just removes it', () => {
   assert.ok(cli(q, 'disarm').out.includes('was not armed'));
 });
 
+test('runs: a budget stop after a final pass that went stale says so, in the list and in show', async () => {
+  const { mkdirSync } = await import('node:fs');
+  const p = project();
+  const dir = join(p.home, 'runs', 'proj', '2026-10-07T06-57-53-513Z-aaaaaa');
+  mkdirSync(join(dir, 'loop'), { recursive: true });
+  writeFileSync(join(dir, 'summary.json'), JSON.stringify({
+    task: 'sum', outcome: 'budget-iterations', iterations: 8, tokens: 1,
+    outcomeNote: 'stopped by the iterations budget (8/6 iterations); last final verification: pass (stale: code-changed): the work passed, the pass did not cover the tree at the stop, nothing was committed',
+    finalVerify: { outcome: 'pass-stale', pass: true, stale: 'code-changed', ts: 't' },
+  }));
+  const list = cli(p, 'runs');
+  assert.match(list.out, /budget-iterations\s+it=8 tok=1 verify=pass\(stale\)\s+sum/, list.out);
+  const show = cli(p, 'runs', 'show', 'proj/2026-10-07T06-57-53-513Z-aaaaaa');
+  assert.equal(show.code, 0, show.out);
+  assert.match(show.out, /Outcome: budget-iterations: stopped by the iterations budget \(8\/6 iterations\); last final verification: pass \(stale: code-changed\)/);
+});
+
 test('hud on/off compose with the existing statusline and restore it', async () => {
   const p = project();
   const cdir = join(p.home, 'claude');

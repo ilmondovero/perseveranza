@@ -12,7 +12,10 @@ export function run({ argv, env }) {
     if (!runs.length) { console.log(`No archived runs (${runsDir(env)}).`); return 0; }
     for (const r of runs.slice(0, 50)) {
       const s = r.summary || {};
-      console.log(`  ${r.id.padEnd(48)} ${String(s.outcome || '?').padEnd(16)} it=${s.iterations ?? '?'} tok=${s.tokens ?? '?'}  ${s.task ? s.task.slice(0, 60) : ''}`);
+      // a run stopped short of done says how its last final verification went (a budget stop
+      // after a pass that went stale is not a failed verification)
+      const fv = s.finalVerify && s.outcome !== 'done' ? ` verify=${s.finalVerify.pass ? 'pass' : 'fail'}${s.finalVerify.stale ? '(stale)' : ''}` : '';
+      console.log(`  ${r.id.padEnd(48)} ${String(s.outcome || '?').padEnd(16)} it=${s.iterations ?? '?'} tok=${s.tokens ?? '?'}${fv}  ${s.task ? s.task.slice(0, 60) : ''}`);
     }
     if (runs.length > 50) console.log(`  ... ${runs.length - 50} more`);
     return 0;
@@ -23,6 +26,7 @@ export function run({ argv, env }) {
     const r = readRun(id, env);
     if (!r) throw new VerbError(`Run not found: ${id}`);
     console.log(`Run ${r.id}  (${r.dir})\n`);
+    if (r.summary && r.summary.outcomeNote) console.log(`Outcome: ${r.summary.outcome}: ${r.summary.outcomeNote}\n`);
     console.log(JSON.stringify(r.summary, null, 2));
     const gate = r.gateDir;
     const hist = renderHistory(readJournal(gate), argv.includes('--all') ? 0 : 25);

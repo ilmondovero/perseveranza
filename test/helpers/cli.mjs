@@ -34,7 +34,7 @@ export const OWN_ENV_VARS = [
   // every PERSEVERANZA_* the tool reads and the 2.x name it replaced (one still set would only
   // add a notice to arm/status, but the output should not depend on the developer's shell)
   ...LEGACY_ENV.flat(),
-  'PERSEVERANZA_HOME', 'PERSEVERANZA_LANG', 'CLAUDE_CONFIG_DIR',
+  'PERSEVERANZA_HOME', 'PERSEVERANZA_LANG', 'CLAUDE_CONFIG_DIR', 'PERSEVERANZA_FINGERPRINT_IGNORE',
   // set in the Bash of a Claude Code session: `arm` would look for the mod's sign of life of
   // the developer's session; the tests of the mod check set it themselves
   'CLAUDE_CODE_SESSION_ID',

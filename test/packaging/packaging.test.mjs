@@ -87,7 +87,12 @@ test('plugin.json, package.json and the README badge agree on the version', () =
   for (const readme of ['README.md', 'README.en.md']) {
     const text = readFileSync(join(ROOT, readme), 'utf8');
     assert.ok(text.includes(`versione-${plugin.version}-`) || text.includes(`version-${plugin.version}-`), `${readme} badge != ${plugin.version}`);
+    // the progress line the README shows carries the same version
+    assert.ok(text.includes(`[perseveranza v${plugin.version} ·`), `${readme} progress line != ${plugin.version}`);
   }
+  // the CHANGELOG's first entry is this version
+  const changelog = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8');
+  assert.equal((changelog.match(/^## (\d+\.\d+\.\d+)/m) || [])[1], plugin.version);
 });
 
 test('the command references the CLI entry and every verb it documents exists', () => {

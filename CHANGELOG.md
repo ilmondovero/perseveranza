@@ -5,13 +5,100 @@ Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive
 
 ## 3.0.2
 
+Due giri di correzioni: quelle di un task vero, eseguito con il plugin 3.0.1 del marketplace su
+una macchina con tutti gli hook dell'utente attivi (una trentina, oh-my-claudecode compreso:
+"Registered 29 hooks from 9 plugins" nel log di debug), e quelle multi-piattaforma che hanno
+rimesso verde la CI. Versione 3.0.2 in `plugin.json`, `package.json` e nei badge.
+
+### Correzioni da un run reale
+
+Il task (`sum(a,b)` e un test, `--complexity low --test "npm test" --no-push --max 6`) ha
+prodotto codice giusto, ma il run è finito per `budget-iterations` (8/6, 38 minuti, 44 turni)
+invece che per verifica: la verifica finale aveva detto `pass: true` e lo Stop l'aveva scartata
+come `pass-stale` (`gate=code-changed`) senza che nessuno toccasse il codice.
+
+- **L'impronta dell'albero non conta più lo stato di altri strumenti.** Il codice dell'impronta
+  includeva i file non tracciati che git non ignora, e quindi `.omc/` di oh-my-claudecode, che i
+  suoi hook riscrivono a ogni chiamata di strumento (`.omc/state/*.json`,
+  `sessions/*/pre-tool-advisory-throttle.json`, `project-memory.json.lock`). Nel journal: fra il
+  test delle 06:45 e quello delle 06:48 nessuno aveva scritto un file del progetto (il turno di
+  pulizia ha solo letto `a.js` e `a.test.js`, fermi dalle 06:36), eppure le impronte erano
+  diverse; fra la richiesta di verifica (06:49:20) e il verdetto (06:54:09) lo stesso, e il pass
+  è stato scartato. Alle 06:56 l'impronta è cambiata anche per `.gitignore`, che non ha scritto
+  `arm` (non tocca `.gitignore`) ma il modello alle 06:55:44, seguendo l'istruzione di
+  `pass-stale` ("aggiungi l'output a `.gitignore`"): un file vero del progetto, che conta e che
+  il commit di chiusura include. Ora la regola è **"non tracciato sotto un percorso di stato
+  noto non conta"**: `.omc` e due file locali di Claude Code, `.claude/settings.local.json` (i
+  permessi "consenti sempre") e `.claude/scheduled_tasks.lock`; non tutta `.claude/`, che
+  contiene comandi, agenti e impostazioni del progetto, cioè codice. Un file **tracciato** in
+  quei percorsi conta ancora (un progetto che committa `.omc/` l'ha fatto diventare lavoro) e il
+  commit di chiusura ne prende le modifiche. La lista è una sola (`VOLATILE_PATHS` in
+  `src/shell/git.mjs`) per l'impronta (quindi anche per `worked` della macchina), il verbo
+  `test`, lo Stop, `baselineDirty` e la chiusura git, e si estende con `arm --ignore <percorso>`
+  (salvato nello stato del run) e `PERSEVERANZA_FINGERPRINT_IGNORE` (separati da virgola):
+  percorsi relativi validati, mai `..`, `.`, assoluti, glob o magie dei pathspec.
+- **La chiusura git falliva in un progetto che ignora `.perseveranza/`.** Il README lo consiglia,
+  ma `git add -A -- . ':(exclude).perseveranza'` esce con 1 ("The following paths are ignored")
+  quando il percorso escluso è già ignorato, e la chiusura non era mai confermata (pausa in
+  `git-finish`). Lo stesso vale per qualunque percorso escluso ignorato da un `.gitignore` o
+  dall'ignore globale dell'utente (su questa macchina `**/.claude/settings.local.json`). Ora una
+  cartella del loop o un percorso di stato è escluso solo se contiene file non tracciati e non
+  ignorati (uno ignorato non verrebbe aggiunto comunque), e lo stato di `git status` si legge con
+  `--untracked-files=all`, così un `.claude/` non tracciato non è un blocco unico.
+- **Nessun processo `node` per ogni chiamata di strumento.** La guardia della riconciliazione
+  (`tool.call`) avviava il ponte (`op 'tool-check'`) per ogni Edit, Write, Bash, PowerShell e
+  Agent di un loop armato: circa 130 ms a vuoto, e nel run due chiamate sono andate in timeout
+  dopo 8 s (`mod-hook-skipped`, `$.process.run(node) aborted`; il fail-open ha tenuto). Serve
+  solo con `signals.interrupted` impostato, dopo un ripristino. Ora la mod legge `state.json` con
+  `$.fs.read` e avvia il ponte solo quando il loop è in riconciliazione, o quando lo stato non si
+  legge come uno stato (assente con la sola copia pending, troncato, senza `phase`): lì decide
+  il ponte, con i suoi tentativi, come prima. Nel run della 3.0.1 erano 35 processi per le
+  chiamate di strumento (36 chiamate mutanti fra sessione e subagent, la prima prima di `arm`).
+- **I giudici scrivono il verdetto una volta sola.** Il primo `pf-reviewer` ha scritto
+  `review.json`; lo Stop l'ha preso subito (rinominato `review-2.json`); il revisore l'ha riletto,
+  non l'ha trovato, ha preso il percorso da `pwd` in Git Bash (`/tmp/claude/...`) e l'ha passato
+  allo strumento Write, che l'ha risolto in `C:\tmp\claude\...`, fuori dal progetto: negato
+  (`permission_denials` nell'uscita). Poi l'ha riscritto con un heredoc di Bash, con l'id di
+  richiesta vecchio (scartato, come deve). I prompt passavano un percorso relativo, giusto; ora
+  `pf-reviewer` e `pf-verifier` dicono di scriverlo una volta, come ultima azione, di non
+  rileggerlo né cercarlo (un verdetto che non c'è più è stato ricevuto) e di non costruirne il
+  percorso dall'uscita della shell.
+- **Un run fermato dal budget dopo una verifica passata lo dice.** `summary.json` ha
+  `finalVerify` (l'esito dell'ultima verifica finale e, se scartata, il motivo) e, per un
+  `budget-*`, `outcomeNote` ("stopped by the iterations budget (8/6 iterations); last final
+  verification: pass (stale: code-changed): ..."); `runs list` mostra `verify=pass(stale)`,
+  `runs show` la nota, e la notifica dice che la verifica era passata.
+- **Un `claim-done` al tetto delle iterazioni viene letto.** Il budget si controlla prima di
+  leggere i segnali, e la grazia di 3 iterazioni valeva solo in pulizia, verifica e chiusura: un
+  loop che dichiarava finito il lavoro proprio al tetto veniva archiviato senza pulizia né
+  verifica. Il secondo run reale (codice di questo giro, `--max 6`) è finito così, 6/6, con il
+  claim e un test verde appena registrati: un revisore lento aveva consumato un'iterazione
+  (tre attese, poi `missing`). Ora la grazia vale anche per lo Stop che porta un `claim-done`;
+  resta un tetto (al più max + 3, mai sommata), il claim lo giudica la macchina come sempre, e un
+  claim rifiutato o una verifica che rimanda in implement tornano sotto il tetto pieno
+  (`docs/loop-budget.md`, README).
+- **README: permessi e costo degli hook.** `arm`, `test` e `ask` sono comandi di shell: in
+  `claude -p` vanno concessi (`--allowedTools` o una regola `Bash(node *perseveranza.mjs* arm *)`,
+  verificata su Claude Code 2.1.292). Ogni turno paga gli hook dell'utente; per un run headless
+  la via è `--setting-sources project --plugin-dir`, non `disableAllHooks` né `--bare`, che
+  spengono anche la mod. `/perseveranza` passa `--ignore` ad `arm`.
+
+Il terzo run reale, con tutto questo, ha chiuso con la verifica finale e il commit (solo `a.js` e
+`a.test.js`; lo stato di oh-my-claudecode, riscritto fra la richiesta di verifica e il verdetto,
+non tracciato e fuori dal commit), nessun processo per le chiamate di strumento e nessun
+`mod-hook-skipped`. Ma lo ha fatto in un secondo loop: il primo è finito per budget (6/6, una
+review bocciata all'iterazione 6) mentre un revisore in background lavorava ancora, e quando la
+sua notifica ha riaperto il turno il modello ha trovato il loop disarmato e lo ha **riarmato da
+sé** con Bash (`arm`, permesso dall'utente con `--allowedTools Bash`), dichiarando subito finito il
+lavoro. È un limite noto, non corretto qui: con il permesso di Bash per `arm` il modello può
+ripartire dopo un budget; la verifica finale avversariale resta comunque obbligatoria.
+
 ### Correzioni multi-piattaforma
 
 La CI (Ubuntu, macOS e Windows con Node 20 e 22) era rossa dalla 3.0.0: la suite era stata
 provata solo su Windows. Due difetti veri del codice, visibili su macOS (quattro test rossi), e
 sei test che davano per scontato Windows o una macchina lenta, più uno che dava per scontato un
-utente non root. Dettagli e classificazione in `docs/PIANO-MOD.md`. Versione in `plugin.json` e
-`package.json` invariata (la decide chi rilascia).
+utente non root. Dettagli e classificazione in `docs/PIANO-MOD.md`.
 
 - **`node install.mjs` da un percorso con un collegamento non faceva niente.** Lo script
   confrontava il proprio URL (Node carica il modulo principale dal percorso reale) con

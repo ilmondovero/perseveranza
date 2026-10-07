@@ -33,6 +33,7 @@ export const RUNTIME_FILES = [
   'src/shell/restore.mjs',
   'src/shell/effects.mjs',
   'src/shell/git.mjs',
+  'src/shell/tool-state.mjs',
   'src/shell/journal.mjs',
   'src/shell/transcript.mjs',
   'src/shell/notify.mjs',

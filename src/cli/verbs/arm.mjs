@@ -6,7 +6,7 @@ import { defaultState, COMPLEXITIES, LENSES, AUTO_LENSES_HIGH, ADVISOR_MODEL_RE,
 import { appendJournal } from '../../shell/journal.mjs';
 import { spawnWatchdog } from '../../shell/watchdog.mjs';
 import { RETAINED_STATE } from '../../shell/archive.mjs';
-import { baselineDirty } from '../../shell/git.mjs';
+import { baselineDirty, ignorePath, volatilePaths, FINGERPRINT_IGNORE_ENV, MAX_IGNORE } from '../../shell/git.mjs';
 import { detectAvailable, hasBinary, modelLabel, PROVIDERS, checkProvider } from '../../providers/registry.mjs';
 import { effectiveEnv, disabledProviders, detectLang, lastChecks, recordCheck, disableProvider, providerTimeoutOverride, reachabilitySummary } from '../../providers/config.mjs';
 import { packPath } from '../../shell/packs.mjs';
@@ -34,6 +34,8 @@ export const OPTIONS = {
   force: { type: 'boolean' },
   check: { type: 'boolean' },
   'no-mod-check': { type: 'boolean' },
+  // a path (or folder) whose UNTRACKED files are not the work: repeatable, or comma-separated
+  ignore: { type: 'string', multiple: true },
 };
 
 // Is the perseveranza mod alive in the session that arms? (mod-alive.mjs) -> what arm does:
@@ -99,6 +101,12 @@ export async function run({ argv, cwd, env }) {
   if (v['advisor-model'] != null && !ADVISOR_MODEL_RE.test(v['advisor-model'].trim())) throw new VerbError('Invalid --advisor-model: a model name such as opus, sonnet or haiku (letters, digits, . _ : - [ ])');
   const envModel = typeof env.PERSEVERANZA_ADVISOR_MODEL === 'string' ? env.PERSEVERANZA_ADVISOR_MODEL.trim() : '';
   const envModelBad = !!envModel && !ADVISOR_MODEL_RE.test(envModel);
+  // --ignore: relative paths inside the project, never one that would leave out everything
+  const askedIgnore = (v.ignore || []).flatMap((x) => String(x).split(',')).map((x) => x.trim()).filter(Boolean);
+  const badIgnore = askedIgnore.filter((x) => !ignorePath(x));
+  if (badIgnore.length) throw new VerbError(`Invalid --ignore (${badIgnore.join(', ')}): a relative path or folder inside the project (no absolute path, no '..', no '.' alone, no glob or pathspec magic)`);
+  const fingerprintIgnore = [...new Set(askedIgnore.map(ignorePath))];
+  if (fingerprintIgnore.length > MAX_IGNORE) throw new VerbError(`Too many --ignore paths (${fingerprintIgnore.length}, at most ${MAX_IGNORE})`);
   const advisorModel = v['advisor-model'] != null ? v['advisor-model'].trim() : envModel && !envModelBad ? envModel : DEFAULT_ADVISOR_MODEL;
   const paths = gate(cwd);
   // a project rooted in the home directory: its loop folder would be ~/.perseveranza itself,
@@ -154,6 +162,7 @@ export async function run({ argv, cwd, env }) {
       advisor: advisorFlag === 'on',
       advisorModel,
       loopMode: mod.loopMode,
+      fingerprintIgnore,
     },
     limits: {
       maxIterations: v.max ? positiveInt(v.max, 25) : 25,
@@ -161,7 +170,7 @@ export async function run({ argv, cwd, env }) {
       maxRetries: v['max-retries'] ? positiveInt(v['max-retries'], 3) : 3,
       maxTokens,
     },
-    baselineDirty: baselineDirty(cwd),
+    baselineDirty: baselineDirty(cwd, { volatile: volatilePaths({ env, extra: fingerprintIgnore }).paths }),
     armedAt: new Date().toISOString(),
     engineVersion: currentVersion(ROOT),
   });
@@ -196,6 +205,9 @@ export async function run({ argv, cwd, env }) {
   console.log(state.options.advisor
     ? `Internal advisor: on (model ${advisorModel}, agent pf-advisor)${envModelBad ? `; PERSEVERANZA_ADVISOR_MODEL "${envModel}" is not a model name, ignored` : ''}. ${externals.length ? 'If no external model answers on the plan, before' : 'Before'} stopping with the plan ask pf-advisor with model=${advisorModel} (clean context) for a critique of task + plan: it writes .perseveranza/advisor-plan-0.md. It is consultative (a missing opinion does not block) and returns from the 2nd fix of a step.`
     : 'Internal advisor: off (--advisor off)');
+  const vol = volatilePaths({ env, extra: fingerprintIgnore });
+  console.log(`Not the work (untracked files left out of the tree snapshot and of the final commit): ${vol.paths.join(', ')}`);
+  if (vol.rejected.length) console.log(`Note: ${FINGERPRINT_IGNORE_ENV} entries refused (absolute, '..', '.', glob): ${vol.rejected.join(', ')}`);
   if (state.options.testCmd) console.log(`Test suite: ${state.options.testCmd} (claim-done will require a fresh green run through the test verb)`);
   console.log(mod.warn || mod.note);
   console.log(`Instruction language: ${lang}${lang === 'en' ? ' (shipped defaults)' : ` (packs/${lang}.json)`}`);

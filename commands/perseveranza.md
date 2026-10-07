@@ -1,6 +1,6 @@
 ---
 description: Arm the perseveranza feedback loop (plan -> implement -> review -> adversarial final verification) and start the task
-argument-hint: <task description> [--max N] [--commit] [--external off] [--check] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--verifiers lenses] [--advisor on|off] [--advisor-model name] [--lang en]
+argument-hint: <task description> [--max N] [--commit] [--external off] [--check] [--test "cmd"] [--no-git-finish] [--no-push] [--approve-plan] [--budget-tokens N] [--verifiers lenses] [--advisor on|off] [--advisor-model name] [--lang en] [--ignore path]
 ---
 
 Enable "perseveranza" mode for the task below and start working on it.
@@ -28,7 +28,8 @@ Steps to run NOW, in order:
 
 1. If the text above contains flags (`--max N`, `--commit`, `--external off`, `--check`,
    `--test "cmd"`, `--no-git-finish`, `--no-push`, `--approve-plan`, `--budget-tokens N`,
-   `--verifiers <lenses>`, `--advisor on|off`, `--advisor-model <name>`, `--lang xx`),
+   `--verifiers <lenses>`, `--advisor on|off`, `--advisor-model <name>`, `--lang xx`,
+   `--ignore <path>`),
    REMOVE them from the task description and pass them to the command; otherwise keep the
    defaults. Escape double quotes inside the task. If the project has a test suite and the
    user did not pass `--test`, find it yourself (package.json, Makefile, pytest...) and pass
@@ -53,7 +54,8 @@ Steps to run NOW, in order:
    verifier per lens, among general, correctness, security, tests (default auto: those three
    at complexity high, otherwise the single general verifier); `--advisor off` = no internal
    advisor (default on); `--advisor-model <name>` = its model (default `PERSEVERANZA_ADVISOR_MODEL`,
-   else opus).)
+   else opus); `--ignore <path>` = untracked files under that path are not the work (another
+   tool's state, a scratch folder): left out of the tree snapshot and of the final commit.)
    If the command says the loop is ALREADY armed, do not force it: show the user
    `status` and ask whether to `disarm` first. If it says the perseveranza mod is not
    running in this session, show the user its message (the causes and how to go on) and stop:

@@ -71,6 +71,9 @@ export function defaultState(overrides = {}) {
       // how the instructions name the verbs: 'tool' (the mod's `perseveranza` tool, set by
       // `arm` when the mod is alive in the arming session) or 'shell' (the CLI command)
       loopMode: 'shell',
+      // paths whose UNTRACKED files the work-tree fingerprint and the git finish leave out, beside
+      // the known tool state (git.mjs VOLATILE_PATHS): arm --ignore, validated there
+      fingerprintIgnore: [],
     },
     // staleGates: final passes in a row that did not cover the current tree (pass-stale)
     // subagentWaits: stops answered with subagent-running (a pf-* subagent still running,
@@ -283,6 +286,8 @@ export function normalizeState(raw) {
   s.options.advisor = bool(s.options.advisor, true);
   s.options.advisorModel = normalizeAdvisorModel(s.options.advisorModel);
   s.options.loopMode = s.options.loopMode === 'tool' ? 'tool' : 'shell';
+  // plain relative paths only (git.mjs ignorePath validates them again where they are used)
+  s.options.fingerprintIgnore = Array.isArray(s.options.fingerprintIgnore) ? s.options.fingerprintIgnore.filter((p) => typeof p === 'string' && p && p.length <= 200).slice(0, 50) : [];
   s.baselineDirty = Array.isArray(s.baselineDirty) ? s.baselineDirty.map(String) : [];
   if (s.lastTest && typeof s.lastTest === 'object') {
     s.lastTest = {

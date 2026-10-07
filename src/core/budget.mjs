@@ -20,8 +20,14 @@ export function tokensSpent(usage) {
   return (Number(usage.inputTokens) || 0) + (Number(usage.outputTokens) || 0);
 }
 
+// The grace also covers the stop that carries a claim-done (signals.claimedDone, not yet read):
+// the budget is checked before the claim, so a loop that declared the work done at the cap was
+// archived one stop short of its cleanup (a real run, --max 6: claimed at 6, stopped 6/6). The
+// claim is still judged by the machine; a refused one leaves the loop in implement, over the
+// plain cap at the next stop. The grace never adds up: cap = max + EXIT_RAMP_GRACE at most.
 export function iterationCap(state) {
-  const grace = EXIT_RAMP.includes(state.phase) ? EXIT_RAMP_GRACE : 0;
+  const claimed = !!(state.signals && state.signals.claimedDone === true);
+  const grace = EXIT_RAMP.includes(state.phase) || claimed ? EXIT_RAMP_GRACE : 0;
   return state.limits.maxIterations + grace;
 }
 

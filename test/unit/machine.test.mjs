@@ -582,6 +582,36 @@ test('budget exhausted: archive, disarm, notify, allowStop; grace on the exit ra
   const tok = run(mk({ phase: 'implement', limits: { maxTokens: 10 } }), { usage: { inputTokens: 8, outputTokens: 5 } });
   assert.equal(tok.outcome, 'budget');
   assert.ok(journal(tok).some((j) => j.type === 'budget' && j.reason === 'tokens'));
+  // the notice of a plain budget stop, and of one after a final pass that went stale (a real
+  // run: 8/6 after pass-stale): the work passed, it is not a failed verification
+  const plain = r.effects.find((x) => x.type === 'notify').message;
+  assert.match(plain, /^Loop stopped: iterations budget exhausted \(25\/25 iterations\) - /);
+  assert.doesNotMatch(plain, /PASSED/);
+  const stale = run(mk({ phase: 'implement', counters: { iterations: 8, staleGates: 1 }, limits: { maxIterations: 6, maxIterationsExplicit: true } }));
+  assert.equal(stale.outcome, 'budget');
+  assert.match(stale.effects.find((x) => x.type === 'notify').message, /iterations budget exhausted \(8\/6 iterations\); the last final verification PASSED but did not cover the tree at the stop \(stale\), so nothing was committed/);
+});
+
+test('the exit ramp (cleanup, final-verify, git-finish) has EXIT_RAMP_GRACE more iterations; back in implement it has not', () => {
+  // --max 6: the final verification may run up to 9; a pass-stale sends the loop back to
+  // implement at 8, and the next stop ends it there (8/6), before the new claim is read
+  for (const phase of ['cleanup', 'final-verify', 'git-finish']) {
+    assert.notEqual(run(mk({ phase, counters: { iterations: 8 }, limits: { maxIterations: 6, maxIterationsExplicit: true } })).outcome, 'budget', phase);
+    assert.equal(run(mk({ phase, counters: { iterations: 9 }, limits: { maxIterations: 6, maxIterationsExplicit: true } })).outcome, 'budget', phase);
+  }
+  assert.equal(run(mk({ phase: 'implement', counters: { iterations: 6 }, limits: { maxIterations: 6, maxIterationsExplicit: true } })).outcome, 'budget');
+});
+
+test('a claim-done at the cap is read (exit ramp grace): to cleanup, not archived', () => {
+  // the second real run of 3.0.2: --max 6, a slow reviewer cost one iteration, the claim came at 6
+  const s = mk({ phase: 'implement', counters: { iterations: 6 }, limits: { maxIterations: 6, maxIterationsExplicit: true }, signals: { claimedDone: true }, options: { testCmd: null } });
+  const r = run(s, { planExists: true, planText: PLAN_DONE });
+  assert.notEqual(r.outcome, 'budget', r.reason);
+  assert.equal(r.state.phase, 'cleanup', r.reason);
+  // refused (open steps): back in implement, and the next stop is over the plain cap
+  const refused = run(mk({ phase: 'implement', counters: { iterations: 6 }, limits: { maxIterations: 6, maxIterationsExplicit: true }, signals: { claimedDone: true } }), { planExists: true, planText: PLAN });
+  assert.equal(refused.state.phase, 'implement');
+  assert.equal(run(refused.state, { planExists: true, planText: PLAN }).outcome, 'budget');
 });
 
 test('session scoping: first fire claims, a foreign session is ignored however long the owner is silent', () => {

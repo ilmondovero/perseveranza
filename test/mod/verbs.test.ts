@@ -455,6 +455,15 @@ describe('the tool: the gate and the reconciliation', () => {
     expect(w.cliRuns).toHaveLength(0)
   })
 
+  test('a loop not being reconciled: a verb that changes something runs without asking the guard (no extra process)', async ($, on) => {
+    const free = JSON.stringify({ schemaVersion: 2, phase: 'implement', owner: { sessionId: 'S1' }, signals: { interrupted: null } })
+    const w = world(on, { stateText: free, answer: () => ({ ok: true, deny: 'perseveranza: reconciling' }) })
+    const r: any = await tool($, { verb: 'pause' })
+    expect(r.result).toContain('perseveranza pause: done')
+    expect(w.ops('tool-check')).toHaveLength(0)
+    expect(w.cliRuns).toHaveLength(1)
+  })
+
   test('the read-only verbs do not ask the guard nor read the owner', async ($, on) => {
     const w = world(on, {})
     for (const verb of ['status', 'history', 'explain']) await tool($, { verb })

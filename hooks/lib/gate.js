@@ -5,7 +5,9 @@
 // $.process.run is CLI only: the mod drives the loop in `claude` and `claude -p`, not in the
 // desktop app or the VS Code extension. The exceptions, all small: the existence checks of
 // the loop's state files ($.fs.exists: a project without a loop never pays for a node
-// process), the owner read by a failed stop, and the fault marker (writeFault below).
+// process), the owner read by a failed stop and by the tool, the reconciliation flag read by
+// the guard of a tool call (tool.js needsGuard: no process per Edit/Write/Bash), and the fault
+// marker (writeFault below).
 //
 // The flushes (activity, tokens) run one at a time through a serial queue: a slow flush and
 // the next debounce never write side by side. A stop, a judge's check and the read-only

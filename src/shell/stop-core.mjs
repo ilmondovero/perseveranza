@@ -25,7 +25,7 @@ import { notify } from './notify.mjs';
 import { archiveRun, archiveFailureNote, RETAINED_STATE, DISARMED_MARK } from './archive.mjs';
 import { loadStateFile, PENDING, READ_TRIES, RENAME_WAIT_MS, sleepMs } from './state-file.mjs';
 import { loadPromptLayers } from './packs.mjs';
-import { treeFingerprints } from './git.mjs';
+import { treeFingerprints, volatilePaths } from './git.mjs';
 import { readSessionUsage } from './transcript.mjs';
 import { readUsageInbox, applyInbox, removeInboxFiles, settleSeen, boundSeen, foreignReason, defaultUnlink, writeUsageDelta, gone, INBOX_DIR } from './usage-inbox.mjs';
 import { readLife } from './life.mjs';
@@ -276,7 +276,7 @@ function runStopOnce(args, attempt, note = {}) {
   // The tree at every stop, within the hook's remaining time: it revalidates a pending claim,
   // tells the phases whether the recorded green still holds, and shows a stop that changed
   // nothing. null = could not be computed (not a repo, deadline): never read as "changed".
-  const fps = treeFingerprints(cwd, { deadline: DEADLINE });
+  const fps = treeFingerprints(cwd, { deadline: DEADLINE, volatile: volatilePaths({ env, extra: s.options.fingerprintIgnore }).paths });
   // not for a session that does not own the loop: the machine touches nothing for it, and its
   // transcripts would only evict the owner's cache
   const foreign = s.owner.sessionId && evt && typeof evt.session_id === 'string' && evt.session_id && evt.session_id !== s.owner.sessionId;

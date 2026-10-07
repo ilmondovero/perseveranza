@@ -312,7 +312,8 @@ export function step(input, event = {}, ctx0 = {}) {
       { type: 'saveState' },
       { type: 'archiveRun', outcome: `budget-${budget.reason}` },
       { type: 'disarm' },
-      { type: 'notify', title: NOTIFY_TITLE, message: `Loop stopped: ${budget.reason} budget exhausted (${budget.detail}) - ${proj}` },
+      // a final pass the stop could not keep (pass-stale) is not a failed verification: said
+      { type: 'notify', title: NOTIFY_TITLE, message: `Loop stopped: ${budget.reason} budget exhausted (${budget.detail})${s.counters.staleGates > 0 ? '; the last final verification PASSED but did not cover the tree at the stop (stale), so nothing was committed' : ''} - ${proj}` },
       { type: 'allowStop' },
     ]);
   }

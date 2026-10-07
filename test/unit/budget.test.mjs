@@ -18,6 +18,21 @@ test('iteration cap: grace only on the exit ramp', () => {
   assert.equal(iterationCap(mk({ phase: 'git-finish', limits: { maxIterations: 10 } })), 10 + EXIT_RAMP_GRACE);
 });
 
+test('iteration cap: a pending claim-done gets the exit ramp grace, once', () => {
+  // a real run (--max 6): claim-done at iteration 6, archived 6/6 before the claim was read
+  const claimed = mk({ phase: 'implement', counters: { iterations: 6 }, limits: { maxIterations: 6 }, signals: { claimedDone: true } });
+  assert.equal(iterationCap(claimed), 6 + EXIT_RAMP_GRACE);
+  assert.equal(canContinue(claimed).ok, true);
+  // without the claim: the plain cap
+  assert.equal(canContinue(mk({ phase: 'implement', counters: { iterations: 6 }, limits: { maxIterations: 6 } })).ok, false);
+  // claimed on the ramp: no double grace
+  assert.equal(iterationCap(mk({ phase: 'final-verify', limits: { maxIterations: 6 }, signals: { claimedDone: true } })), 6 + EXIT_RAMP_GRACE);
+  // the grace is a ceiling: a claim at max + grace is not let through
+  assert.equal(canContinue(mk({ phase: 'implement', counters: { iterations: 9 }, limits: { maxIterations: 6 }, signals: { claimedDone: true } })).ok, false);
+  // only a real true counts
+  assert.equal(iterationCap(mk({ phase: 'implement', limits: { maxIterations: 6 }, signals: { claimedDone: 'yes' } })), 6);
+});
+
 test('canContinue: iterations', () => {
   assert.equal(canContinue(mk({ counters: { iterations: 9 }, limits: { maxIterations: 10 } })).ok, true);
   const r = canContinue(mk({ counters: { iterations: 10 }, limits: { maxIterations: 10 } }));

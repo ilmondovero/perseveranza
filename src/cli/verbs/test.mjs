@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { gate, requireState, changeState, argsAfterDoubleDash, VerbError } from '../shared.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
-import { treeFingerprints } from '../../shell/git.mjs';
+import { treeFingerprints, volatilePaths } from '../../shell/git.mjs';
 import { parseTimeoutMs } from '../../shell/util.mjs';
 import { readActivity, writeActivity } from '../../shell/activity.mjs';
 
@@ -117,9 +117,11 @@ export async function run({ argv, rawArgv, cwd, env }) {
   const cmd = argsAfterDoubleDash(rawArgv) || s.options.testCmd || '';
   if (!cmd) throw new VerbError('Usage: test [--if-needed] -- <command> (or configure --test at arm)');
   const it = s.counters.iterations;
+  // the same paths the Stop leaves out (stop-core.mjs): the tool state of other plugins, the run's --ignore
+  const volatile = volatilePaths({ env, extra: s.options.fingerprintIgnore }).paths;
 
   if (ifNeeded) {
-    const fp = treeFingerprints(cwd);
+    const fp = treeFingerprints(cwd, { volatile });
     const v = greenStillValid(s.lastTest, fp);
     if (v.same) {
       const prev = s.lastTest;
@@ -138,7 +140,7 @@ export async function run({ argv, rawArgv, cwd, env }) {
   const timeout = parseTimeoutMs(env.PERSEVERANZA_TEST_TIMEOUT_MS, 1800000); // heavy suites: 30 min default
   const r = await runSuite(cmd, { timeout, env, gateDir: paths.gateDir, heartbeatMs: parseTimeoutMs(env.PERSEVERANZA_ACTIVITY_HEARTBEAT_MS, 60000), sessionId: s.owner.sessionId });
   const exitCode = r.status;
-  const fp = treeFingerprints(cwd);
+  const fp = treeFingerprints(cwd, { volatile });
   const failed = exitCode === 0 ? [] : parseFailedTests(r.output);
   // the suite may have run for minutes, with Stops saving meanwhile (usage, phase, counters):
   // the result goes on the state as it is now, never on the copy read before the run

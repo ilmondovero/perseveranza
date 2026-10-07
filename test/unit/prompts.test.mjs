@@ -56,3 +56,28 @@ test('missingKeys lists what a pack does not cover', () => {
   const full = Object.fromEntries(PROMPT_KEYS.map((k) => [k, 'x']));
   assert.deepEqual(missingKeys(full), []);
 });
+
+// A real run (3.0.1, Windows, Git Bash): the reviewer wrote review.json, the Stop took it at
+// once (renamed review-2.json), the reviewer read it back, found nothing, ran `pwd` (Git Bash:
+// /tmp/claude/...) and wrote there with the Write tool, which resolved it to C:\tmp\claude\...,
+// outside the project: denied. The prompts hand the judges a relative path; the agents are told
+// to write once, not to look for the file again, and not to build its path from shell output.
+test('the judges write their verdict once, by the relative path, never from pwd', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { ROOT } = await import('../../src/shell/paths.mjs');
+  for (const [agent, file] of [['pf-reviewer', 'review.json'], ['pf-verifier', 'verify.json']]) {
+    const text = readFileSync(join(ROOT, 'agents', `${agent}.md`), 'utf8').replace(/\s+/g, ' ');
+    assert.ok(text.includes(`Write \`.perseveranza/${file}\` (relative to the current working directory)`), agent);
+    assert.ok(text.includes('Write it ONCE, with the Write tool and the relative path above, as your last action.'), agent);
+    assert.ok(text.includes('Do not read it back, look for it or write it again'), agent);
+    assert.ok(text.includes('a verdict you no longer find was received, not lost'), agent);
+    assert.ok(/Never build its path from `pwd` or other shell output: in Git Bash on Windows `pwd` prints a POSIX path/.test(text), agent);
+  }
+  for (const key of ['review-delegate', 'final-verify']) {
+    const p = DEFAULT_PROMPTS[key];
+    assert.match(p, /\.perseveranza\/(review|verify)\.json/, key);
+    // no absolute path and no placeholder that could carry one into the verdict's path
+    assert.doesNotMatch(p, /[A-Za-z]:[\/]|\/tmp\/|\{\{(cwd|gateDir|root)\}\}/, key);
+  }
+});

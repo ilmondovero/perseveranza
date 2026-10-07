@@ -17,8 +17,8 @@ export type WorldOptions = {
   gate?: boolean | 'throw' | ((path: string) => boolean | 'throw')
   // instead of gate: the names that exist in the project's .perseveranza/ (the folder exists too)
   files?: string[]
-  // $.fs.read of .perseveranza/state.json (absent: the read is refused)
-  stateText?: string
+  // $.fs.read of .perseveranza/state.json (absent: the read is refused; a function: read at each call)
+  stateText?: string | (() => string)
   // $.fs.write refused
   writeFails?: boolean
   // what Claude Code (or a settings hook) beneath answers at Stop
@@ -95,7 +95,8 @@ export function world(on: any, opts: WorldOptions = {}) {
   const reads: string[] = []
   on('fs.read', ($: any, e: any) => {
     reads.push(slash(e.path))
-    return typeof opts.stateText === 'string' && slash(e.path).endsWith('/.perseveranza/state.json') ? { value: opts.stateText } : { deny: 'ENOENT' }
+    const text = typeof opts.stateText === 'function' ? opts.stateText() : opts.stateText
+    return typeof text === 'string' && slash(e.path).endsWith('/.perseveranza/state.json') ? { value: text } : { deny: 'ENOENT' }
   })
   const writes: { path: string; text: string }[] = []
   // the mod's sign of life (<home>/mod-alive/<session>.json) apart from the project's files

@@ -19,17 +19,19 @@ const OLD_PREFIX = /o[m]c/i;
 //   src/shell/legacy.mjs  the one module that knows the old names
 //   src/shell/legacy-hashes.mjs  its table, generated from git: the paths earlier installs wrote
 //   .gitignore            the local state of another tool, ignored in this repository
+//   src/shell/tool-state.mjs  the same tool's state folder in a user's project, left out of the
+//                         work tree's fingerprint (3.0.2): the code and the tests name it from there
 //   the dated docs below  records of their time; each opens with the 3.0.0 note
 const HISTORICAL_DOCS = ['docs/CODE-REVIEW-2026-09-05.md', 'docs/SEGNALAZIONE-2026-09-07-loop-orfano.md', 'docs/PIANO-V2.md', 'docs/REVIEW-NOTES.md'];
-const ALLOWED = new Set(['CHANGELOG.md', LEGACY_MODULE, 'src/shell/legacy-hashes.mjs', '.gitignore', ...HISTORICAL_DOCS]);
+const ALLOWED = new Set(['CHANGELOG.md', LEGACY_MODULE, 'src/shell/legacy-hashes.mjs', '.gitignore', 'src/shell/tool-state.mjs', ...HISTORICAL_DOCS]);
 const KEPT_ENV = ['PERSEVERANZA_HOME', 'PERSEVERANZA_LANG'];
 // new in 3.0 and not a setting: the mod sets it for the CLI it runs (src/cli/perseveranza.mjs
 // journals the verbs as `via: 'tool'` or 'command'); no 2.x name, nothing to document
 const INTERNAL_ENV = ['PERSEVERANZA_VIA'];
 // new in 3.0, settings with no 2.x name, documented in both READMEs: how long a Stop waits for a
 // pf-* subagent still at work (stop-core.mjs subagentWaitMs), and the node the mod runs
-// (hooks/lib/gate.js setup)
-const NEW_ENV = ['PERSEVERANZA_SUBAGENT_WAIT_MS', 'PERSEVERANZA_NODE'];
+// (hooks/lib/gate.js setup), and (3.0.2) the paths whose untracked files are not the work (git.mjs)
+const NEW_ENV = ['PERSEVERANZA_SUBAGENT_WAIT_MS', 'PERSEVERANZA_NODE', 'PERSEVERANZA_FINGERPRINT_IGNORE'];
 
 function walk(dir, out = []) {
   for (const n of readdirSync(dir)) {

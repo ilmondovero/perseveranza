@@ -97,3 +97,32 @@ test('archive with rename refused for another reason fails and retains the run',
   assert.equal(listRuns(p.env).length, 0);
   assert.equal(fs.existsSync(gate(p, RETAINED_STATE)), true);
 });
+
+// A budget stop is not a failed verification: the summary says how the last final verification
+// went (a real 3.0.1 run: pass at iteration 7, voided as pass-stale by other tools' state, then
+// 8/6 iterations).
+test('summary: the last final verification and an outcome note for a budget stop', async () => {
+  const { buildSummary, lastFinalVerify, outcomeNote } = await import('../../src/shell/archive.mjs');
+  const J = [
+    { type: 'transition', from: 'cleanup', to: 'final-verify', outcome: 'always', ts: 't1' },
+    { type: 'verdict', artifact: 'verify.json', pass: true, ts: 't2' },
+    { type: 'transition', from: 'final-verify', to: 'implement', outcome: 'pass-stale', gate: 'code-changed', ts: 't3' },
+    { type: 'budget', reason: 'iterations', detail: '8/6 iterations', ts: 't4' },
+  ];
+  assert.deepEqual(lastFinalVerify(J), { outcome: 'pass-stale', pass: true, stale: 'code-changed', ts: 't3' });
+  const s = buildSummary(defaultState({ task: 't' }), J, 'budget-iterations');
+  assert.equal(s.outcome, 'budget-iterations');
+  assert.equal(s.outcomeNote, 'stopped by the iterations budget (8/6 iterations); last final verification: pass (stale: code-changed): the work passed, the pass did not cover the tree at the stop, nothing was committed');
+  assert.deepEqual(s.finalVerify, lastFinalVerify(J));
+  // a rejection, no verification at all, a pass that went on: each said as it was
+  const rejected = [J[0], { type: 'transition', from: 'final-verify', to: 'implement', outcome: 'fail', ts: 't3' }, J[3]];
+  assert.match(outcomeNote('budget-iterations', rejected), /last final verification: rejected \(fail\)$/);
+  assert.equal(outcomeNote('budget-tokens', [{ type: 'budget', reason: 'tokens', detail: '9/8 tokens' }]), 'stopped by the tokens budget (9/8 tokens), before any final verification');
+  assert.match(outcomeNote('budget-iterations', [J[0], { type: 'transition', from: 'final-verify', to: 'git-finish', outcome: 'pass' }]), /last final verification: pass$/);
+  // the adaptive budget line is not the stop's
+  assert.equal(outcomeNote('budget-iterations', [{ type: 'budget', adaptive: true, steps: 2, maxIterations: 14 }]), 'stopped by the iterations budget, before any final verification');
+  // a run that ended otherwise has no note; a subagent-running wait inside final-verify is not its end
+  assert.equal(outcomeNote('done', J), null);
+  assert.equal(buildSummary(defaultState(), J, 'done').outcomeNote, undefined);
+  assert.equal(lastFinalVerify([J[0], { type: 'transition', from: 'final-verify', to: 'final-verify', outcome: 'subagent-running' }]), null);
+});
