@@ -262,7 +262,10 @@ test('the test verb: a 4 s suite with a Stop counting 1000 tokens meanwhile -> t
 
 // ---------------------------------------------------------------- the Stop merges the verbs
 test('verbs during a slow Stop: report and claim-done written while it runs are kept, the tokens too', () => {
-  const p = pausedLoop();
+  // a running loop (no plan yet): the Stop does not pause, the verbs record
+  const p = project();
+  arm(p, 'state files');
+  stopIn(p);
   delta(p, 400);
   const statePath = gate(p, 'state.json');
   let reads = 0;
@@ -277,18 +280,53 @@ test('verbs during a slow Stop: report and claim-done written while it runs are 
   stopIn(p, { fs });
   assert.ok(reads >= 2, String(reads)); // the second is the merge's; then the check before the rename
   const s = readState(p);
+  assert.equal(s.signals.paused, false);
   assert.equal(s.signals.lastReport, 'fail');
   assert.equal(s.signals.claimedDone, true);
   assert.equal(s.usage.inputTokens, 400, 'and the Stop\'s count');
   assert.equal(s.rev, 4, 'past the verbs\' revs (arm 0, first stop 1, report 2, claim-done 3)');
   const m = journal(p).find((j) => j.type === 'state-merged');
   assert.ok(m && m.fields.includes('signals.lastReport') && m.fields.includes('signals.claimedDone'), JSON.stringify(m));
+  assert.ok(!journal(p).some((j) => j.type === 'outcome-dropped-paused'));
   assert.equal(inbox(p).length, 1, 'counted and named; the next stop removes it');
+});
+
+test('a Stop whose result is paused does not carry the outcomes written while it ran; the other verb fields and the tokens it does', () => {
+  const p = pausedLoop();
+  delta(p, 400);
+  const statePath = gate(p, 'state.json');
+  const paths = { gateDir: gate(p, ''), statePath };
+  let reads = 0;
+  // written as the verbs write them (updateState): on a paused loop report and claim-done refuse
+  // through the CLI, and the Stop must not take them from disk either (an escalating Stop: the
+  // verb found the loop not yet paused)
+  const fs = { readFileSync: (path, enc) => {
+    if (path === statePath && ++reads === 2) {
+      assert.equal(updateState(paths, (st) => { st.signals.lastReport = 'pass'; }).ok, true);
+      assert.equal(updateState(paths, (st) => { st.signals.claimedDone = true; }).ok, true);
+      assert.equal(updateState(paths, (st) => { st.complexity = 'high'; }).ok, true);
+    }
+    return readFileSync(path, enc);
+  } };
+  stopIn(p, { fs });
+  const s = readState(p);
+  assert.equal(s.signals.paused, true);
+  assert.equal(s.signals.lastReport, 'none', 'the outcome is not in the paused state');
+  assert.equal(s.signals.claimedDone, false);
+  assert.equal(s.complexity, 'high', 'a verb field that is no outcome is merged as before');
+  assert.equal(s.usage.inputTokens, 400);
+  const d = journal(p).filter((j) => j.type === 'outcome-dropped-paused');
+  assert.equal(d.length, 1, JSON.stringify(d));
+  assert.deepEqual(d[0].fields, ['signals.lastReport', 'signals.claimedDone']);
+  assert.deepEqual(d[0].values, { lastReport: 'pass', claimedDone: true });
+  assert.equal(d[0].by, 'stop');
+  const m = journal(p).find((j) => j.type === 'state-merged');
+  assert.ok(m && m.fields.includes('complexity') && !m.fields.includes('signals.lastReport') && !m.fields.includes('signals.claimedDone'), JSON.stringify(m));
   // a verb right after the save rereads it: nothing of the Stop is lost
   delta(p, 100);
-  stopIn(p, { afterSave: () => assert.equal(cli(p, 'complexity', 'high').code, 0) });
+  stopIn(p, { afterSave: () => assert.equal(cli(p, 'complexity', 'low').code, 0) });
   const t = readState(p);
-  assert.deepEqual([t.usage.inputTokens, t.complexity, t.signals.lastReport], [500, 'high', 'fail']);
+  assert.deepEqual([t.usage.inputTokens, t.complexity, t.signals.lastReport], [500, 'low', 'none']);
   stopIn(p);
   assert.equal(spent(p), 500);
 });

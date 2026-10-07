@@ -15,8 +15,8 @@
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { gatePaths, ROOT, loopCommand } from './paths.mjs';
-import { loadState, mergeModUsage, mergeVerbFields, onlyVerbChanges, LENSES } from '../core/state.mjs';
-import { step, WAIT_ROLES } from '../core/machine.mjs';
+import { loadState, mergeVerbFields, onlyVerbChanges, LENSES } from '../core/state.mjs';
+import { step, WAIT_ROLES, loopAgentName } from '../core/machine.mjs';
 import { effectiveLoopMode } from '../core/prompts.mjs';
 import { DEFAULT_STALE_MS } from '../core/staleness.mjs';
 import { executeEffects } from './effects.mjs';
@@ -30,7 +30,7 @@ import { readSessionUsage } from './transcript.mjs';
 import { readUsageInbox, applyInbox, removeInboxFiles, settleSeen, boundSeen, foreignReason, defaultUnlink, writeUsageDelta, gone, INBOX_DIR } from './usage-inbox.mjs';
 import { readLife } from './life.mjs';
 import { readActivity } from './activity.mjs';
-import { spawnWatchdog } from './watchdog.mjs';
+import { spawnWatchdog, dropRestoreSentinel } from './watchdog.mjs';
 import { findClaudeProcess } from './restore.mjs';
 import { parseTimeoutMs, boolEnv } from './util.mjs';
 import { currentVersion, updateAvailable, maybeSpawnRefresh } from '../update.mjs';
@@ -103,9 +103,10 @@ export function savedCounts(statePath, names, read = (p) => readFileSync(p, 'utf
 // minute (seen in a real run: the review then counted as missing twice, a failed round).
 // The stop waits in real time instead: up to PERSEVERANZA_SUBAGENT_WAIT_MS (30 s by default),
 // never past the hook's deadline minus WAIT_MARGIN_MS (the rerun recomputes the tree), polled
-// every SUBAGENT_POLL_MS. It ends early when the phase's verdict file is written (then the stop
-// runs again from the disk, and reads it) or when the mod records the subagent's return
-// (SubagentStop, in the activity record). Only the mod's stops reach it: a settings hook has no
+// every SUBAGENT_POLL_MS. It ends early when the phase's verdict file is written or when the
+// mod records the subagent's return (SubagentStop, in the activity record); either way the stop
+// then runs again from the disk (a returned subagent no longer counted as running), so an early
+// end costs no wait and no quiet stop. Only the mod's stops reach it: a settings hook has no
 // backgroundTasks, so the machine never answers subagent-running there.
 export const DEFAULT_SUBAGENT_WAIT_MS = 30000;
 export const SUBAGENT_POLL_MS = 500;
@@ -124,23 +125,43 @@ function verdictClocks(gateDir, phase) {
   return {};
 }
 
-// -> { waitedMs, landed: <file> | null, returned: true when the subagent's return was recorded }
+// -> { waitedMs, landed: <file> | null, returned: true when the subagent's return was recorded,
+//      activity: that record (its `pending` says which delegations are still out) }
 export function waitForSubagent(gateDir, phase, budgetMs, { sleep = sleepMs, now = Date.now } = {}) {
   const start = now();
   const before = verdictClocks(gateDir, phase);
   const role = WAIT_ROLES[phase];
   const returned = () => {
     const a = readActivity(gateDir);
-    return !!(a && a.event === 'subagent-stop' && a.at >= start && (!role || !a.agent || a.agent.endsWith(role)));
+    return a && a.event === 'subagent-stop' && a.at >= start && (!role || !a.agent || a.agent.endsWith(role)) ? a : null;
   };
   while (now() - start < budgetMs) {
     sleep(Math.min(SUBAGENT_POLL_MS, Math.max(1, budgetMs - (now() - start))));
     const after = verdictClocks(gateDir, phase);
     const landed = Object.keys(after).find((n) => after[n] > 0 && after[n] !== before[n]) || null;
-    if (landed) return { waitedMs: now() - start, landed, returned: false };
-    if (returned()) return { waitedMs: now() - start, landed: null, returned: true };
+    if (landed) return { waitedMs: now() - start, landed, returned: false, activity: null };
+    const a = returned();
+    if (a) return { waitedMs: now() - start, landed: null, returned: true, activity: a };
   }
-  return { waitedMs: now() - start, landed: null, returned: false };
+  return { waitedMs: now() - start, landed: null, returned: false, activity: null };
+}
+
+// The background tasks of the Stop input, after the wait saw the phase's subagent come back:
+// the input was taken before the wait, so it still lists that subagent as running, and a rerun
+// on it would answer "a subagent is still running" again. The returned ones are marked
+// completed: as many of the role's running tasks as the record of the return does not list as
+// still pending (its `pending`, the delegations not back yet), and at least one (the one whose
+// return was recorded). Pure: the input is not changed. -> the tasks for the rerun
+export function settleReturned(tasks, role, activity) {
+  if (!Array.isArray(tasks)) return tasks;
+  const ofRole = (t) => !!t && typeof t === 'object' && !Array.isArray(t) && typeof t.status === 'string' && t.status.toLowerCase() === 'running' && loopAgentName(t.agent_type ?? t.agentType) === role;
+  const running = tasks.filter(ofRole).length;
+  const pending = activity && Array.isArray(activity.pending) ? activity.pending.filter((p) => p && loopAgentName(p.agent) === role).length : 0;
+  let settle = Math.max(1, running - pending);
+  return tasks.map((t) => {
+    if (settle > 0 && ofRole(t)) { settle -= 1; return { ...t, status: 'completed' }; }
+    return t;
+  });
 }
 
 // io: { unlink, stat, writeState, fs, afterSave } for the tests that simulate a refused
@@ -148,6 +169,8 @@ export function waitForSubagent(gateDir, phase, budgetMs, { sleep = sleepMs, now
 // another writer between the save and its check (afterSave)
 // a stop that finds another stop's save on disk before writing anything starts over from it
 export const MAX_RESTARTS = 2;
+// the outcome signals of the verbs (report, claim-done): never merged into a paused state
+export const OUTCOME_FIELDS = ['lastReport', 'claimedDone'];
 
 // -> { output, outcome, usageDropped?, usageUnverified? }: usageDropped when the stop's own
 // delta (facts.usage) is surely not in the inbox (the mod sends it again); usageUnverified when
@@ -311,13 +334,20 @@ function runStopOnce(args, attempt, note = {}) {
 
   const r = step(s, event, ctx);
   // a subagent still running: wait for it in real time (see waitForSubagent), once per stop;
-  // nothing was written yet, so a verdict that lands is read by running the stop again
+  // nothing was written yet, so the stop runs again from the disk when the wait ends early:
+  // a verdict that lands is read there, and a subagent that came back (the only early end in
+  // implement, which has no verdict file) is no longer listed as running (settleReturned), so
+  // the rerun routes on its work instead of spending a wait on it
   if (r.outcome === 'subagent-running' && !args.waited) {
     const budget = Math.min(subagentWaitMs(env), DEADLINE - WAIT_MARGIN_MS - Date.now());
     if (budget > 0) {
       const w = waitForSubagent(paths.gateDir, startState.phase, budget, io.wait || {});
       appendJournal(paths.gateDir, { type: 'subagent-wait', phase: startState.phase, ms: Math.round(w.waitedMs), ...(w.landed ? { landed: w.landed } : {}), ...(w.returned ? { returned: true } : {}) });
       if (w.landed) return runStopOnce({ ...args, waited: true }, attempt, note);
+      if (w.returned) {
+        const settled = { ...f, backgroundTasks: settleReturned(f.backgroundTasks, WAIT_ROLES[startState.phase], w.activity) };
+        return runStopOnce({ ...args, facts: settled, waited: true }, attempt, note);
+      }
     }
   }
   // the state on disk now, normalized: null when gone (disarmed meanwhile), 'torn' when unreadable
@@ -389,6 +419,18 @@ function runStopOnce(args, attempt, note = {}) {
     if (now.text === baseText || !now.state) return { state: { ...st, rev: (baseState.rev || 0) + 1 }, expect };
     if (!onlyVerbChanges(baseState, now.state)) return { abandon: `another stop saved while this one ran (rev ${now.state.rev})` };
     const m = mergeVerbFields(st, baseState, now.state);
+    // An outcome (report, claim-done) that a verb wrote while this Stop ran is not carried into a
+    // paused state: the Stop is pausing (an escalation, the plan approval) or a pause landed, and
+    // the first Stop after /pf resume would act on it (a review passed without being redone).
+    // The Stop's own values stand; the outcome is journaled as dropped.
+    if (m.state.signals && m.state.signals.paused === true) {
+      const dropped = OUTCOME_FIELDS.filter((p) => m.taken.includes(`signals.${p}`));
+      if (dropped.length) {
+        for (const p of dropped) m.state.signals[p] = st.signals[p];
+        m.taken = m.taken.filter((p) => !dropped.includes(p.replace(/^signals\./, '')));
+        appendJournal(paths.gateDir, { type: 'outcome-dropped-paused', fields: dropped.map((p) => `signals.${p}`), values: Object.fromEntries(dropped.map((p) => [p, now.state.signals[p]])), by: 'stop' });
+      }
+    }
     if (m.taken.length) appendJournal(paths.gateDir, { type: 'state-merged', fields: m.taken, diskRev: now.state.rev || 0, startRev: baseState.rev || 0 });
     return { state: { ...m.state, rev: Math.max(now.state.rev || 0, baseState.rev || 0) + 1 }, expect };
   };
@@ -406,6 +448,9 @@ function runStopOnce(args, attempt, note = {}) {
       if (own.length && existsSync(paths.statePath)) appendJournal(paths.gateDir, { type: 'note', text: `usage inbox: ${own.length} file(s) kept, the state that counts them is not on disk${fx.save && fx.save.error ? ` (${fx.save.error})` : ''}` });
     }
   }
+  // a restore's sentinel goes once a Stop of the restored session is on disk (the session
+  // started again: its process is on record, a later restore may terminate it)
+  dropRestoreSentinel(paths.gateDir);
   // still armed and driven by this session: a fresh watchdog takes over the silence watch
   if (r.outcome !== 'foreign-session' && !r.state.signals.paused && existsSync(paths.statePath)) spawnWatchdog(paths.gateDir, env);
   return { output, outcome: r.outcome };

@@ -71,6 +71,10 @@ export const WAIT_ROLES = { implement: 'pf-executor', review: 'pf-reviewer', 'fi
 // Code's cap of 8 (a stuck subagent: 3 waits, missing, missing-twice, and no wait after).
 export const MAX_QUIET_STOPS = 5;
 export const NOTIFY_TITLE = 'Claude Code - perseveranza';
+// What the user runs to lift a pause, as a notification names it: /pf resume for a loop armed
+// for the tool (armed where the mod runs, so the user has /pf; the tool itself does not resume:
+// a pause waits for a human), the CLI's verb for one armed for the shell (the text of 2.x).
+export const resumeWord = (loopMode) => (loopMode === 'tool' ? '/pf resume' : 'resume');
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const short = (id) => String(id || '').slice(0, 8);
@@ -720,7 +724,7 @@ export function step(input, event = {}, ctx0 = {}) {
           s.flags.planPresented = true;
           s.signals.paused = true;
           s.flags.repeated = false;
-          return go('approval', {}, [{ type: 'notify', title: NOTIFY_TITLE, message: `Plan ready: review .perseveranza/plan.md and then run resume - ${proj}` }]);
+          return go('approval', {}, [{ type: 'notify', title: NOTIFY_TITLE, message: `Plan ready: review .perseveranza/plan.md and then run ${resumeWord(s.options.loopMode)} - ${proj}` }]);
         }
         s.flags.repeated = false;
         if (!s.limits.maxIterationsExplicit) {
@@ -881,7 +885,7 @@ export function finishProject(input, gitResult = { ran: false }, ctx = {}) {
     J({ type: 'git', retry, confirmed: false, committed: !!g.committed, pushed: !!g.pushed, why });
     effects.push(
       { type: 'saveState' },
-      { type: 'notify', title: NOTIFY_TITLE, message: `Verification OK but git closure NOT confirmed: ${why}. Fix it and then run: resume - ${proj}` },
+      { type: 'notify', title: NOTIFY_TITLE, message: `Verification OK but git closure NOT confirmed: ${why}. Fix it and then run: ${resumeWord(s.options.loopMode)} - ${proj}` },
       { type: 'allowStop' },
     );
     return { state: s, effects, outcome: 'git-unconfirmed' };

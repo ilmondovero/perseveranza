@@ -71,6 +71,8 @@ test('review fail -> fix -> pass; escalation after the fixes are exhausted; resu
   const esc = readFileSync(gate(p, 'ESCALATION.md'), 'utf8');
   assert.ok(esc.includes('consecutive failed reviews: 2/2'));
   assert.ok(esc.includes('Last transitions'));
+  // resuming is the user's: /pf resume (or the CLI from a terminal), never Claude's tool
+  assert.ok(esc.includes('the user resumes the loop: `/pf resume` in Claude Code') && esc.includes('Claude cannot resume it with the `perseveranza` tool'), esc);
   assert.equal(fire(p).blocked, false, 'paused: silent');
   cli(p, 'resume');
   assert.ok(!existsSync(gate(p, 'ESCALATION.md')));
@@ -904,7 +906,13 @@ test('watchdog with PERSEVERANZA_RESTORE: kills the recorded Claude process, reo
   const intr = readState(p).signals.interrupted;
   assert.ok(intr && intr.silentMs > 19 * 3600 * 1000 && intr.phase === 'implement' && intr.pending.includes('pf-reviewer'), JSON.stringify(intr));
   assert.ok(cli(p, 'status').out.includes('interrupted:'), 'status says it');
-  patchState(p, (s) => { s.signals.interrupted = null; }); // the rest of this test is about the watchdog, not the reconciliation
+  // the launch is on record in its own file too (the guard against a second restore)
+  const sentinel = JSON.parse(readFileSync(gate(p, 'restore-launched.json'), 'utf8'));
+  assert.equal(sentinel.session, 'sess-A-full'); assert.equal(sentinel.at, intr.at);
+  // the rest of this test is about the watchdog, not the reconciliation: the restored session's
+  // first Stop is played by clearing both marks (dropRestoreSentinel does it at a real Stop)
+  const restoredStopped = () => { patchState(p, (s) => { s.signals.interrupted = null; }); rmSync(gate(p, 'restore-launched.json'), { force: true }); };
+  restoredStopped();
   assert.ok(cli(p, 'history').out.includes('WATCHDOG (killed and restored)'));
   // the recorded process is gone (client died): nothing to kill, still restored
   patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
@@ -927,7 +935,7 @@ test('watchdog with PERSEVERANZA_RESTORE: kills the recorded Claude process, reo
   assert.ok(w2a.restore.why.includes('has not reached a Stop yet'), w2a.restore.why);
   await new Promise((res) => setTimeout(res, 1500));
   assert.equal(launches(), '', 'nothing relaunched');
-  patchState(p, (s) => { s.signals.interrupted = null; });
+  restoredStopped();
   // never recorded (flag turned on mid-run, walk failed): a blind relaunch beside a possibly
   // live session is refused
   patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = 0; });
@@ -955,7 +963,7 @@ test('watchdog with PERSEVERANZA_RESTORE: kills the recorded Claude process, reo
   writeFileSync(gate(p, 'watchdog.json'), '');
   watchdog(p, env); // third restore
   assert.equal(journal(p).filter((e) => e.type === 'watchdog' && e.action === 'restored').length, 3);
-  patchState(p, (s) => { s.signals.interrupted = null; });
+  restoredStopped();
   const pad = JSON.stringify({ ts: new Date().toISOString(), type: 'note', text: 'x'.repeat(200) });
   writeFileSync(gate(p, 'journal.jsonl'), `${readFileSync(gate(p, 'journal.jsonl'), 'utf8')}${(pad + '\n').repeat(600)}`);
   patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; });
@@ -982,6 +990,127 @@ test('watchdog with PERSEVERANZA_RESTORE: kills the recorded Claude process, reo
   const id = cli(p, 'runs').out.trim().split('\n')[0].trim().split(/\s+/)[0];
   const summary = JSON.parse(readFileSync(join(p.home, 'runs', ...id.split('/'), 'summary.json'), 'utf8'));
   assert.equal(summary.watchdogAlerts.filter((a) => a.action === 'restored').length, 3);
+});
+
+// The verifier's reproduction, as a test: real watchdog processes, three in a row on the same
+// hung loop, a fake claude that appends a line per launch. A state standing only in its pending
+// copy (a crash in a write in place) gives no launch at all; a whole one gives exactly one.
+test('watchdog with PERSEVERANZA_RESTORE, three watchdogs in a row: 0 launches on a pending-only state, 1 on a whole one', async (t) => {
+  const spawned = [];
+  t.after(() => { for (const c of spawned) { try { c.kill(); } catch { /* gone */ } } });
+  const fake = join(freshDir('prs-fake3-'), 'claude.mjs');
+  writeFileSync(fake, "import { appendFileSync } from 'node:fs'; appendFileSync(process.env.FAKE_CLAUDE_OUT, JSON.stringify(process.argv.slice(2, 4)) + '\\n');");
+  const { processInfo } = await import('../../src/shell/restore.mjs');
+  const hung = async (pending) => {
+    const p = project();
+    arm(p, 'hung, three watchdogs');
+    fire(p, { session_id: 'sess-H' });
+    const dummy = spawn(process.execPath, ['-e', '/* @anthropic-ai/claude-code/cli.js dummy */ setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
+    spawned.push(dummy);
+    await new Promise((r) => setTimeout(r, 800));
+    const info = processInfo(dummy.pid);
+    patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = dummy.pid; s.owner.claudeStartedAt = info.startedAt; });
+    if (pending) { writeFileSync(gate(p, 'state.json.pending'), readFileSync(gate(p, 'state.json'), 'utf8')); rmSync(gate(p, 'state.json')); }
+    const out = join(freshDir('prs-fake3-'), 'launches.txt');
+    const env = { PERSEVERANZA_RESTORE: '1', PERSEVERANZA_RESTORE_AFTER_MS: '1000', PERSEVERANZA_STALE_MS: '1000', PERSEVERANZA_CLAUDE_BIN: fake, FAKE_CLAUDE_OUT: out };
+    const launches = async () => {
+      await new Promise((r) => setTimeout(r, 1500)); // a launch writes its line asynchronously
+      return existsSync(out) ? readFileSync(out, 'utf8').trim().split('\n').filter(Boolean).length : 0;
+    };
+    return { p, dummy, out, env, launches };
+  };
+
+  // pending-only: each watchdog alerts, says no restore, and keeps watching (it does not exit by
+  // itself: stopped here after its second threshold has long passed)
+  const a = await hung(true);
+  const pendingText = readFileSync(gate(a.p, 'state.json.pending'), 'utf8');
+  for (let i = 0; i < 3; i++) {
+    writeFileSync(gate(a.p, 'watchdog.json'), '');
+    const wd = spawn(process.execPath, [WATCHDOG, gate(a.p, '')], { stdio: 'ignore', env: { ...a.p.env, ...a.env } });
+    spawned.push(wd);
+    // its alert on record (a loaded machine starts node slowly), then past its second threshold
+    const until = Date.now() + 30000;
+    while (Date.now() < until && journal(a.p).filter((e) => e.type === 'watchdog').length < i + 1) await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 2500));
+    assert.equal(alive(wd.pid), true, `watchdog ${i + 1} still watching`);
+    wd.kill();
+  }
+  assert.equal(await a.launches(), 0, 'no claude -r on a pending-only state');
+  assert.equal(alive(a.dummy.pid), true, 'the session is not terminated');
+  assert.equal(existsSync(gate(a.p, 'state.json')), false, 'nothing promoted or written');
+  assert.equal(readFileSync(gate(a.p, 'state.json.pending'), 'utf8'), pendingText);
+  assert.equal(existsSync(gate(a.p, 'restore-launched.json')), false);
+  const wa = journal(a.p).filter((e) => e.type === 'watchdog');
+  assert.deepEqual(wa.map((e) => e.action), ['alerted', 'alerted', 'alerted'], 'one alert per watchdog');
+  assert.ok(wa.every((e) => e.text.includes('No restore: state.json stands only in its pending copy')), wa[0].text);
+
+  // whole: the first restores, the next two find the launch on record and refuse
+  const b = await hung(false);
+  for (let i = 0; i < 3; i++) {
+    writeFileSync(gate(b.p, 'watchdog.json'), '');
+    const r = watchdog(b.p, b.env);
+    assert.equal(r.code, 0, r.stderr);
+    // the second and third would not depend on signals.interrupted: it is cleared after the first
+    if (i === 0) patchState(b.p, (s) => { s.signals.interrupted = null; });
+  }
+  assert.equal(await b.launches(), 1, 'exactly one claude -r on a whole state');
+  const wb = journal(b.p).filter((e) => e.type === 'watchdog');
+  assert.deepEqual(wb.map((e) => e.action), ['alerted', 'restored', 'alerted', 'alerted', 'alerted', 'alerted']);
+  assert.ok(wb[3].restore.why.includes('has not reached a Stop yet') && wb[5].restore.why.includes('has not reached a Stop yet'), wb[5].restore.why);
+  assert.ok(existsSync(gate(b.p, 'restore-launched.json')), 'the sentinel is on record');
+  // the restored session's first Stop drops it
+  fire(b.p, { session_id: 'sess-H' });
+  assert.equal(existsSync(gate(b.p, 'restore-launched.json')), false, 'dropped at the first Stop of the restored session');
+});
+
+// manual-302: two watchdogs that both believe they own the gate (watchdog.json lost: no pid on
+// record) race for the same restore at the same instant. The sentinel's exclusive creation
+// decides: one launch per race, never two.
+test('two watchdogs racing for the same restore: exactly one launch, every time', async () => {
+  const RACER = join(ROOT, 'test', 'helpers', 'restore-racer.mjs');
+  const RACES = 10;
+  for (let k = 0; k < RACES; k++) {
+    const p = project();
+    arm(p, 'hung, two watchdogs');
+    patchState(p, (s) => { s.owner.sessionId = 'sess-H'; s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = 999999; s.owner.claudeStartedAt = new Date(Date.now() - 21 * 3600 * 1000).toISOString(); });
+    writeFileSync(gate(p, 'watchdog.json'), JSON.stringify({ pid: 0 }));
+    const out = join(p.dir, 'launches.txt');
+    const startAt = Date.now() + 4000;
+    const kids = [0, 1].map(() => spawn(process.execPath, [RACER, gate(p, ''), String(startAt), out], { env: p.env, stdio: 'ignore' }));
+    await Promise.all(kids.map((c) => new Promise((r) => c.on('exit', r))));
+    const launches = existsSync(out) ? readFileSync(out, 'utf8').trim().split('\n').filter(Boolean).length : 0;
+    const whys = existsSync(`${out}.why`) ? readFileSync(`${out}.why`, 'utf8') : '';
+    assert.equal(launches, 1, `race ${k}: ${whys}`);
+    // the loser lost the claim, or (a loaded machine started it after the winner's launch) read
+    // the launch as a sign of life or as a restore on record
+    assert.match(whys, /another watchdog has just claimed this restore|has not reached a Stop yet|decide: sleep/, `race ${k}: the loser says why: ${whys}`);
+  }
+});
+
+// manual-302: a watchdog killed between its marks and the launch left both behind. A real
+// watchdog process later finds them abandoned (their watchdog gone, the interval past) and
+// restores; it does not refuse for ever.
+test('watchdog with PERSEVERANZA_RESTORE: the marks of a watchdog killed before its launch expire, the next one restores', async () => {
+  const p = project();
+  arm(p, 'abandoned claim');
+  fire(p, { session_id: 'sess-H' });
+  const at = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+  patchState(p, (s) => { s.owner.lastFireAt = Date.now() - 20 * 3600 * 1000; s.owner.claudePid = 999999; s.owner.claudeStartedAt = new Date(Date.now() - 21 * 3600 * 1000).toISOString(); s.signals.interrupted = { at, silentMs: 1, phase: 'plan', pending: [] }; });
+  writeFileSync(gate(p, 'restore-launched.json'), JSON.stringify({ at, session: 'sess-H', by: 999999, nonce: 'killed', phase: 'claimed' }));
+  writeFileSync(gate(p, 'watchdog.json'), '');
+  const fake = join(freshDir('prs-fake5-'), 'claude.mjs');
+  const out = join(freshDir('prs-fake5-'), 'launches.txt');
+  writeFileSync(fake, "import { appendFileSync } from 'node:fs'; appendFileSync(process.env.FAKE_CLAUDE_OUT, 'x\\n');");
+  const r = watchdog(p, { PERSEVERANZA_RESTORE: '1', PERSEVERANZA_RESTORE_AFTER_MS: '1000', PERSEVERANZA_STALE_MS: '1000', PERSEVERANZA_CLAUDE_BIN: fake, FAKE_CLAUDE_OUT: out });
+  assert.equal(r.code, 0, r.stderr);
+  const ws = journal(p).filter((e) => e.type === 'watchdog').map((e) => e.action);
+  assert.deepEqual(ws, ['alerted', 'restore-abandoned', 'restored'], JSON.stringify(ws));
+  const until = Date.now() + 10000;
+  while (Date.now() < until && !existsSync(out)) await new Promise((res) => setTimeout(res, 100));
+  assert.equal(readFileSync(out, 'utf8'), 'x\n', 'one launch');
+  const s = JSON.parse(readFileSync(gate(p, 'restore-launched.json'), 'utf8'));
+  assert.equal(s.phase, 'launched'); assert.notEqual(s.nonce, 'killed');
+  assert.equal(readState(p).signals.interrupted.at, s.at, 'the interruption is the new attempt\'s');
 });
 
 test('a review.json older than the review request is set aside through the real hook', () => {

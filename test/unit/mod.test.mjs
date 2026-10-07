@@ -585,7 +585,7 @@ test('waitForSubagent: a new verdict file ends the wait, an old one does not; th
     let t = 1000;
     const clock = { now: () => t, sleep: (ms) => { t += ms; } };
     // nothing happens: the whole budget, then nothing landed
-    assert.deepEqual(waitForSubagent(dir, 'review', 2000, clock), { waitedMs: 2000, landed: null, returned: false });
+    assert.deepEqual(waitForSubagent(dir, 'review', 2000, clock), { waitedMs: 2000, landed: null, returned: false, activity: null });
     // the verdict written during the wait (after the first poll)
     let polls = 0;
     const writing = { now: () => t, sleep: (ms) => { t += ms; if (++polls === 2) writeFileSync(join(dir, 'verify-security.json'), '{}'); } };
@@ -600,6 +600,16 @@ test('waitForSubagent: a new verdict file ends the wait, an old one does not; th
     t = at - 1;
     const r = waitForSubagent(dir, 'review', 10000, clock);
     assert.equal(r.returned, true);
+    // the record of the return comes with it (its pending delegations settle the rerun's tasks)
+    assert.equal(r.activity.agent, 'perseveranza:pf-reviewer');
+    assert.deepEqual(r.activity.pending, []);
+    // a return recorded BEFORE the wait started (the previous delegation's) is not this one's:
+    // the whole budget is waited, nothing returned
+    writeFileSync(join(dir, 'activity.json'), JSON.stringify({ at: t - 1, event: 'subagent-stop', agent: 'perseveranza:pf-reviewer', pending: [] }));
+    assert.deepEqual(waitForSubagent(dir, 'review', 2000, clock), { waitedMs: 2000, landed: null, returned: false, activity: null });
+    // dated the very millisecond the wait starts: counted (the record cannot predate its own wait)
+    writeFileSync(join(dir, 'activity.json'), JSON.stringify({ at: t, event: 'subagent-stop', agent: 'perseveranza:pf-reviewer', pending: [] }));
+    assert.equal(waitForSubagent(dir, 'review', 2000, clock).returned, true);
     // another agent's return does not count
     writeFileSync(join(dir, 'activity.json'), JSON.stringify({ at: t + 1, event: 'subagent-stop', agent: 'perseveranza:pf-executor', pending: [] }));
     assert.equal(waitForSubagent(dir, 'review', 2000, clock).returned, false);

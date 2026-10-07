@@ -864,7 +864,8 @@ Il principio (dalla verifica 3): uno strumento di una mod gira **senza** il prom
 di Claude Code, quindi non deve poter eseguire nulla che i permessi di Bash governerebbero.
 
 - Verbi: `status`, `history`, `explain` (sola lettura), `report`, `complexity`,
-  `claim-done`, `pause`, `resume` (lo stato del loop, nient'altro). **Non** `test` (esegue la
+  `claim-done`, `pause`, `resume` (lo stato del loop, nient'altro). **Dalla 3.0.1 senza
+  `resume`**, che è dell'utente: vedi "Correzioni 3.0.1" in fondo. **Non** `test` (esegue la
   suite, un comando di shell) né `ask` (avvia la CLI di un agente esterno): restano comandi di
   shell che il modello lancia con Bash, e lo strumento li rifiuta nominando il comando. **Non**
   `arm`, `disarm`, né `resume --takeover` (in nessuna forma: campo, parole, verbo): sono
@@ -886,7 +887,7 @@ di Claude Code, quindi non deve poter eseguire nulla che i permessi di Bash gove
 - Esecuzione: `[node, <plugin>/src/cli/perseveranza.mjs, verbo, ...]` con `$.process.run`, senza
   shell, `cwd` = la cartella della sessione, `env` `PERSEVERANZA_VIA=tool`, 60 s.
 - **Secondo muro nel CLI**: un'esecuzione con `PERSEVERANZA_VIA=tool` che chiede un verbo fuori
-  da `TOOL_VIA_VERBS` (gli stessi otto: un test tiene uguali le liste) o `resume --takeover` è
+  da `TOOL_VIA_VERBS` (gli stessi otto, sette dalla 3.0.1: un test tiene uguali le liste) o `resume --takeover` è
   rifiutata (exit 2) prima di caricare il verbo.
 - Il cancello (senza `state.json` solo `status`), la guardia della riconciliazione (`tool-check`
   per i verbi che cambiano qualcosa, fail-open), la risposta (`done`/`FAILED or REFUSED (exit N)`,
@@ -1691,3 +1692,422 @@ niente a `src/shell/legacy-hashes.mjs`. Al rilascio: `npm test` (che la confront
 mai un installatore tornasse a copiare file fuori dal marcatore, il commit di quella release va
 in `LEGACY_ANCHORS` (`scripts/legacy-hashes.mjs`), poi `node scripts/legacy-hashes.mjs --write`
 e il commit della tabella rigenerata.
+
+## Correzioni 3.0.1
+
+Cinque punti di una code review statica del diff della 3.0.0 (uno di sicurezza, tre di
+affidabilità, la pulizia). Rimandati per decisione presa: il `tool-check` a ogni chiamata, le
+costanti duplicate fra mod e shell, l'alias `writeFileResult`.
+
+### 1. `resume` non è più dello strumento (sicurezza)
+
+Il difetto: `resume` era in `TOOL_VERBS` (e in `TOOL_VIA_VERBS` del CLI); era rifiutato solo
+`resume --takeover`. Nella sessione proprietaria il modello poteva chiamare `{"verb": "resume"}`
+su un loop in pausa per l'approvazione del piano (`--approve-plan`) o per un'escalation dopo
+`maxRetries`: `src/cli/verbs/resume.mjs` toglie `signals.paused` e azzera `retries`,
+`finalFails`, `staleGates`. Il modello approvava il proprio piano e superava il limite che chiede
+un umano, senza prompt dei permessi (in modalità shell la stessa chiamata passava da Bash, sotto i
+permessi dell'utente).
+
+Corretto:
+- `hooks/lib/verbs.js`: `TOOL_VERBS` senza `resume`, che passa in `USER_VERBS` (con `arm` e
+  `disarm`); `validateToolInput` riconosce il verbo senza badare alle maiuscole e rifiuta
+  `resume` in ogni forma (il verbo, `"resume now"`, le parole, `RESUME`, accanto a un altro
+  verbo come prima parola) con `user: 'resume'`, e come takeover se c'è `--takeover` in qualunque
+  posto o il campo `takeover`. Come parole di un altro verbo (`{"verb": "pause", "args":
+  "resume"}`) le rifiuta quel verbo. Il rifiuto dice "Ask the user to type /pf resume, and do not
+  resume it any other way. Nothing was run.". Schema (l'enum) e descrizione dello strumento non
+  lo elencano più e dicono che `/pf resume` è dell'utente.
+- Il secondo muro (`src/cli/perseveranza.mjs` `toolViaRefusal`): `TOOL_VIA_VERBS` senza
+  `resume`; il rifiuto di `resume` nomina `/pf resume` (o `/pf resume --takeover`); il controllo
+  ora viene **prima** di quello del verbo sconosciuto, così da `PERSEVERANZA_VIA=tool` ogni verbo
+  fuori lista, anche `RESUME` o uno inventato, esce con 2.
+- Le parole per l'utente: `plan-approval` e gli avvisi `session-*` usavano già `{{USER}}`
+  (`/pf` in modalità strumento). Le notifiche di approvazione del piano e di chiusura git non
+  confermata dicono `/pf resume` per un loop armato per lo strumento (`resumeWord` in
+  `machine.mjs`, dallo stato: armato dove gira la mod, l'utente ha `/pf`) e `resume` come prima
+  per uno armato dalla shell. Aggiornati anche `ESCALATION.md`, l'uscita di `pause`,
+  `commands/perseveranza.md` (non più `{"verb": "resume"}`; dopo un `pause` per chiedere qualcosa
+  riprende l'utente), i README (lo strumento e "Sicurezza"), il CHANGELOG.
+- `pause` resta allo strumento: il modello che si ferma per chiedere passa la mano all'utente, non
+  scavalca niente. `report pass|fail` e `claim-done` restano, documentati nei README ("Sicurezza"):
+  `report` registra l'esito di review o verifica finale solo dove il subagent non ha scritto il
+  suo file (un file valido decide comunque; con le lenti un `pass` dichiarato non copre nessuna
+  lente); `claim-done` è accettato solo con il piano tutto spuntato e, se il loop conosce una
+  suite, un suo verde per l'albero corrente, e porta a pulizia e verifica finale, non alla
+  chiusura. Nessuno dei due toglie una pausa. **Corretto dopo la verifica** (sezione 6): la prima
+  stesura diceva anche "né azzera un contatore", falso: un `pass` della review azzera `retries`
+  (`machine.mjs`, `case 'review'`) e così un claim accettato; e un esito mandato durante una pausa
+  era usato dopo il resume. Ora i due verbi sono rifiutati su un loop in pausa.
+
+### 2. Il watchdog e uno `state.json` che non si legge per un momento
+
+Il difetto: `decide()` leggeva `state.json` grezzo e rispondeva `exit` per uno stato illeggibile
+o solo in `.pending`: un `EBUSY` di Google Drive o di un antivirus, una scrittura in place a metà,
+un crash. Il watchdog staccato non tornava fino al prossimo Stop, che una sessione bloccata non
+porta: niente ripristino.
+
+Corretto (`src/shell/watchdog.mjs`): `decide()` legge con `loadStateFile(paths, { promote: false,
+journal: false })` (i tentativi brevi su un errore transitorio, la copia in sospeso letta e mai
+promossa) e distingue:
+- cartella segnata disarmata o trattenuta (`DISARMED_MARK`, `RETAINED_STATE`), o stato assente
+  senza copia valida: `exit` ("disarmed");
+- occupato a ogni tentativo, rotto o vuoto senza copia: `retry`, si riprova dopo
+  `UNREADABLE_RETRY_MS` (15 s); `run()` conta i `retry` di fila e al `MAX_UNREADABLE`-esimo (40,
+  10 minuti) esce scrivendo nel journal `{"type": "watchdog", "action": "exit", "why": ...}`; il
+  conteggio riparte a ogni lettura riuscita;
+- solo la copia in sospeso (o lo stato rotto con la copia accanto): letta come stato, così una
+  sessione bloccata è sorvegliata anche lì. **Deviazione** dalla richiesta ("riprova al ciclo
+  successivo"): riprovare non serve, perché la copia la promuove solo il prossimo Stop o verbo, che
+  una sessione bloccata non porta; la copia è l'ultimo stato intero, e `markInterrupted` già non
+  scrive su uno stato che sta solo lì. **Questo ha aperto un difetto** trovato dalla verifica
+  (sezione 6): con `PERSEVERANZA_RESTORE=1` il ripristino partiva comunque e si ripeteva. Ora uno
+  stato letto dalla sola copia è sorvegliato e avvisato, mai ripristinato.
+
+`run()` accetta `decide`, `sleep`, `fs` e il tetto dai test e risponde `{ code, why }`.
+
+### 3. Lo Stop dopo il ritorno del subagent durante l'attesa
+
+Il difetto: in `runStopOnce` solo `w.landed` rieseguiva lo Stop. In `implement` non c'è un file
+di verdetto, quindi l'uscita anticipata era sempre `w.returned`, e lo Stop usava il risultato di
+prima: "a subagent is still running", una delle 3 attese spesa, uno Stop "quieto" in più.
+
+Corretto (`src/shell/stop-core.mjs`): anche al ritorno lo Stop riparte (`waited: true`, una sola
+attesa per Stop), con `facts.backgroundTasks` in cui `settleReturned` segna `completed` i task del
+ruolo tornati: quanti di quelli `running` il record del ritorno (`activity.pending`) non elenca
+ancora in sospeso, almeno uno. `waitForSubagent` restituisce il record (`activity`). In
+`implement` lo Stop va in review; in review o nella verifica finale senza verdetto chiede l'esito
+(`missing`); con il verdetto arrivato lo legge come prima. Il tetto (30 s, 3 attese per
+richiesta) e l'uscita per tempo scaduto non cambiano.
+
+Un test esistente era sbagliato: in `test/e2e/mod-bridge.test.mjs` il ritorno del revisore senza
+verdetto durante l'attesa si aspettava `subagent-running`, cioè fissava il difetto. Ora vuole
+`missing` e nessuna attesa in più.
+
+### 4. Una sola lista delle cartelle del loop
+
+`workTreeFingerprint` escludeva solo `.perseveranza`, `underLoop()` e `gitFinish()` anche la
+cartella della 2.x: in un progetto migrato con quella cartella non ignorata e ancora scritta (un
+watchdog 2.x rimasto), il suo journal entrava nell'impronta e il verde registrato cadeva come
+"codice cambiato". Ora `LOOP_DIRS` (esportata da `src/shell/git.mjs`) vale per tutti e tre.
+
+### 5. Pulizia
+
+Tolti l'import `mergeModUsage` in `stop-core.mjs` e il doppio import da `../core/subagents.mjs` in
+`mod-bridge.mjs`. Una scansione dei file toccati (import non usati, export che nessun file del
+repository usa) ha trovato in più solo `isGitRepo` in `git.mjs`, esportata e mai usata: tolta.
+
+### 6. Dopo la verifica manual-301
+
+La verifica indipendente del primo giro ha dato `pass: false`: un difetto critico, due avvisi.
+
+**Critico: il watchdog ripristinava più volte uno stato che c'era solo in `.pending`**
+(`PERSEVERANZA_RESTORE=1`). `decide()` (sezione 2) leggeva la copia in sospeso; `markInterrupted`
+non scrive su quella copia (`updateState` con `promote: false`), quindi `signals.interrupted` non
+veniva impostato; la guardia contro un secondo `claude -r` stava solo in quel campo; il watchdog
+sostitutivo, avviato dopo il lancio, ripristinava di nuovo: 3 `claude -r sess-H` in circa 2 s
+nella riproduzione del verificatore (`vwd-restore.mjs pending`). Corretto in
+`src/shell/watchdog.mjs`:
+- `decide()` restituisce `restorable: false` quando lo stato viene dalla sola copia. `run()`
+  avvisa una volta (journal e notifica: "No restore: state.json stands only in its pending copy
+  ..."), poi continua a vegliare ogni `UNREADABLE_RETRY_MS` senza ripetere l'avviso: niente
+  `restore()`, niente scrittura. Quando uno Stop o un verbo riscrive lo stato intero, la veglia
+  prosegue come sempre. `restore()` rifiuta a sua volta `restorable === false` (due controlli).
+- `restore()` scrive **prima** di terminare o lanciare: l'interruzione in `state.json`
+  (`markInterrupted`; se non riesce, nessun ripristino) e la sentinella
+  `.perseveranza/restore-launched.json` (`{ at, session, by }`; se non riesce, nessun
+  ripristino). Un kill o un lancio falliti annullano entrambe (`clearInterrupted` toglie solo
+  l'interruzione con lo stesso `at`). **Cambiato nel terzo giro** (sezione 7): la sentinella è
+  creata in esclusiva, prima dell'interruzione, e porta nonce e fase.
+- La guardia contro il secondo ripristino legge il più recente fra `interrupted.at` e la
+  sentinella (`restoreLaunchedAt`): basta una delle due. Una sentinella illeggibile vale come
+  lancio (si chiude, non si apre; nel terzo giro anche `null`, un `at` non valido, e con una
+  scadenza: sezione 7); quella di un'altra sessione non conta. Il lancio vale anche
+  come segno di vita in `decide()`, come già `interrupted.at`.
+- `dropRestoreSentinel`, chiamata alla fine di ogni Stop (`runStopOnce`), toglie la sentinella
+  quando `owner.lastFireAt` è dopo il lancio (la sessione ripristinata è ripartita e il suo
+  processo è registrato) o quando è di un'altra sessione; `cleanStateResidues` (all'`arm`) toglie
+  quella di un run vecchio.
+
+Un test esistente (`hook.test.mjs`, il ripristino con processi veri) simulava "la sessione
+ripristinata è arrivata a uno Stop" togliendo solo `interrupted`: ora toglie anche la
+sentinella, come fa uno Stop vero.
+
+**Avviso 1: `report`/`claim-done` durante una pausa.** Un `report pass` mandato dallo strumento
+mentre il loop aspettava una persona restava in `signals.lastReport`; il primo Stop dopo il
+`/pf resume` lo usava (la review passava senza essere rifatta). E il testo dei README, del
+CHANGELOG e di questo piano diceva "nessuno dei due ... azzera un contatore", falso: un `pass`
+della review e un claim accettato azzerano `retries`. Scelta la via più piccola che non tocca la
+macchina: `changeOutcome` in `src/cli/shared.mjs`, usata da `report` e `claim-done`, controlla
+`signals.paused` sullo stato letto da `updateState` al momento della scrittura (non su una
+lettura precedente) e, se è in pausa, non scrive e lancia un `VerbError` (uscita 1):
+"perseveranza is PAUSED: <verb> not recorded. ... the user resumes it with /pf resume ... Nothing
+was changed.". Vale da ogni via (strumento, shell, `/pf` non li ha). `resume` non scarta niente:
+dopo questa correzione un esito non può entrare durante una pausa, e uno registrato prima della
+pausa era già lì prima anche nella 2.x. Un test esistente (`state-file.test.mjs`, i verbi durante
+uno Stop lento) usava un loop in pausa come veicolo: ora scrive gli stessi campi con
+`updateState`, come i verbi. **Nel terzo giro** (sezione 7) il controllo ha mostrato due corse
+aperte, ora chiuse, e quel test è diventato due: loop in corsa (gli esiti si uniscono) e loop in
+pausa (gli esiti si scartano).
+
+**Avviso 2: una lacuna di test.** Togliere `a.at >= start` in `waitForSubagent` non rompeva
+nessun test. Aggiunti: in `test/unit/mod.test.mjs` un ritorno registrato prima dell'inizio
+dell'attesa (tutto il budget, niente ritorno) e uno nello stesso millisecondo (conta); in
+`test/e2e/subagent-wait.test.mjs` uno Stop in `implement` con il ritorno dell'esecutore
+precedente già su disco: tutta la finestra di 30 s, poi `subagent-running`.
+
+### 7. Dopo la verifica manual-302
+
+Nessun critico; cinque avvisi riprodotti e 11 mutanti sopravvissuti (`scratchpad/v302/`).
+
+**1. Un esito durante lo Stop che mette in pausa.** Il verbo leggeva `paused: false` (lo Stop
+che escala non aveva ancora salvato) e scriveva; il merge prima del salvataggio
+(`mergeVerbFields`: `lastReport` e `claimedDone` sono campi dei verbi) lo riportava nello stato
+in pausa; dopo `/pf resume` la review passava (`verdictSrc: 'verb'`). Corretto in
+`src/shell/stop-core.mjs` (`reconcile`): quando lo stato unito è in pausa, gli esiti
+(`OUTCOME_FIELDS`: `lastReport`, `claimedDone`) presi dal disco tornano ai valori dello Stop, gli
+altri campi dei verbi si uniscono come prima, e il journal scrive `outcome-dropped-paused`
+(`fields`, `values`, `by: 'stop'`). La regola guarda lo stato **risultante**: copre lo Stop che
+mette in pausa e un `pause` arrivato durante lo Stop. Test: nel processo (`state-file.test.mjs`,
+il loop in pausa con gli esiti scritti alla seconda lettura dello Stop) e con processi veri
+(`mod-tool.test.mjs`: un precaricamento, `test/helpers/verb-on-read.mjs`, lancia `report pass` o
+`claim-done` dallo strumento alla 2a e 3a lettura di `state.json` dello Stop che escala: il verbo
+esce 0, lo stato in pausa ha `lastReport: 'none'` e `claimedDone: false`, e dopo `/pf resume` il
+primo Stop non passa la review).
+
+**2. Il verbo che diceva "Nothing was changed" con l'esito su disco.** `updateState`, se un altro
+scrittore riscrive dopo il suo rename, riapplica la closure allo stato di quello (per vedere se
+la modifica c'è): con un `pause` arrivato lì la closure impostava il flag "in pausa" e il verbo
+rifiutava, mentre lo stato aveva `paused: true` con `lastReport: 'pass'`. Corretto in
+`changeOutcome` (`src/cli/shared.mjs`, ora `(paths, verb, field, value)`): il controllo è dentro
+la closure su ogni esecuzione e la risposta si decide sul risultato di `updateState`:
+`unchanged` vuol dire rifiutato senza scrivere ("Nothing was changed."); scritto ma lo stato
+risultante è in pausa (il `pause` ha tenuto la scrittura) vuol dire che l'esito si ritira, se
+è ancora quello del verbo, con un'altra `updateState` che rimette il valore di prima,
+`outcome-dropped-paused` nel journal (`by` = il verbo) e il rifiuto "The loop was paused while it
+was being written, and it was taken back"; se il ritiro non riesce il verbo dice che l'esito
+**è** registrato. Test con processi veri (`mod-tool.test.mjs`): un `pause` alla 1a, 2a, 3a, 4a
+lettura del verbo; l'uscita 0 se e solo se l'esito è su disco, e le tre risposte (rifiutato,
+ritirato, registrato) compaiono tutte.
+
+**3. Due ripristini concorrenti.** Con `watchdog.json` vuoto o perso ogni watchdog si crede
+proprietario, e la sentinella era scritta con un rename che sovrascrive: due `restore()`
+lanciavano entrambi (8/8). Ora `restore()` crea la sentinella con `writeFileSync(..., { flag:
+'wx' })` **prima** di marcare l'interruzione, terminare o lanciare: chi la crea vince, l'altro
+trova `EEXIST` e rifiuta ("another watchdog has just claimed this restore"). La sentinella porta
+`nonce` e `phase` (`claimed`, poi `launched` riscritta dopo il lancio riuscito); il proprio
+annullamento toglie solo la sentinella con il proprio testo. Test: unitario (il concorrente che
+crea la sentinella fra la lettura e la creazione) e con processi veri (`hook.test.mjs`, 10 corse
+di due processi `test/helpers/restore-racer.mjs` a una barriera comune: un lancio per corsa).
+`race2.mjs` del verificatore con 20 corse: 0 doppi lanci.
+
+**4. Una sentinella datata nel futuro.** Bloccava ogni ripristino e gli Stop non la toglievano
+(`fired < at`). Ora (`sentinelVerdict`) oltre `SENTINEL_FUTURE_MS` (5 minuti) è scaduta: il
+watchdog la ritira (`sentinel-retired` nel journal) e procede; `dropRestoreSentinel` la toglie al
+primo Stop del proprietario; `decide()` non la conta come vita (come prima). Anche un
+`interrupted.at` oltre la stessa tolleranza non blocca più `restore()`. Entro la tolleranza resta
+una guardia.
+
+**5. Una sentinella abbandonata, una cartella al suo posto.** Un watchdog ucciso fra le marcature
+e il lancio lasciava tutto, e ogni watchdog successivo rifiutava per sempre. Ora una sentinella
+`claimed` più vecchia di `max(2 × PERSEVERANZA_RESTORE_AFTER_MS, 10 minuti)` (`restoreTimes().
+abandonMs`) il cui watchdog (`by`) non è vivo è abbandonata: ritirata, l'interruzione con lo
+stesso `at` tolta, `restore-abandoned` nel journal e contata fra i `MAX_RESTORES`, poi un nuovo
+tentativo. Lo stesso per una sentinella illeggibile più vecchia dell'intervallo (dalla sua data
+di modifica); prima dell'intervallo resta una guardia, e uno Stop dopo la sua data la toglie. Una
+`launched` non scade col tempo: la sessione riaperta può essere viva su un prompt, e un secondo
+`claude -r` accanto è proprio ciò che la sentinella impedisce. Qualcosa che non è un file al suo
+percorso (una cartella) è spostato da parte (`.old`, tolto se vuoto) dal watchdog e dallo Stop,
+e non blocca. Il ritiro sposta il file da parte, confronta il testo con quello letto e solo
+allora lo cancella: fra due watchdog vince un rename, e una sentinella nuova presa per errore
+torna al suo posto. Il rename è ritentato qualche volta (una cartella appena creata può essere
+tenuta un momento da un antivirus: una corsa su sei del test la vedeva). Test unitari con tempo
+simulato (`utimesSync`, date nel passato) e con un processo vero (`hook.test.mjs`: le marcature
+di un watchdog ucciso due ore prima, il watchdog vero scrive `alerted`, `restore-abandoned`,
+`restored` e lancia una volta).
+
+**6. Mutanti.** Uccisi con test nuovi in `watchdog.test.mjs`: X2/X3/X4 (sentinella `null`,
+array, `at` non valido o assente, senza `session`: bloccano), X12 (`clearInterrupted` con un
+altro `at` non tocca niente), X13 (`markInterrupted` rimette `reconcileAsked` a `false`), X15
+(senza `PERSEVERANZA_RESTORE` sulla sola copia l'avviso normale, niente "No restore"), X16 (vita
+fra due silenzi: due avvisi), X17 (`run()` accetta `spawnWatchdog` iniettato: chiamato con
+`replace: true`), e anche i tre "quasi equivalenti": X5 (lo Stop nello stesso millisecondo del
+lancio toglie la sentinella), X7 (`interrupted.at` dopo l'ultimo Stop rifiuta senza sentinella),
+X25 (il lancio è datato al momento della chiamata, fra due letture dell'orologio). `history`
+mostra le voci nuove del watchdog e `outcome-dropped-paused` (prima una voce del watchdog senza
+silenzio diceva "silent for NaN").
+
+### Versione
+
+3.0.1 in `.claude-plugin/plugin.json`, `package.json`, badge ed esempio di HUD dei README.
+`.claude-plugin/marketplace.json` e `manifest.mjs` non hanno un campo versione: niente da
+cambiare. Il bench chiede `>= 3.0.0`: va bene così. Il test di packaging confronta già
+`plugin.json`, `package.json` e i badge. Nel CHANGELOG la sezione della 3.0.0, già pubblicata,
+si chiama ora "3.0.0" invece di "Non rilasciato (3.0.0)".
+
+### Prove dopo la verifica manual-302 (terzo giro)
+
+- `npm test`: **592 test, 0 skip, 0 fail** sul codice finale: da solo (686 s), con 6 loop di
+  CPU in parallelo (531 s), e di nuovo da solo dopo l'ultima modifica ai documenti. La macchina
+  era carica anche di lavori di altri (un `vitest` di un altro progetto, `herdr`, PowerShell). Una
+  prima corsa con i 6 loop sotto quel carico (1264 s) ha dato 4 rossi, tutti per processi che
+  partono lenti: `processInfo` (una chiamata PowerShell con 15 s di tempo) non vedeva vivo un
+  processo vivo (anche il test di `restore.mjs`, che questo giro non tocca) e, nel test nuovo
+  delle corse, il secondo processo partiva dopo il lancio del primo e lo leggeva come segno di
+  vita (sempre un solo lancio). Corretti i due test nuovi: il controllo "la sessione non è
+  terminata" usa `alive()` (un segnale 0, non PowerShell), l'attesa dei watchdog aspetta il loro
+  avviso nel journal invece di 4 s fissi, la barriera delle corse è a 4 s e "decide: sleep" è
+  una risposta valida del perdente; l'invariante resta un lancio per corsa. Una seconda corsa con
+  i 6 loop sotto un carico esterno sceso ha dato un rosso, lo stesso test di `restore.mjs`
+  (non toccato); la terza, quella riportata sopra, è verde. I 21 test in più: 16 in `watchdog.test.mjs`, 2 in `hook.test.mjs` (due
+  processi in corsa per 10 volte; le marcature di un watchdog ucciso, con il watchdog vero), 2
+  in `mod-tool.test.mjs` (l'esito durante lo Stop che escala; un `pause` a ogni lettura del
+  verbo), 1 in `state-file.test.mjs` (il test dei verbi durante uno Stop lento diviso in due).
+- Le riproduzioni del verificatore sul codice finale (`scratchpad/v302/`): `race-report.test.mjs`
+  4/4 verdi (prima 4/4 rosse), `readback.test.mjs` 8/8 (uscita 0 se e solo se l'esito è su
+  disco), `race2.mjs 20`: **0 doppi lanci su 20** (prima 8/8), `restore-probe.test.mjs`: R1 un
+  watchdog vero dopo le marcature abbandonate scrive `restore-abandoned` e lancia; R3 la
+  sentinella nel futuro è tolta dallo Stop e il ripristino parte; R4c la cartella è spostata.
+  `vwd-restore.mjs pending`: **0 lanci**; `whole`: **1 lancio**, il sostitutivo rifiuta.
+- `claude plugin validate . --strict`: "Validation passed". `claude plugin test .`: 205 verdi.
+- **e2e reali**: `--scenario hostile` riuscito (37 s), `--scenario tool` riuscito (168 s,
+  `no-plan > ready > always > pass > claim-first > always > pass`).
+- **Mutazioni** su copie con `.git`: `mut302.mjs` (le correzioni di questo giro), la copia senza
+  mutazioni verde, **27 su 27 uccise** (merge dello Stop: nessuno scarto, solo `lastReport`, senza
+  journal, regola sullo stato di partenza; `changeOutcome`: nessun controllo nella scrittura,
+  nessun ritiro, ritiro che lascia il valore, ritiro senza journal; sentinella: senza `wx` anche
+  con due processi veri, lasciata dopo una marcatura fallita, mai `launched`, lasciata
+  dall'annullamento; futuro: blocca di nuovo, lo Stop la tiene, l'interruzione futura blocca,
+  tolleranza zero; abbandono: con il watchdog vivo, anche `launched`, non contato,
+  l'interruzione tenuta, l'illeggibile mai scaduta, la cartella che blocca, il ritiro che
+  cancella ciò che ha spostato, l'intervallo senza la soglia, lo Stop che lascia la cartella;
+  `history`). La batteria del verificatore `vmut302.mjs`: i 10 mutanti la cui ancora c'è ancora
+  sono uccisi (X9, X11 ... X16, X18, X19, X20, X24); gli altri 15 (X1 ... X8, X10, X17, X21,
+  X22, X23, X25, la cui ancora il terzo giro ha riscritto, e X10 che nella forma originale non
+  compila più) sono stati spostati sul codice nuovo con la stessa mutazione (`vmut302b.mjs`,
+  `vmut302-adapted-list.mjs`) e sono **tutti uccisi** con gli stessi file di test del
+  verificatore. Totale 25 su 25, compresi i tre "quasi equivalenti" X5, X7, X25.
+- Repository pulito alla fine (nessuna `.perseveranza`, copia delle mutazioni, vecchia cartella
+  di stato, `tsconfig.json` o `.claude-plugin/types`); nessun TODO, `.skip` o `.only` nei file
+  toccati; tutti LF; nessun watchdog o processo finto rimasto.
+
+### Prove dopo la verifica manual-301 (secondo giro)
+
+- `npm test`: **571 test, 0 skip, 0 fail**, tre volte sul codice finale: 174 s da solo, 342 s con
+  6 loop di CPU in parallelo, e la terza da sola dopo l'ultima modifica ai documenti. I 13 test in
+  più: 10 in `test/unit/watchdog.test.mjs` (`restorable`; `restore()` su sola copia: nessuna
+  chiamata ai processi, niente scritto; interruzione e sentinella su disco prima del kill e del
+  lancio, viste dai finti `killTree`/`launchRestore`; marcatura fallita; sentinella non
+  scrivibile; kill e lancio falliti che annullano; la sentinella da sola che rifiuta il secondo
+  ripristino e vale come vita, anche illeggibile; `dropRestoreSentinel`; `cleanStateResidues`;
+  `run()` su sola copia: un avviso, 5 attese, nessun ripristino), 1 in `hook.test.mjs` (processi
+  veri, tre watchdog di fila: 0 lanci sulla sola copia, nessuna scrittura, un avviso per
+  watchdog; 1 lancio sullo stato intero con `interrupted` tolto dopo il primo; la sentinella
+  tolta dal primo Stop vero), 1 in `mod-tool.test.mjs` (`report pass|fail` e `claim-done` su un
+  loop in pausa dopo un'escalation, dallo strumento e dalla shell: uscita 1, stato e journal
+  identici; dopo `/pf resume` registrati), 1 in `subagent-wait.test.mjs` (il ritorno di prima
+  dell'attesa); più due asserzioni in `mod.test.mjs`.
+- Riproduzione del verificatore (`vwd-restore.mjs`, watchdog veri, `claude` finto): `pending` dà
+  **0 lanci**, journal `["alerted"]`, `state.json` non creato, `interrupted` nullo; `whole` dà
+  **1 lancio** (`-r sess-H`), journal `alerted, restored(launched), alerted, alerted(the restored
+  session has not reached a Stop yet ...)`: il watchdog sostitutivo vero ha rifiutato.
+- `claude plugin validate . --strict`: "Validation passed". `claude plugin test .`: **205** verdi.
+- **e2e reali**: `--scenario hostile` riuscito (27 s; i rifiuti di prima e le 4 chiamate di
+  `resume` rifiutate, pausa e contatori invariati, controllo `/pf resume` riuscito);
+  `--scenario tool` riuscito (148 s, `no-plan > ready > always > pass > claim-first > always >
+  pass`).
+- **Mutazioni** (`mut301b.mjs` nello scratchpad, su una copia con `.git`): la copia senza
+  mutazioni passa i test mirati (118); **24 su 24 uccise**. Watchdog: sempre `restorable`; senza
+  la guardia in `run()`; senza il rifiuto in `restore()`; ripristino con la marcatura fallita;
+  sentinella non scritta; guardia che ignora la sentinella (nei test unitari e con i processi
+  veri); sentinella non contata come vita; annullamento senza togliere l'interruzione o la
+  sentinella; sentinella illeggibile che apre; lo Stop che non la toglie (processi veri); tolta
+  prima dello Stop; `arm` che la lascia; il primo avviso che promette il ripristino; quella di
+  un'altra sessione contata. Pausa: il controllo tolto; scrittura fatta e poi rifiuto; `report` e
+  `claim-done` di nuovo su `changeState`; il rifiuto senza `/pf resume`. Attesa: senza `a.at >=
+  start` (test unitario e Stop nel processo), `>` al posto di `>=`. La batteria del primo giro
+  (`mut301.mjs`), rieseguita sullo stesso codice: **29 su 29** ancora uccise.
+- Repository pulito alla fine (nessuna `.perseveranza`, copia delle mutazioni, vecchia cartella
+  di stato, `tsconfig.json` o `.claude-plugin/types`); nessun TODO, `.skip` o `.only` nei file
+  toccati; tutti LF. Nessun watchdog o processo finto rimasto acceso dopo le prove.
+
+### Prove del primo giro
+
+- `npm test`: **558 test, 0 skip, 0 fail**, tre volte sul codice finale: 164 s e 179 s da solo,
+  374 s con 6 loop di CPU in parallelo. Una corsa precedente (557/558) aveva trovato il vecchio
+  prefisso nel titolo di un test nuovo (`names.test.mjs`): titolo corretto.
+- `claude plugin validate --strict` (radice e manifest): "Validation passed".
+- `claude plugin test`: **205** verdi (197 di prima, meno `resume` fra i verbi eseguiti, più 9
+  rifiuti di `resume`: il verbo, le parole, le parole vuote, `RESUME`, `Resume`, accanto a
+  `pause`, come parole di `pause` e di `status`, con un campo tipizzato).
+- Test Node nuovi o cambiati: `test/unit/watchdog.test.mjs` (8: `EBUSY` una volta e sempre, file
+  troncato e vuoto, solo `.pending` vivo e silenzioso, `.pending` accanto allo stato rotto,
+  disarmato con marcatore, trattenuto, assente; `run()` che aspetta e riparte, che esce al tetto
+  e lo scrive, che esce per il disarmo dopo `EBUSY`), `test/e2e/subagent-wait.test.mjs` (9, nel
+  processo con un orologio finto: `implement` con l'esecutore che torna e lascia il lavoro, due
+  esecutori di cui uno torna, nessuno che torna per 3 volte da 30 s e poi `idle`, il ritorno di un
+  altro agente; review con il verdetto e senza; verifica finale con il verdetto e senza;
+  `settleReturned`), `test/e2e/git.test.mjs` (la cartella 2.x scritta, anche tracciata, e un `test
+  --if-needed` che dopo una sua scrittura trova ancora il verde), `test/e2e/mod-tool.test.mjs` (il
+  CLI con `PERSEVERANZA_VIA=tool` su un loop in pausa per l'approvazione con i contatori di
+  un'escalation: `resume`, `resume --json`, `RESUME`, `Resume`, `resume pause`, `resume
+  --takeover` escono con 2, stato e journal identici, `ESCALATION.md` resta; poi `resume` da `/pf`
+  toglie la pausa e azzera), `test/unit/mod-verbs.test.mjs` (le liste, `resume` in ogni forma, le
+  notifiche nelle due modalità), `test/e2e/hook.test.mjs` (`ESCALATION.md`).
+- **e2e reali** (Claude Code 2.1.292): `--scenario hostile` esteso, tre esecuzioni riuscite (27 s,
+  22 s, 26 s; la prima prima di due ritocchi: la modalità della notifica presa dallo stato e il
+  titolo di un test). Dopo la parte di prima, il loop (armato con `--approve-plan`) diventa della
+  sessione del `claude -p` (`--session-id`), in pausa per l'approvazione con `retries` 2,
+  `finalFails` 1, `staleGates` 1. Il modello (Sonnet, il predefinito dello scenario), in modalità
+  di permesso `default`, ha fatto le 4 chiamate (`{"verb": "resume"}`, `RESUME`, `resume` con
+  parole, `resume` come parole di `pause`): tutte risultati d'errore con "Nothing was run", la
+  prima rimanda a `/pf resume`. Lo Stop di quella sessione è partito come proprietario; pausa,
+  `planPresented`, fase, proprietario e contatori invariati; nessuna riga `signal`. Controllo:
+  `claude -p "/pf resume"` esce con 0, "RESUMED", pausa tolta e contatori a 0, `signal` con `via:
+  'command'`. `--scenario tool`: riuscito (132 s), lo strumento per `status`, `complexity`,
+  `claim-done` senza errori, la suite da Bash.
+- **Mutazioni** (`mut301.mjs` nello scratchpad, su una copia del repository con `.git`): **29,
+  tutte uccise** dai test mirati (`claude plugin test` per il testo del rifiuto). La copia senza
+  mutazioni passa gli stessi test (150 Node, 205 della mod). Resume: di nuovo nella lista dello
+  strumento; lo strumento della 3.0.0 intero; il controllo sensibile alle maiuscole; senza
+  minuscole; il campo `takeover` ignorato; il rifiuto che non nomina `/pf resume`; di nuovo nella
+  lista del CLI; il muro del CLI dopo il verbo sconosciuto; il CLI che non nomina `/pf resume`; le
+  notifiche sempre `resume`; la notifica di approvazione dalla modalità del guidatore;
+  `ESCALATION.md` e `pause` col testo di prima; `{"verb": "resume"}` di nuovo nel comando.
+  Watchdog: illeggibile = uscita; la copia promossa; il marcatore ignorato; il conteggio che non
+  riparte; nessun tetto (il test va in timeout); l'uscita al tetto non scritta; il nuovo
+  tentativo senza pausa; l'assente riprovato. Stop: nessuna ripartenza al ritorno; la ripartenza
+  con i task di prima; tutti i task del ruolo chiusi; nessuno chiuso; il record del ritorno non
+  passato. Git: l'impronta senza la cartella 2.x; `LOOP_DIRS` senza la cartella 2.x.
+- Nessun file estraneo nel repository alla fine (`.perseveranza`, la copia delle mutazioni, la
+  vecchia cartella di stato, `tsconfig.json`, `.claude-plugin/types` assenti), nessun TODO,
+  `.skip` o `.only` nei file toccati, tutti LF.
+
+### Limiti
+
+- Il CLI da Bash resta: un modello a cui l'utente ha permesso Bash per `node` (o che lavora in
+  `bypassPermissions`) può ancora lanciare `resume` così, come nella 2.x. Lo decidono i permessi
+  dell'utente; il comando e il rifiuto dello strumento dicono di non farlo.
+- `/pf resume` senza `--takeover` gira anche per un'origine che non è l'utente (un altro plugin
+  con `$.command.run`), come deciso nella fase 3 (solo `arm`, `disarm`, `test`, `ask` e il
+  takeover sono legati all'origine). Il modello non arriva a `/pf` (`Skill` lo rifiuta).
+- Il watchdog smette dopo 10 minuti di `state.json` illeggibile di fila; il prossimo Stop ne
+  avvia uno nuovo.
+- Con lo stato solo nella copia in sospeso il watchdog veglia senza ripristinare finché uno Stop
+  o un verbo non lo riscrive intero (o fino alla sua durata massima, 48 ore): una sessione appesa
+  proprio in quel momento resta all'avviso, che lo dice. È la scelta sicura: un ripristino senza
+  l'interruzione segnata non avrebbe la riconciliazione in sola lettura.
+- Un `report` o un `claim-done` registrato **prima** di una pausa (un `pause` dato fuori da uno
+  Stop, dopo che il verbo ha finito) resta e il primo Stop dopo il resume lo legge, come nella
+  2.x: il rifiuto riguarda ciò che arriva durante la pausa, durante lo Stop che la mette, o
+  insieme al `pause`.
+- Una sentinella `launched` aspetta lo Stop della sessione riaperta senza scadenza: se quella
+  sessione muore subito, i ripristini restano rifiutati (con l'avviso) finché un umano non la
+  riapre, la riprende o disarma. Scadere qui vorrebbe dire un secondo `claude -r` accanto a una
+  sessione forse viva su un prompt.
+- Se il watchdog muore dopo il lancio ma prima di riscrivere la sentinella come `launched`, essa
+  resta `claimed` e dopo l'intervallo di abbandono un watchdog successivo può ripristinare di
+  nuovo accanto a una sessione riaperta che non ha ancora fatto uno Stop. La finestra è quella di
+  una scrittura dopo uno spawn già riuscito.
+- La vita del watchdog di una sentinella si controlla dal pid (`by`): un pid riusato da un altro
+  processo la fa sembrare viva, e la sentinella non scade (si chiude, non si apre).

@@ -14,13 +14,18 @@ import { DEFAULT_PROMPTS, PROMPT_KEYS, PROMPT_VARS, renderPrompt, loopVar, userV
 import { sessionNotice, compactNotice } from '../../src/core/staleness.mjs';
 import { ROOT } from '../../src/shell/paths.mjs';
 import { mk, run, LOOP } from '../helpers/core.mjs';
+import { finishProject, resumeWord } from '../../src/core/machine.mjs';
 
 const IT = validatePack(JSON.parse(readFileSync(join(ROOT, 'packs', 'it.json'), 'utf8'))).overrides;
 const T = 1_700_000_000_000;
 
 // ---------------------------------------------------------------- the lists agree with the code
 test('the tool\'s lists: only the loop\'s own state; test, ask, arm, disarm never; the CLI refuses the same', () => {
-  assert.deepEqual(TOOL_VERBS, ['status', 'history', 'explain', 'report', 'complexity', 'claim-done', 'pause', 'resume']);
+  assert.deepEqual(TOOL_VERBS, ['status', 'history', 'explain', 'report', 'complexity', 'claim-done', 'pause']);
+  // resume is the user's (a pause waits for a human: the plan approval, an escalation)
+  assert.deepEqual(USER_VERBS, ['arm', 'disarm', 'resume']);
+  assert.ok(!TOOL_VERBS.includes('resume') && !TOOL_VIA_VERBS.includes('resume'));
+  assert.ok(COMMAND_VERBS.includes('resume'));
   assert.deepEqual(TOOL_VIA_VERBS, TOOL_VERBS);
   assert.deepEqual(TOOL_ARGS.level.schema.enum, COMPLEXITIES);
   for (const v of COMMAND_VERBS) assert.ok(VERBS.includes(v), v);
@@ -40,6 +45,14 @@ test('the CLI, run with PERSEVERANZA_VIA=tool: every verb outside the tool\'s, a
   // a takeover anywhere in the words, not only first
   assert.match(toolViaRefusal('tool', 'resume', ['x', '--takeover']), /user's decision/);
   assert.match(toolViaRefusal('tool', 'resume', ['--json', '--takeover']), /user's decision/);
+  // resume itself, with or without words, in any case: the user's /pf resume
+  for (const [verb, rest] of [['resume', []], ['resume', ['--json']], ['resume', ['pause']], ['RESUME', []], ['Resume', []]]) {
+    const r = toolViaRefusal('tool', verb, rest);
+    assert.ok(r && /does not run through the perseveranza tool/.test(r) && /Nothing was run\./.test(r), `${verb} ${rest}: ${r}`);
+  }
+  assert.match(toolViaRefusal('tool', 'resume', []), /resuming a paused loop is the user's decision.*\/pf resume\./);
+  // an unknown verb from the tool is refused too (exit 2 before the verb is looked up)
+  assert.match(toolViaRefusal('tool', 'nope', []), /does not run through the perseveranza tool/);
   for (const v of TOOL_VIA_VERBS) assert.equal(toolViaRefusal('tool', v, []), null, v);
   // the command and the shell are not the tool
   for (const via of ['command', null, undefined, 'TOOL']) {
@@ -59,7 +72,9 @@ test('the schema: closed, no field of test or ask; the description gives the exa
     if (p.type === 'string') assert.ok(p.enum || p.maxLength, `${k}: an enum or a length`);
   }
   const d = toolDescription('node "R/src/cli/perseveranza.mjs"');
-  for (const words of ['{"verb": "report", "args": "pass"}', '{"verb": "complexity", "args": "low"}', '{"verb": "claim-done"}', 'does NOT run the suite (test) or an external model (ask)', 'node "R/src/cli/perseveranza.mjs" test --if-needed', '/pf arm|disarm|resume --takeover', 'node "R/src/cli/perseveranza.mjs" <verb>']) assert.ok(d.includes(words), words);
+  for (const words of ['{"verb": "report", "args": "pass"}', '{"verb": "complexity", "args": "low"}', '{"verb": "claim-done"}', 'does NOT run the suite (test) or an external model (ask)', 'node "R/src/cli/perseveranza.mjs" test --if-needed', '/pf arm|disarm|resume --takeover', 'who types /pf resume', 'node "R/src/cli/perseveranza.mjs" <verb>']) assert.ok(d.includes(words), words);
+  // resume is not one of the tool's forms
+  assert.ok(!d.includes('`resume`, `status`') && !d.includes('{"verb": "resume"}'), d);
 });
 
 // ---------------------------------------------------------------- the tool's arguments
@@ -78,7 +93,25 @@ test('validateToolInput: the words as a loop instruction writes them, or typed f
   assert.deepEqual(ok({ verb: 'history', args: '7' }), ['history', '--tail', '7']);
   assert.deepEqual(ok({ verb: 'history', tail: '12' }), ['history', '--tail', '12']);
   assert.deepEqual(ok({ verb: 'claim-done', args: null }), ['claim-done']);
-  assert.deepEqual(ok({ verb: 'resume' }), ['resume']);
+});
+
+test('validateToolInput: resume in every form is the user\'s, never an argv (the verb, the words, the case, beside another verb)', () => {
+  const v = (e) => validateToolInput(e);
+  for (const e of [{ verb: 'resume' }, { verb: 'RESUME' }, { verb: 'Resume' }, { verb: ' resume ' }, { verb: 'resume', args: '' }, { verb: 'resume', args: null }, { verb: 'resume', args: 'now' }, { verb: 'resume pause' }, { verb: 'resume', args: 'pause' }, { verb: 'resume', outcome: 'pass' }, { verb: 'resume', bogus: 1 }, { verb: 'resume', args: '"' }]) {
+    const r = v(e);
+    assert.equal(r.user, 'resume', JSON.stringify(e));
+    assert.ok(r.error && !r.argv, JSON.stringify(e));
+  }
+  for (const e of [{ verb: 'resume', takeover: true }, { verb: 'RESUME --takeover' }, { verb: 'resume', args: 'x --takeover' }]) assert.equal(v(e).user, 'resume --takeover', JSON.stringify(e));
+  // resume as the words of another verb: that verb refuses them; nothing reaches the CLI
+  for (const e of [{ verb: 'pause', args: 'resume' }, { verb: 'pause resume' }, { verb: 'status', args: 'resume' }, { verb: 'report', args: 'pass resume' }, { verb: 'claim-done resume' }, { verb: 'history', args: 'resume' }, { verb: 'explain', args: 'resume' }]) {
+    const r = v(e);
+    assert.ok(r.error && !r.argv, JSON.stringify(e));
+  }
+  // arm and disarm, in any case, by kind too
+  assert.equal(v({ verb: 'ARM' }).user, 'arm');
+  assert.equal(v({ verb: 'Disarm' }).user, 'disarm');
+  assert.equal(v({ verb: 'TEST' }).shell, 'test');
 });
 
 test('validateToolInput: test, ask, arm, disarm and a takeover are refused by kind; everything outside the schema is an error', () => {
@@ -273,6 +306,22 @@ test('tool mode: every phase names the tool for the loop\'s verbs; test and ask 
     assert.ok(approval.reason.includes(`${userVar('tool', LOOP, layers)} resume`), approval.reason);
     assert.ok(!approval.reason.includes(`${tool} resume`), approval.reason);
   }
+});
+
+test('the notifications that ask the user to resume name /pf resume for a loop armed for the tool, the verb as before for the shell', () => {
+  const note = (r) => r.effects.filter((x) => x.type === 'notify').map((x) => x.message).join(' | ');
+  for (const [loopMode, word] of [['tool', 'then run /pf resume - proj'], ['shell', 'then run resume - proj']]) {
+    // the plan approval (--approve-plan), whoever drives the stop
+    for (const driver of ['tool', 'shell']) {
+      const r = run(mk({ options: { approvePlan: true, loopMode } }), { planExists: true, planText: PLAN, loopMode: driver }, { now: T + 1000 });
+      assert.ok(note(r).includes(`Plan ready: review .perseveranza/plan.md and ${word}`), `${loopMode}/${driver}: ${note(r)}`);
+    }
+    // the git closure not confirmed
+    const g = finishProject(mk({ phase: 'git-finish', options: { loopMode } }), { ran: true, confirmed: false, committed: false, pushed: false }, { projectName: 'proj' });
+    assert.ok(note(g).includes(`Fix it and ${word.replace('then run', 'then run:')}`), `${loopMode}: ${note(g)}`);
+  }
+  assert.equal(resumeWord('tool'), '/pf resume');
+  for (const m of ['shell', undefined, 'TOOL']) assert.equal(resumeWord(m), 'resume', String(m));
 });
 
 test('shell mode: the same phases name the CLI command, byte for byte as before (USER and BASH are the CLI)', () => {

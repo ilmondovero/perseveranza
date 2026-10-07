@@ -22,8 +22,10 @@ describe('session.start: the tool, the command, the sign of life', () => {
     expect(t.name).toBe('perseveranza')
     expect(t.inputSchema.additionalProperties).toBe(false)
     expect(t.inputSchema.required).toEqual(['verb'])
-    expect(t.inputSchema.properties.verb.enum).toEqual(['status', 'history', 'explain', 'report', 'complexity', 'claim-done', 'pause', 'resume'])
-    for (const v of ['arm', 'disarm', 'test', 'ask']) expect(t.inputSchema.properties.verb.enum).not.toContain(v)
+    expect(t.inputSchema.properties.verb.enum).toEqual(['status', 'history', 'explain', 'report', 'complexity', 'claim-done', 'pause'])
+    for (const v of ['arm', 'disarm', 'resume', 'test', 'ask']) expect(t.inputSchema.properties.verb.enum).not.toContain(v)
+    expect(t.description).toContain('who types /pf resume')
+    expect(t.description).not.toContain('{"verb": "resume"}')
     expect(Object.keys(t.inputSchema.properties)).toEqual(['verb', 'args', 'outcome', 'level', 'tail'])
     expect(t.inputSchema.properties.args.maxLength).toBe(200)
     expect(t.description).toContain('{"verb": "report", "args": "pass"}')
@@ -246,7 +248,6 @@ describe('the tool: each verb runs the CLI, no shell, in the session folder', ()
     ['complexity, verb and words in one string', { verb: 'complexity medium' }, ['complexity', 'medium']],
     ['claim-done', { verb: 'claim-done' }, ['claim-done']],
     ['pause', { verb: 'pause' }, ['pause']],
-    ['resume', { verb: 'resume' }, ['resume']],
     ['history', { verb: 'history', tail: 5 }, ['history', '--tail', '5']],
     ['history, the words', { verb: 'history', args: '--tail 7' }, ['history', '--tail', '7']],
     ['explain', { verb: 'explain' }, ['explain']],
@@ -318,6 +319,16 @@ describe('the tool runs nothing the user\'s Bash permissions would govern', () =
     ['resume --takeover, a field', { verb: 'resume', takeover: true }, 'taking a loop over (resume --takeover) is the user\'s decision'],
     ['resume --takeover, the words', { verb: 'resume', args: '--takeover' }, 'type /pf resume --takeover'],
     ['resume --takeover, in the verb', { verb: 'resume --takeover' }, 'type /pf resume --takeover'],
+    // resume is the user's: a pause waits for a human (the plan approval, an escalation)
+    ['resume', { verb: 'resume' }, 'resuming the loop is the user\'s decision'],
+    ['resume, the words', { verb: 'resume', args: 'now' }, 'Ask the user to type /pf resume'],
+    ['resume, empty words', { verb: 'resume', args: '' }, 'Ask the user to type /pf resume'],
+    ['RESUME, upper case', { verb: 'RESUME' }, 'Ask the user to type /pf resume'],
+    ['Resume, a capital', { verb: 'Resume' }, 'Ask the user to type /pf resume'],
+    ['resume beside another verb, first', { verb: 'resume pause' }, 'Ask the user to type /pf resume'],
+    ['resume beside another verb, as its words', { verb: 'pause', args: 'resume' }, 'pause takes no words'],
+    ['resume as the words of status', { verb: 'status', args: 'resume' }, 'status takes only --json'],
+    ['resume with a typed field', { verb: 'resume', outcome: 'pass' }, 'Ask the user to type /pf resume'],
     ['arm', { verb: 'arm', args: '"x"' }, '/pf arm'],
     ['disarm', { verb: 'disarm' }, '/pf disarm'],
     ['runs', { verb: 'runs' }, 'unknown verb "runs"'],
@@ -345,7 +356,7 @@ describe('the tool runs nothing the user\'s Bash permissions would govern', () =
 
   test('a loop of another session: every verb that changes something refused, the read-only ones run', async ($, on) => {
     const w = world(on, { stateText: FOREIGN, answer: () => ({ ok: true, deny: null }) })
-    for (const input of [{ verb: 'report', args: 'pass' }, { verb: 'complexity', args: 'low' }, { verb: 'claim-done' }, { verb: 'pause' }, { verb: 'resume' }]) {
+    for (const input of [{ verb: 'report', args: 'pass' }, { verb: 'complexity', args: 'low' }, { verb: 'claim-done' }, { verb: 'pause' }]) {
       const r: any = await tool($, input)
       expect(r.deny).toContain('belongs to session other-se, not to this one (S1)')
       expect(r.deny).toContain('/pf resume --takeover')

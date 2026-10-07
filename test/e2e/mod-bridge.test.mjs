@@ -113,10 +113,13 @@ test('bridge stop: a running subagent is waited for in real time; a verdict that
   const qw = journal(q).find((j) => j.type === 'subagent-wait');
   assert.ok(qw && qw.ms >= 1100 && !qw.landed, JSON.stringify(qw));
   // the subagent's return recorded by the mod (activity: subagent-stop) during the wait ends it
-  // early (landed inside the wait, dated when it lands)
+  // early (landed inside the wait, dated when it lands), and the stop runs again without it:
+  // the reviewer came back without its verdict, so the outcome is asked for (missing), no wait
+  // spent (3.0.1: before, the stop answered "still running" and spent a wait)
   const ret = { at: '__NOW__', session: 't-sess', event: 'subagent-stop', tool: '', agent: 'perseveranza:pf-reviewer', pending: [] };
   const r2 = JSON.parse(spawnSync(NODE, ['--import', LAND, BRIDGE], { input: JSON.stringify({ op: 'stop', cwd: q.dir, event: { session_id: 't-sess' }, facts: { backgroundTasks: RUNNING } }), encoding: 'utf8', env: { ...q.env, PERSEVERANZA_SUBAGENT_WAIT_MS: '20000', ...landDuring(gate(q, 'activity.json'), ret, 2), LAND_TRIGGER: gate(q, 'review.json') } }).stdout);
-  assert.equal(r2.outcome, 'subagent-running');
+  assert.equal(r2.outcome, 'missing', JSON.stringify(r2));
+  assert.equal(readState(q).counters.subagentWaits, 1, 'the earlier wait only');
   // the wait as the bridge measured it (the start of node on a loaded machine is not the wait)
   const last = journal(q).filter((j) => j.type === 'subagent-wait').pop();
   assert.equal(last.returned, true);

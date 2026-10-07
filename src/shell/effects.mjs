@@ -61,7 +61,7 @@ export function writeEscalation(paths, state, why) {
       + `- \`.perseveranza/journal.jsonl\` - every transition (last lines below; \`history\` verb renders it)\n\n`
       + `## How to resume\n\n`
       + `1. Fix the blocked point by hand (start from plan.md + notes.md).\n`
-      + `2. Once solved, resume the loop with the \`resume\` verb (it resets the retry counters).\n`
+      + `2. Once solved, the user resumes the loop: \`/pf resume\` in Claude Code, or the \`resume\` verb of the CLI from a terminal (it resets the retry counters). Claude cannot resume it with the \`perseveranza\` tool: a pause waits for a human.\n`
       + `3. To give up, use the \`disarm\` verb.\n\n`
       + `## Last transitions\n\n\`\`\`\n${tail}\n\`\`\`\n`;
     writeFileSync(paths.escalationPath, doc);

@@ -4,7 +4,8 @@
 // name the tool only when the run was armed for it AND the driver has it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { utimesSync, readdirSync, mkdirSync } from 'node:fs';
+import { utimesSync, readdirSync, mkdirSync, readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { project, cli, arm, armWithMod, modAlive, MOD_SESSION, readState, patchState, journal, gate, fire, spawnSync, existsSync, writeFileSync, join, NODE } from '../helpers/cli.mjs';
 import { ROOT } from '../../src/shell/paths.mjs';
 import { pruneAlive, readAlive, currentSession, alivePath, ALIVE_MAX_AGE_MS, ALIVE_KEEP, ALIVE_PROTECT_MS } from '../../src/shell/mod-alive.mjs';
@@ -186,6 +187,145 @@ test('a run that came from the tool (PERSEVERANZA_VIA=tool): test, ask, arm, dis
   assert.equal(readState(p).owner.sessionId, null);
   assert.equal(run(p, ['test'], {}).code, 0);
   assert.equal(marker('pwned-state'), true, 'the shell runs the suite (Bash permissions decide there)');
+});
+
+test('a run that came from the tool cannot resume: a loop paused for the plan approval or an escalation stays paused, its counters kept', () => {
+  const p = project();
+  armWithMod(p, 'approve', ['--approve-plan']);
+  writeFileSync(gate(p, 'plan.md'), '- [ ] one\n');
+  // pause runs from the tool, and says who resumes
+  const pz = run(p, ['pause'], { PERSEVERANZA_VIA: 'tool', CLAUDE_CODE_SESSION_ID: MOD_SESSION });
+  assert.equal(pz.code, 0, pz.out);
+  assert.match(pz.out, /until the user resumes the loop \(\/pf resume in Claude Code/);
+  // the pause of the plan approval, after an escalation's counters: what resume would reset
+  patchState(p, (s) => { s.owner.sessionId = MOD_SESSION; s.signals.paused = true; s.flags.planPresented = true; s.counters.retries = 2; s.counters.finalFails = 1; s.counters.staleGates = 1; });
+  writeFileSync(gate(p, 'ESCALATION.md'), 'hand-off');
+  const before = readState(p);
+  const lines = journal(p).length;
+  const tool = { PERSEVERANZA_VIA: 'tool', CLAUDE_CODE_SESSION_ID: MOD_SESSION };
+  for (const args of [['resume'], ['resume', '--json'], ['RESUME'], ['Resume'], ['resume', 'pause'], ['resume', '--takeover']]) {
+    const r = run(p, args, tool);
+    assert.equal(r.code, 2, `${args.join(' ')}: ${r.out}`);
+    assert.match(r.out, /does not run through the perseveranza tool.*Nothing was run\./s, r.out);
+  }
+  assert.match(run(p, ['resume'], tool).out, /resuming a paused loop is the user's decision.*\/pf resume\./);
+  assert.deepEqual(readState(p), before, 'the state untouched: paused, counters, owner');
+  assert.equal(journal(p).length, lines, 'nothing journaled');
+  assert.equal(existsSync(gate(p, 'ESCALATION.md')), true, 'the hand-off kept');
+  // the control: the user's /pf resume (via command) and a shell lift the pause and reset the counters
+  const u = run(p, ['resume'], { PERSEVERANZA_VIA: 'command' });
+  assert.equal(u.code, 0, u.out);
+  const after = readState(p);
+  assert.equal(after.signals.paused, false);
+  assert.deepEqual([after.counters.retries, after.counters.finalFails, after.counters.staleGates], [0, 0, 0]);
+  assert.ok(journal(p).some((x) => x.type === 'signal' && x.verb === 'resume' && x.via === 'command'));
+});
+
+// The verifier's probe (manual-301): a `report pass` sent while the loop waits for a human was
+// stored and acted on by the first Stop after the resume. Now report and claim-done refuse on a
+// paused loop, from the tool and from a shell alike; once resumed they are recorded as before.
+test('report and claim-done on a paused loop are refused (tool and shell), nothing recorded; after /pf resume they are', () => {
+  const p = project();
+  arm(p, 'probe', ['--max-retries', '1']);
+  writeFileSync(gate(p, 'plan.md'), '- [ ] step one\n');
+  let f = fire(p); // plan -> implement
+  f = fire(p); // implement -> review
+  assert.equal(f.state.phase, 'review', f.reason);
+  const failReview = () => writeFileSync(gate(p, 'review.json'), JSON.stringify({ requestId: (String(f.reason).match(/"requestId": "([^"]+)"/) || [])[1], blocking: 1, findings: [{ severity: 'high', desc: 'x' }] }));
+  failReview();
+  f = fire(p); // review fail -> implement (retries 1)
+  f = fire(p); // implement -> review
+  failReview();
+  f = fire(p); // review fail again: past the limit, paused for a human
+  assert.equal(f.state.signals.paused, true, JSON.stringify(f.state.signals));
+  const before = readState(p);
+  const lines = journal(p).length;
+  for (const env of [{ PERSEVERANZA_VIA: 'tool' }, {}]) {
+    for (const args of [['report', 'pass'], ['report', 'fail'], ['claim-done']]) {
+      const r = run(p, args, env);
+      assert.equal(r.code, 1, `${args.join(' ')} ${JSON.stringify(env)}: ${r.out}`);
+      assert.match(r.out, new RegExp(`perseveranza is PAUSED: ${args[0]} not recorded\\..*/pf resume.*Nothing was changed\\.`, 's'), r.out);
+    }
+  }
+  assert.deepEqual(readState(p), before, 'the state untouched');
+  assert.equal(journal(p).length, lines, 'nothing journaled');
+  // the user resumes: the first Stop after it has no outcome from the pause to act on
+  assert.equal(run(p, ['resume'], { PERSEVERANZA_VIA: 'command' }).code, 0);
+  assert.equal(readState(p).signals.lastReport, before.signals.lastReport);
+  assert.equal(readState(p).signals.claimedDone, false);
+  // running again: the outcomes are recorded
+  const ok = run(p, ['report', 'pass'], { PERSEVERANZA_VIA: 'tool' });
+  assert.equal(ok.code, 0, ok.out);
+  assert.equal(readState(p).signals.lastReport, 'pass');
+  assert.equal(run(p, ['claim-done'], { PERSEVERANZA_VIA: 'tool' }).code, 0);
+  assert.equal(readState(p).signals.claimedDone, true);
+});
+
+// Real processes and a preload (test/helpers/verb-on-read.mjs) that runs a verb at a chosen read
+// of state.json by another process: the races of manual-302.
+const VERB_ON_READ = pathToFileURL(join(ROOT, 'test', 'helpers', 'verb-on-read.mjs')).href;
+const onRead = (p, at, verb, via = 'tool') => ({ NODE_OPTIONS: `--import=${VERB_ON_READ}`, VERB_ON_READ_AT: String(at), VERB_ON_READ: verb, VERB_ON_READ_CLI: CLI, VERB_ON_READ_CWD: p.dir, VERB_ON_READ_VIA: via, VERB_ON_READ_LOG: join(p.dir, 'on-read.log') });
+const onReadLog = (p) => (existsSync(join(p.dir, 'on-read.log')) ? readFileSync(join(p.dir, 'on-read.log'), 'utf8').trim() : '');
+// a loop one failed review away from its escalation (--max-retries 1)
+function oneReviewFromEscalation() {
+  const p = project();
+  arm(p, 'race', ['--max-retries', '1']);
+  writeFileSync(gate(p, 'plan.md'), '- [ ] step one\n');
+  let f = fire(p);
+  f = fire(p);
+  const failReview = () => writeFileSync(gate(p, 'review.json'), JSON.stringify({ requestId: (String(f.reason).match(/"requestId": "([^"]+)"/) || [])[1], blocking: 1, findings: [{ severity: 'high', desc: 'x' }] }));
+  failReview();
+  f = fire(p);
+  f = fire(p);
+  assert.equal(f.state.phase, 'review', f.reason);
+  failReview();
+  return p;
+}
+
+test('an outcome sent while the escalating Stop runs (the loop not yet paused on disk) does not reach the paused state', () => {
+  for (const verb of ['report pass', 'claim-done']) {
+    for (const at of [2, 3]) {
+      const p = oneReviewFromEscalation();
+      const f = fire(p, {}, onRead(p, at, verb));
+      assert.match(onReadLog(p), new RegExp(`^${verb} -> 0 `), `${verb} @${at}: the verb was accepted (the loop was not paused yet): ${onReadLog(p)}`);
+      const s = readState(p);
+      assert.equal(s.signals.paused, true, `${verb} @${at}: ${f.reason}`);
+      assert.equal(s.signals.lastReport, 'none', `${verb} @${at}`);
+      assert.equal(s.signals.claimedDone, false, `${verb} @${at}`);
+      const d = journal(p).filter((j) => j.type === 'outcome-dropped-paused');
+      assert.equal(d.length >= 1 && d[0].by, 'stop', `${verb} @${at}: ${JSON.stringify(d)}`);
+      // the user resumes: the first Stop does not pass the review on the outcome of the race
+      assert.equal(run(p, ['resume'], { PERSEVERANZA_VIA: 'command' }).code, 0);
+      fire(p);
+      const last = journal(p).filter((j) => j.type === 'transition').at(-1);
+      assert.notEqual(last.outcome, 'pass', `${verb} @${at}: ${JSON.stringify(last)}`);
+      assert.notEqual(last.outcome, 'claim-open', `${verb} @${at}: ${JSON.stringify(last)}`);
+    }
+  }
+});
+
+test('a pause landing at any read of report/claim-done: the exit code says what is on disk', () => {
+  const seen = [];
+  for (const verb of ['report pass', 'claim-done']) {
+    for (const at of [1, 2, 3, 4]) {
+      const p = project();
+      arm(p, 'race');
+      const r = run(p, verb.split(' '), onRead(p, at, 'pause', ''));
+      const s = readState(p);
+      const stored = s.signals.lastReport !== 'none' || s.signals.claimedDone === true;
+      assert.equal(r.code === 0, stored, `${verb} @${at}: exit ${r.code} "${r.out.trim()}", paused ${s.signals.paused}, lastReport ${s.signals.lastReport}, claimed ${s.signals.claimedDone}; ${onReadLog(p)}`);
+      if (r.code !== 0) {
+        assert.match(r.out, /perseveranza is PAUSED: \S+ not recorded\./, r.out);
+        assert.equal(s.signals.paused, true);
+        // taken back after the write: said, and journaled
+        if (/taken back/.test(r.out)) assert.ok(journal(p).some((j) => j.type === 'outcome-dropped-paused' && j.by === verb.split(' ')[0]));
+        else assert.match(r.out, /Nothing was changed\./);
+      }
+      seen.push(r.code === 0 ? 'recorded' : /taken back/.test(r.out) ? 'taken back' : 'refused');
+    }
+  }
+  // the three answers all met: refused on its read, taken back after its write, recorded
+  for (const k of ['refused', 'taken back', 'recorded']) assert.ok(seen.includes(k), seen.join(', '));
 });
 
 // ---------------------------------------------------------------- tool words only where both agree

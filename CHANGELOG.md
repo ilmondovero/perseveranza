@@ -3,7 +3,95 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
-## Non rilasciato (3.0.0)
+## 3.0.1
+
+Correzioni di sicurezza e affidabilità trovate da una code review statica del diff della 3.0.0.
+Nessuna rottura per chi usa `/pf` e lo strumento come insegnano i README. Un pacchetto di prompt
+personale che scrive `{{LOOP}} resume` in modalità strumento manda il modello allo strumento, che
+ora rifiuta: per ciò che fa l'utente si usa `{{USER}}` (i pacchetti inclusi lo fanno già).
+
+### Correzioni di sicurezza
+
+- **Lo strumento `perseveranza` non ha più `resume`.** Nella sessione proprietaria il modello
+  poteva chiamare `{"verb": "resume"}` su un loop in pausa: la pausa per l'approvazione del piano
+  (`--approve-plan`) o quella dopo un'escalation (i tentativi finiti). `resume` toglie la pausa e
+  azzera `retries`, `finalFails` e `staleGates`, quindi il modello poteva approvare il proprio
+  piano e superare il limite che chiede un umano, senza nessun prompt dei permessi (con gli hook
+  della 2.x la stessa chiamata passava da Bash, sotto i permessi dell'utente). Ora `resume` è
+  dell'utente come `arm` e `disarm`: lo strumento lo rifiuta in ogni forma (il verbo, le parole,
+  le maiuscole, accanto a un altro verbo) con "Nothing was run" e rimanda a `/pf resume`; il CLI
+  avviato dallo strumento (`PERSEVERANZA_VIA=tool`) rifiuta con exit 2 `resume` e ogni verbo fuori
+  dalla lista, anche sconosciuto, prima di cercarlo. `/pf resume` e il CLI da un terminale (o da
+  Bash, sotto i permessi dell'utente) restano. Lo dicono la descrizione e lo schema dello
+  strumento, il comando `/perseveranza`, l'uscita di `pause`, `ESCALATION.md` e le notifiche
+  (`/pf resume` per un loop armato con la mod, `resume` come prima per uno armato dalla shell).
+  `pause` resta allo strumento: fermarsi per chiedere passa la mano all'utente. `report` e
+  `claim-done` restano: sono i segnali del loop, giudicati dalla macchina. Nessuno dei due toglie
+  una pausa, ma accettati agiscono sul loop (un `pass` della review e un claim accettato azzerano
+  `retries`), quindi vedi il punto seguente (README, "Sicurezza").
+- **`report` e `claim-done` rifiutati su un loop in pausa.** Un `report pass` mandato (dallo
+  strumento, senza prompt) mentre il loop aspettava una persona restava in `state.json` e il primo
+  Stop dopo il `/pf resume` lo usava: la review passava senza essere rifatta. Ora, con
+  `signals.paused` attivo, i due verbi escono con 1, "perseveranza is PAUSED: ... not recorded",
+  rimandano a `/pf resume` e non scrivono niente (né stato né journal), dallo strumento come dalla
+  shell; il controllo è fatto dentro la scrittura, sullo stato di ogni tentativo. Anche nelle
+  corse: un esito accettato mentre gira lo Stop che mette in pausa (su disco non lo era ancora)
+  non è riportato dal merge dello Stop nello stato in pausa (`lastReport`/`claimedDone` restano
+  quelli dello Stop, journal `outcome-dropped-paused`); se un `pause` arriva subito dopo la
+  scrittura del verbo e la tiene, il verbo ritira l'esito e dice "taken back" (se non può, dice
+  che è stato registrato). L'uscita del verbo corrisponde sempre a ciò che è su disco. Dopo il
+  resume si registrano come prima. La macchina non cambia.
+- **Il watchdog non ripristina mai uno stato che c'è solo nella copia in sospeso, né due volte.**
+  Con `PERSEVERANZA_RESTORE=1` e `state.json` presente solo come `state.json.pending`, il watchdog
+  (che con la correzione più sotto legge la copia in sospeso) non poteva segnare l'interruzione
+  (`markInterrupted` non scrive su quella copia), la guardia contro un secondo `claude -r` stava
+  tutta in `signals.interrupted` e non scattava: il watchdog sostitutivo ripristinava di nuovo,
+  fino a 3 `claude -r` della stessa sessione in 2 secondi. Ora: con la sola copia in sospeso il
+  watchdog avvisa una volta ("No restore"), continua a vegliare e non termina, non lancia e non
+  scrive niente. Un ripristino parte solo dopo aver creato **in esclusiva** (flag `wx`) il file
+  sentinella `.perseveranza/restore-launched.json` (ora, sessione, pid del watchdog, nonce, fase
+  `claimed`, poi `launched` dopo il lancio) e scritto l'interruzione in uno `state.json` intero:
+  la creazione è l'atto che vince il ripristino, così due watchdog che si credono entrambi
+  proprietari (`watchdog.json` vuoto o perso) lanciano una volta sola; se una delle due scritture
+  fallisce non parte (un kill o un lancio fallito le annullano). Il watchdog successivo trova la
+  sentinella e non ripristina finché la sessione ripristinata non arriva a uno Stop, anche se
+  `signals.interrupted` manca; il primo Stop della sessione ripristinata la toglie, `arm` toglie
+  quella di un run vecchio. Una sentinella illeggibile (non JSON, `null`, `at` non valido) vale
+  come lancio, una senza `session` come della sessione proprietaria. Non blocca mai per sempre:
+  datata nel futuro oltre 5 minuti è scartata (dal watchdog, e dallo Stop della sessione); una
+  `claimed` il cui watchdog è morto prima del lancio, o una illeggibile, è abbandonata dopo
+  `max(2 × PERSEVERANZA_RESTORE_AFTER_MS, 10 minuti)`, ritirata con la sua interruzione e contata
+  fra i `MAX_RESTORES`; una cartella al suo posto è spostata da parte (tolta se vuota). Una
+  `launched` aspetta lo Stop: la sessione riaperta può essere ferma su un prompt. Ogni ritiro va
+  nel journal (`sentinel-retired`, `restore-abandoned`), e `history` lo mostra.
+
+### Correzioni di affidabilità
+
+- **Il watchdog non esce più per uno `state.json` che non si legge per un momento.** `decide()`
+  leggeva il file grezzo e usciva per uno stato illeggibile: un `EBUSY` di Google Drive o di un
+  antivirus, una scrittura in place a metà, un crash che lascia solo `state.json.pending`. Il
+  watchdog staccato non tornava fino al prossimo Stop, che una sessione bloccata non porta. Ora
+  legge come gli altri (`loadStateFile`, tentativi brevi, senza promuovere la copia in sospeso):
+  esce solo per uno stato davvero assente o per la cartella segnata disarmata o trattenuta; uno
+  stato occupato o rotto si riprova ogni 15 s, al più 40 volte di fila (10 minuti), poi esce e
+  scrive il motivo nel journal; con la sola copia in sospeso legge quella.
+- **Uno Stop riparte quando il subagent torna durante l'attesa.** Solo il verdetto arrivato
+  faceva ripartire lo Stop; se il subagent tornava senza un file (sempre, in `implement`), lo
+  Stop usava il calcolo di prima: diceva "a subagent is still running", spendeva una delle 3
+  attese e uno Stop "quieto". Ora riparte con il subagent tornato segnato come finito (quanti ne
+  dice il record del ritorno, almeno uno): in `implement` va in review, in review o nella
+  verifica finale senza verdetto chiede l'esito. Tetto di 30 s e 3 attese invariati.
+- **L'impronta dell'albero esclude anche `.omc-loop/`.** `workTreeFingerprint` escludeva solo
+  `.perseveranza/`, mentre il commit finale esclude entrambe le cartelle: in un progetto migrato
+  dalla 2.x con una `.omc-loop/` non ignorata e ancora scritta, il test verde registrato veniva
+  invalidato come "codice cambiato". Una sola lista (`LOOP_DIRS`) per tutto.
+
+### Pulizia
+
+- Tolti l'import morto `mergeModUsage` (`stop-core.mjs`), il doppio import da
+  `core/subagents.mjs` (`mod-bridge.mjs`) e `isGitRepo` (`git.mjs`), esportata e mai usata.
+
+## 3.0.0
 
 La 3.0 fa di Perseveranza una **mod** di Claude Code: un solo modulo dentro Claude Code guida il
 loop, al posto dei cinque hook di impostazioni della 2.x, e vede quello che un hook non vedeva

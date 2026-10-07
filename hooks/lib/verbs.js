@@ -9,8 +9,12 @@
 // (TOOL_VERBS), on a loop of this session (or one no session claimed yet):
 //   - `test` (it runs the suite, a shell command) and `ask` (it starts an external agent CLI)
 //     are refused: they stay shell commands, run with Bash, where the user's permissions decide;
-//   - arm, disarm and a takeover (resume --takeover) are the user's: /pf, or the CLI when the
-//     user asks; the tool refuses them, and so does the CLI for a run that says via=tool;
+//   - arm, disarm and resume (a takeover, resume --takeover, included) are the user's: /pf, or
+//     the CLI when the user asks; the tool refuses them, and so does the CLI for a run that says
+//     via=tool. resume is the user's because a pause is where the loop waits for a human: the
+//     approval of a plan (--approve-plan) and the escalation after maxRetries. resume lifts the
+//     pause and resets the retry counters, so a model that could resume its own loop would
+//     approve its own plan and go past the limit that asks for a human;
 //   - a loop owned by another session: every verb that changes something is refused (taking
 //     a loop over is the user's /pf resume --takeover);
 //   - its arguments are checked HERE, before any process starts: a closed list of verbs and of
@@ -40,13 +44,17 @@ import { noteTool, scheduleActivity } from './activity.js';
 
 export const TOOL_NAME = 'perseveranza';
 export const COMMAND_NAME = 'pf';
-// the verbs Claude may run through the tool: the loop's own state, nothing else
-export const TOOL_VERBS = ['status', 'history', 'explain', 'report', 'complexity', 'claim-done', 'pause', 'resume'];
+// the verbs Claude may run through the tool: the loop's own state, nothing else. pause is one
+// (a model that stops itself to ask the user hands control to a human: nothing is bypassed);
+// report and claim-done are the loop's own signals, judged by the machine (see the README,
+// "Security"): neither lifts a pause, and on a paused loop the CLI refuses both (an accepted
+// pass or claim resets the retries: not an outcome to store while a human is awaited)
+export const TOOL_VERBS = ['status', 'history', 'explain', 'report', 'complexity', 'claim-done', 'pause'];
 // the verbs that run something the user's Bash permissions govern: never through the tool
 export const SHELL_VERBS = ['test', 'ask'];
-// the user's: arm and disarm (and a takeover, an argument of resume)
-export const USER_VERBS = ['arm', 'disarm'];
-// the verbs /pf runs (the user's): the tool's, the shell's, arm and disarm, the archive
+// the user's: arm, disarm, resume (a pause waits for a human; a takeover is an argument of it)
+export const USER_VERBS = ['arm', 'disarm', 'resume'];
+// the verbs /pf runs (the user's): the tool's, the shell's, the user's, the archive
 export const COMMAND_VERBS = [...TOOL_VERBS, ...SHELL_VERBS, ...USER_VERBS, 'runs'];
 // the verbs of the command that act on an armed loop (refused without one, like the tool's)
 export const GATED_COMMAND_VERBS = ['report', 'complexity', 'claim-done', 'pause', 'resume', 'test', 'ask'];
@@ -84,10 +92,10 @@ export function toolSchema() {
 export function toolDescription(cli) {
   return [
     'The verbs of the perseveranza loop armed in this project (.perseveranza/), for the instructions that say "the `perseveranza` tool": the first word is "verb", the words after it go whole in "args".',
-    'Exactly: `report pass` -> {"verb": "report", "args": "pass"}; `report fail` -> {"verb": "report", "args": "fail"}; `complexity low` -> {"verb": "complexity", "args": "low"}; `claim-done` -> {"verb": "claim-done"}; `pause`, `resume`, `status`, `explain` -> {"verb": "<it>"}; `history --tail 20` -> {"verb": "history", "args": "--tail 20"}.',
+    'Exactly: `report pass` -> {"verb": "report", "args": "pass"}; `report fail` -> {"verb": "report", "args": "fail"}; `complexity low` -> {"verb": "complexity", "args": "low"}; `claim-done` -> {"verb": "claim-done"}; `pause`, `status`, `explain` -> {"verb": "<it>"}; `history --tail 20` -> {"verb": "history", "args": "--tail 20"}.',
     'It answers with the verb\'s output and its exit code; a verb that refuses (claim-done without a green test, a verb without an armed loop) says why.',
     `It does NOT run the suite (test) or an external model (ask): those are shell commands, run with Bash: ${cli} test --if-needed -- <the suite>, ${cli} ask <provider> <slot> -- "<prompt>".`,
-    'arm, disarm and taking over a loop of another session (resume --takeover) are the user\'s: they type /pf arm|disarm|resume --takeover.',
+    'arm, disarm and resume are the user\'s, and so is taking over a loop of another session (resume --takeover): a paused loop (a plan to approve, an escalation) waits for the user, who types /pf resume; the user types /pf arm|disarm|resume --takeover too.',
     `Only if this tool is missing or cannot start, run the same verb as a shell command: ${cli} <verb> <args>.`,
   ].join(' ');
 }
@@ -160,8 +168,16 @@ export function validateToolInput(e) {
   const head = splitArgs(input.verb);
   if (head.error) return { error: `"verb": ${head.error}` };
   const [verb, ...inVerb] = head.tokens;
-  if (SHELL_VERBS.includes(verb)) return { error: `"${verb}" does not run through the perseveranza tool`, shell: verb };
-  if (USER_VERBS.includes(verb)) return { error: `"${verb}" is the user's, not the tool's`, user: verb };
+  // refused by kind whatever the case ("Resume", "ARM"): the answer names the door that runs it
+  const kind = verb.toLowerCase();
+  if (SHELL_VERBS.includes(kind)) return { error: `"${kind}" does not run through the perseveranza tool`, shell: kind };
+  if (kind === 'resume') {
+    // a takeover in any form (the field, the words in args or in the verb) is named as one
+    const sp = typeof input.args === 'string' ? splitArgs(input.args) : { tokens: [] };
+    const takeover = Object.prototype.hasOwnProperty.call(input, 'takeover') || [...inVerb, ...(sp.tokens || [])].includes('--takeover');
+    return { error: takeover ? 'a takeover is the user\'s' : 'resume is the user\'s, not the tool\'s', user: takeover ? 'resume --takeover' : 'resume' };
+  }
+  if (USER_VERBS.includes(kind)) return { error: `"${kind}" is the user's, not the tool's`, user: kind };
   if (!TOOL_VERBS.includes(verb)) return { error: `unknown verb "${verb.slice(0, 40)}": one of ${TOOL_VERBS.join(', ')}` };
   let tokens = inVerb;
   for (const k of Object.keys(input)) {
@@ -179,7 +195,6 @@ export function validateToolInput(e) {
     if (sp.error) return { error: `"args": ${sp.error}` };
     tokens = [...tokens, ...sp.tokens];
   }
-  if (verb === 'resume' && tokens.includes('--takeover')) return { error: 'a takeover is the user\'s', user: 'resume --takeover' };
   // a typed field says the same as the words, or is the only one to say it
   const typed = (k, word) => {
     if (input[k] === undefined) return null;
@@ -299,6 +314,7 @@ const short = (id) => String(id || '').slice(0, 8) || 'unknown';
 // The tool's refusals that name another way: the shell for test and ask, the user for the rest.
 function toolRefusal(v, cli) {
   if (v.shell) return `perseveranza tool: "${v.shell}" does not run through this tool, which runs nothing the user's Bash permissions would govern. Run it as a shell command with Bash: ${cli} ${v.shell === 'test' ? 'test --if-needed -- <the suite>' : 'ask <provider> <slot> -- "<prompt>"'}. Nothing was run.`;
+  if (v.user === 'resume') return 'perseveranza tool: resuming the loop is the user\'s decision, not the tool\'s: a paused loop waits for a human (a plan to approve, an escalation after the retries), and resume lifts the pause and resets the retry counters. Ask the user to type /pf resume, and do not resume it any other way. Nothing was run.';
   if (v.user) return `perseveranza tool: ${v.user === 'resume --takeover' ? 'taking a loop over (resume --takeover)' : `"${v.user}"`} is the user's decision, not the tool's: ask the user to type /pf ${v.user}${v.user === 'resume --takeover' ? '' : ' ...'}. Nothing was run.`;
   return `perseveranza tool: ${v.error}. Nothing was run.`;
 }

@@ -4,7 +4,7 @@
 
 **Give Claude Code a task and let it work until it is really done.**
 
-![version](https://img.shields.io/badge/version-3.0.0-blue)
+![version](https://img.shields.io/badge/version-3.0.1-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-mod%20%E2%89%A5%202.1.287-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -119,7 +119,7 @@ itself: at the end of every response the mod injects the next phase's instructio
 progress line on top:
 
 ```
-[perseveranza v3.0.0 · ▸impl ▰▰▱▱▱ 2/5 · it7/23 · 84k tok] Task: add pagination…
+[perseveranza v3.0.1 · ▸impl ▰▰▱▱▱ 2/5 · it7/23 · 84k tok] Task: add pagination…
 ```
 
 When it is done you get the notification "Project finished and verified · commit+push confirmed".
@@ -247,7 +247,17 @@ final verification splits into three lenses working side by side (see below).
   slow one. Two stages: alert at thirty minutes, kill and restore at sixty
   (`PERSEVERANZA_RESTORE_AFTER_MS`), because a session waiting on a question to the user writes
   nothing either and the alert is its chance. At most three restores per run; no relaunch
-  without a recorded process. Off by default; verified by hand on Windows before it was
+  without a recorded process. Before terminating or launching anything it creates
+  `.perseveranza/restore-launched.json` exclusively (whoever creates it wins the restore: two
+  watchdogs that both believe they own the loop launch once) and writes the interruption into
+  `state.json`: if either write fails, or the state stands only in its pending copy (a write cut
+  short), it alerts and nothing more. No second restore starts until the reopened session
+  reaches a Stop. That file never blocks for ever: dated in the future (a clock set back) it is
+  discarded; one left by a watchdog that died before its launch is abandoned after twice the
+  restore threshold (at least ten minutes) and the attempt counts among the three; a folder in
+  its place is moved aside. One from a successful launch waits for the reopened session's Stop,
+  as that session may be waiting on a prompt.
+  Off by default; verified by hand on Windows before it was
   written. `PERSEVERANZA_CLAUDE_BIN` names the `claude` binary when it is not on `PATH`;
   `PERSEVERANZA_ACTIVITY_HEARTBEAT_MS` tunes the `test` verb's heartbeat.
 - **After a restore, reconcile first, read-only.** The reopened session inspects plan,
@@ -317,7 +327,7 @@ The options of `/perseveranza`:
 | `--max-retries N` | fixes granted per step before the pause (default 3) |
 | `--commit` | atomic commit after every validated step |
 | `--test "cmd"` | the suite (if you do not pass it, Claude finds it) |
-| `--approve-plan` | pause after the plan: you approve with `resume` |
+| `--approve-plan` | pause after the plan: you approve with `/pf resume` (Claude cannot) |
 | `--verifiers <lenses>` | final verification lenses among `general`, `correctness`, `security`, `tests` (default `auto`: the last three at complexity `high`, otherwise `general`) |
 | `--external off` | no comparison with external models |
 | `--advisor off` | no internal advisor (default `on`) |
@@ -395,9 +405,10 @@ tool.
 
 - **The `perseveranza` tool** (`mcp__perseveranza__perseveranza`) is for Claude, and takes only
   the verbs that read or move the loop's state: `status`, `history`, `explain`, `report`,
-  `complexity`, `claim-done`, `pause`, `resume`, with the arguments as the instruction writes
+  `complexity`, `claim-done`, `pause`, with the arguments as the instruction writes
   them (`{"verb": "report", "args": "pass"}`). The suite and the external models Claude runs with
-  Bash: `node "<root>/src/cli/perseveranza.mjs" test --if-needed -- <cmd>`.
+  Bash: `node "<root>/src/cli/perseveranza.mjs" test --if-needed -- <cmd>`. Resuming a paused
+  loop is yours (`/pf resume`): since 3.0.1 the tool has no `resume`.
 - **`arm` checks the mod.** Inside a Claude Code session it looks for the sign of life the mod
   writes (`~/.perseveranza/mod-alive/<session>.json`, at start and at the session's tool calls):
   if it is there, the instructions name the tool; if not, it refuses and says why. Outside a
@@ -413,10 +424,32 @@ your Bash permissions would govern. Through the tool Claude **cannot**:
   commands, which Claude runs with Bash and your Bash permissions govern;
 - arm, disarm or take another session's loop (`arm`, `disarm`, `resume --takeover`): they are
   yours, with `/pf`;
+- resume a paused loop (`resume`): a pause is where the loop waits for you, to approve the plan
+  (`--approve-plan`) or after an escalation (the retries spent), and `resume` lifts the pause and
+  resets the retry counters. If Claude could do it on its own it would approve its own plan and
+  go past the limit that asks for a human: you do it, with `/pf resume`. `pause` Claude may use
+  (stopping to ask you something hands control to you, it bypasses nothing);
 - change another session's loop: every verb that changes something is refused (also when the
   owner cannot be read);
 - start a process with no armed loop (except `status`) or with arguments outside the schema:
   everything is checked first, and the CLI starts with an argument list, never a shell.
+
+Through the tool Claude **can** send its loop's own signals, and they are needed: `report
+pass|fail` records the outcome of a review or of the final verification when the subagent did not
+write its file (a valid verdict file decides anyway; in a final verification by lenses a declared
+`pass` covers no lens), and `claim-done` declares the work done, but it is accepted only with the
+plan fully ticked and (when the loop knows a suite) a green run of it recorded for the current
+tree, and it leads to the
+cleanup and the adversarial final verification, not to the closure. Neither lifts a pause, but
+when the machine accepts them they act on the loop: a review `pass` resets the retries and moves
+the step on, an accepted `claim-done` resets the retries and starts the cleanup or the final
+verification. So, while the loop is paused, `report` and `claim-done` are refused, from the tool
+and from the shell alike, and record nothing: an outcome sent while the loop waits for a person
+would be used by the first Stop after `/pf resume`. Races included: an outcome that arrives while
+the Stop that pauses is running does not enter the paused state (the journal marks it
+`outcome-dropped-paused`), and if a pause lands right after the verb's write the outcome is taken
+back and the verb says so; the verb's exit always matches what is on disk. Once resumed they are
+recorded as usual.
 
 The CLI refuses the same verbs in turn when the call comes from the tool: two walls, not one.
 Claude cannot run `/pf` (Claude Code refuses a mod's command from the `Skill` tool), and

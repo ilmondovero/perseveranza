@@ -9,13 +9,16 @@ How to run the loop's verbs: when this session has the `perseveranza` tool
 (`mcp__perseveranza__perseveranza`, registered by the perseveranza mod), use it for the loop's
 own verbs: the first word is `verb`, the words after it go whole in `args`:
 `{"verb": "status"}`, `{"verb": "complexity", "args": "low"}`, `{"verb": "report", "args": "pass"}`,
-`{"verb": "claim-done"}`, `{"verb": "pause"}`, `{"verb": "resume"}`. The tool does NOT run the
+`{"verb": "claim-done"}`, `{"verb": "pause"}`. The tool does NOT run the
 test suite (`test`) nor the external models (`ask`): those are ALWAYS shell commands run with
 Bash, `node "${CLAUDE_PLUGIN_ROOT}/src/cli/perseveranza.mjs" test ...` / `... ask ...`, where the
-user's permissions decide. The same shell command is the explicit fallback for every other verb
+user's permissions decide. The same shell command is the explicit fallback for the loop's verbs
 when the tool is not there or fails to start. `arm` is always the shell command (step 1);
-`disarm` and taking over a loop of another session (`resume --takeover`) are the user's: they
-type `/pf disarm` or `/pf resume --takeover` (or ask you to run the shell command).
+`resume`, `disarm` and taking over a loop of another session (`resume --takeover`) are the
+user's: a paused loop (a plan to approve, an escalation) waits for a human, so they type
+`/pf resume`, `/pf disarm` or `/pf resume --takeover` (or ask you to run the shell command).
+Never resume a loop on your own, with the tool or with Bash. While the loop is paused, `report`
+and `claim-done` are refused too: wait for the user's `/pf resume`.
 
 Task requested by the user:
 
@@ -44,7 +47,7 @@ Steps to run NOW, in order:
    `--test` = the suite command, claim-done will require a fresh green run; `--no-git-finish`
    = no automatic commit+push at the end; `--no-push` = local commit only at the end;
    `--approve-plan` = after the plan phase the loop PAUSES presenting the plan to the user
-   and restarts only when they run `resume`; `--budget-tokens N` = token cap in addition to
+   and restarts only when they run `/pf resume`; `--budget-tokens N` = token cap in addition to
    the iteration cap; `--max N` = iteration cap, otherwise adaptive from the number of steps;
    `--verifiers correctness,security,tests` = the final verification split into lenses, one
    verifier per lens, among general, correctness, security, tests (default auto: those three
@@ -142,10 +145,10 @@ How the loop works (feedback):
 - At closure, if the directory is inside a git repo, the hook itself runs `git add -A`
   (excluding `.perseveranza/`), commit `perseveranza: <task>` and `git push`, verified on facts
   (clean tree, HEAD not ahead of upstream). If the closure cannot be confirmed the loop
-  pauses in phase git-finish and tells the user what to fix; `resume` retries. The run
+  pauses in phase git-finish and tells the user what to fix; their `/pf resume` retries. The run
   (journal, plan, notes, opinions) is archived in `~/.perseveranza/runs/` (verb `runs`).
-- If you need input from the user: run `pause`, then ask; when the user answers, run
-  `resume` and continue.
+- If you need input from the user: run `pause`, then ask; the user resumes the loop with
+  `/pf resume` when they have answered (resuming is theirs: the tool does not run it).
 - If you stop with a delegated subagent still running, the next Stop sees a work tree
   identical to the previous one and asks you (once) to finish the step instead of
   reviewing nothing: wait for the subagent and check its result on disk before stopping.
@@ -159,7 +162,7 @@ How the loop works (feedback):
 
 Rules:
 - NEVER edit `.perseveranza/state.json` by hand: use only the verbs `report`, `complexity`,
-  `claim-done`, `pause`, `resume`.
+  `claim-done`, `pause` (`resume` is the user's: `/pf resume`).
 - The loop files you manage are `.perseveranza/plan.md` (step checklist) and `.perseveranza/notes.md`
   (2-3 lines per completed step: decisions, traps — the memory that survives context
   compaction; re-read it if you lose the thread).

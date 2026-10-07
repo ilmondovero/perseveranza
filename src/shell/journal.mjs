@@ -82,7 +82,9 @@ export function formatEntry(e) {
     case 'session': return `${ts} | session ${e.event} ${e.from ? `${e.from} -> ` : ''}${e.to || ''}${e.ageMs != null ? ` (silent for ${formatAge(e.ageMs)})` : ''}`.trimEnd();
     case 'activity': return `${ts} | ${e.event === 'delegate' ? `delegated to ${e.agent}` : e.event === 'subagent-stop' ? `subagent ${e.agent} finished` : e.event === 'refused' ? `REFUSED ${e.tool} (${e.why})` : `activity ${e.tool || ''}`}`;
     case 'reconcile': return `${ts} | reconcile: ${e.ok ? `${e.disposition}${e.running && e.running.length ? `, running: ${e.running.join('; ')}` : ''} -> ${e.outcome}${e.summary ? ` (${e.summary})` : ''}` : `${e.error || 'missing'} -> ${e.outcome}`}${e.why ? `: ${e.why}` : ''}`;
-    case 'watchdog': return `${ts} | WATCHDOG${e.action === 'restored' ? ' (killed and restored)' : ''}: silent for ${formatAge(e.silentMs)} (last ${e.via} ${String(e.seenAt || '').replace('T', ' ').slice(0, 19)}, phase ${e.phase})${e.activity && Array.isArray(e.activity.pending) && e.activity.pending.length ? ` — ${e.activity.pending.map((d) => d.agent).join(', ')} delegated and not back` : ''}${e.notified ? ', notified' : ', notification off'}`;
+    // the watchdog's own events (no silence measured): it stopped watching, retired a restore sentinel
+    case 'watchdog': if (e.silentMs == null) return `${ts} | WATCHDOG ${e.action === 'restore-abandoned' ? 'restore abandoned (counted)' : e.action === 'sentinel-retired' ? 'restore sentinel retired' : e.action || 'event'}: ${e.why || ''}`.trimEnd();
+      return `${ts} | WATCHDOG${e.action === 'restored' ? ' (killed and restored)' : ''}: silent for ${formatAge(e.silentMs)} (last ${e.via} ${String(e.seenAt || '').replace('T', ' ').slice(0, 19)}, phase ${e.phase})${e.activity && Array.isArray(e.activity.pending) && e.activity.pending.length ? ` — ${e.activity.pending.map((d) => d.agent).join(', ')} delegated and not back` : ''}${e.notified ? ', notified' : ', notification off'}`;
     case 'gap': return `${ts} | GAP: no sign of life for ${formatAge(e.ms)} (since ${String(e.since || '').replace('T', ' ').slice(0, 19)})${e.paused ? ' while paused' : ''}`;
     case 'git': return `${ts} | git ${e.ran === false ? 'skipped (not a repo)' : e.confirmed ? `confirmed${e.pushSkipped ? ' (local commit, --no-push)' : ''}` : `NOT confirmed: ${e.why}`}`;
     case 'external-gate': return `${ts} | external gate: ${e.note}`;
@@ -93,6 +95,7 @@ export function formatEntry(e) {
     case 'migrate': return `${ts} | state migrated from v${e.from} to v${e.to}`;
     case 'archive': return `${ts} | archived to ${e.dir}`;
     case 'signal': return `${ts} | ${e.verb}${e.value ? ` ${e.value}` : ''}`;
+    case 'outcome-dropped-paused': return `${ts} | outcome dropped, the loop is paused (${e.by}): ${(e.fields || []).join(', ')} ${JSON.stringify(e.values || {})}`;
     case 'note': return `${ts} | ${e.text}`;
     case 'mod-fault': return `${ts} | MOD FAULT: ${e.unreadable ? 'a marker that cannot be read' : `${e.hook || 'classic.Stop'} could not reach its helper${e.error ? ` (${e.error})` : ''}${e.at ? ` at ${String(e.at).replace('T', ' ').slice(0, 19)}` : ''}, ${e.recovery ? 'recovery asked' : 'the session was let stop'}`}`;
     default: return `${ts} | ${e.type}${e.raw ? ` ${e.raw}` : ''}`;

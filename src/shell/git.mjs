@@ -6,8 +6,11 @@ import { join } from 'node:path';
 import { GATE_DIRNAME } from './paths.mjs';
 import { LEGACY_GATE_DIRNAME } from './legacy.mjs';
 
-// Never committed: the loop folder, and the one a 2.x run may have left in the project.
-const LOOP_DIRS = [GATE_DIRNAME, LEGACY_GATE_DIRNAME];
+// The loop folder, and the one a 2.x run may have left in the project: never committed, and
+// never part of the work tree's fingerprint (a 2.x leftover still written, by a 2.x watchdog
+// say, would otherwise read as a code change and void the green test on record). One list for
+// every place that leaves the loop out: underLoop, the fingerprint, the git finish.
+export const LOOP_DIRS = [GATE_DIRNAME, LEGACY_GATE_DIRNAME];
 
 export const PUSH_CAP_MS = 45000;
 const MIN_CALL_MS = 2000;
@@ -46,11 +49,6 @@ export function porcelainPaths(porcelainStdout) {
 }
 
 // --- facts ---
-export function isGitRepo(cwd) {
-  const r = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd, encoding: 'utf8', timeout: 10000 });
-  return r.status === 0 && String(r.stdout).trim() === 'true';
-}
-
 // Paths already modified before the task (recorded at arm, reported at closure).
 export function baselineDirty(cwd) {
   const r = spawnSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8', timeout: 10000 });
@@ -72,7 +70,7 @@ export const DOC_PATHSPECS = ['*.md', '*.markdown', '*.rst', '*.adoc', 'docs/', 
 export function workTreeFingerprint(cwd, { deadline = Date.now() + 60000, exclude = [] } = {}) {
   try {
     const git = makeGit(cwd, deadline);
-    const paths = ['--', '.', `:(exclude)${GATE_DIRNAME}`, ...exclude.map((e) => `:(exclude)${e}`)];
+    const paths = ['--', '.', ...LOOP_DIRS.map((d) => `:(exclude)${d}`), ...exclude.map((e) => `:(exclude)${e}`)];
     const index = git(['ls-files', '--stage', '-z', ...paths], 20000);
     if (index.status !== 0) return null;
     const diff = git(['diff', '--binary', '--no-ext-diff', '--no-textconv', ...paths], 20000);

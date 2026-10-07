@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { project, cli, fire, readState, writePlan, writeArtifact, gate, addRemote, gitOut, patchState } from '../helpers/cli.mjs';
-import { underLoop, dirtyBeyondLoop, porcelainPaths, workTreeFingerprint, gitFinish } from '../../src/shell/git.mjs';
+import { underLoop, dirtyBeyondLoop, porcelainPaths, workTreeFingerprint, treeFingerprints, gitFinish, LOOP_DIRS } from '../../src/shell/git.mjs';
+import { GATE_DIRNAME } from '../../src/shell/paths.mjs';
+import { LEGACY_GATE_DIRNAME } from '../../src/shell/legacy.mjs';
 
 test('fingerprint detects edits to existing untracked files, including Unicode names', () => {
   const p = project({ git: true });
@@ -44,6 +46,38 @@ test('fingerprint works before the first commit and ignores loop artifacts', () 
   assert.equal(workTreeFingerprint(p.dir), before);
   writeFileSync(join(p.dir, 'new.txt'), 'after!');
   assert.notEqual(workTreeFingerprint(p.dir), before);
+});
+
+test('the 2.x loop folder left in a migrated project and still written is not a code change', () => {
+  const p = project({ git: true });
+  const legacy = join(p.dir, LEGACY_GATE_DIRNAME);
+  mkdirSync(legacy);
+  writeFileSync(join(legacy, 'journal.jsonl'), '{"type":"fire"}\n');
+  const before = treeFingerprints(p.dir);
+  assert.ok(before.full && before.code);
+  // written again (a 2.x watchdog still running): not ignored by git, still out of the snapshot
+  appendFileSync(join(legacy, 'journal.jsonl'), '{"type":"watchdog"}\n');
+  writeFileSync(join(legacy, 'state.json'), '{"phase":"implement"}');
+  assert.deepEqual(treeFingerprints(p.dir), before);
+  // tracked there too (committed by mistake in 2.x), then changed: still out
+  gitOut(p, 'add', '-f', `${LEGACY_GATE_DIRNAME}/journal.jsonl`);
+  gitOut(p, 'commit', '-q', '-m', 'old loop files');
+  const committed = treeFingerprints(p.dir);
+  appendFileSync(join(legacy, 'journal.jsonl'), '{"type":"fire"}\n');
+  assert.deepEqual(treeFingerprints(p.dir), committed);
+  // the control: real work changes it
+  writeFileSync(join(p.dir, 'work.txt'), 'x');
+  assert.notEqual(treeFingerprints(p.dir).full, committed.full);
+  // the loop: a green test recorded, the 2.x folder written after it: the green still holds
+  armGit(p, ['--no-git-finish', '--test', 'node -e 0']);
+  assert.equal(cli(p, 'test').code, 0);
+  appendFileSync(join(legacy, 'journal.jsonl'), '{"type":"watchdog"}\n');
+  const again = cli(p, 'test', '--if-needed');
+  assert.equal(again.code, 0, again.out);
+  assert.match(again.out, /TEST GREEN already recorded for this exact tree/);
+  // the same folder list everywhere: the fingerprint, underLoop and the git finish
+  assert.deepEqual(LOOP_DIRS, [GATE_DIRNAME, LEGACY_GATE_DIRNAME]);
+  assert.equal(underLoop(`${LEGACY_GATE_DIRNAME}/journal.jsonl`), true);
 });
 
 test('an expired git deadline cannot be mistaken for a non-git project', () => {

@@ -52,6 +52,9 @@ import { RETAINED_STATE, DISARMED_MARK } from './archive.mjs';
 
 export const PENDING = '.pending';
 export const UNSAVED_STATE = 'state.unsaved.json';
+// the watchdog's record of a restore it launched (watchdog.mjs restoreLaunchedAt); a new run does
+// not inherit it
+export const RESTORE_SENTINEL = 'restore-launched.json';
 export const RENAME_TRIES = 3;
 export const RENAME_WAIT_MS = 40;
 // a pending copy is promoted over a corrupt state.json only if it is not older than it by
@@ -257,7 +260,7 @@ export function cleanStateResidues(gateDir, { fs } = {}) {
   let names = [];
   try { names = nodeFs.readdirSync(gateDir); } catch { return removed; }
   for (const n of names) {
-    if (n === UNSAVED_STATE || n === DISARMED_MARK || n === `state.json${PENDING}` || /^state\.json\.\d+\.[0-9a-f]+\.tmp$/.test(n)) {
+    if (n === UNSAVED_STATE || n === DISARMED_MARK || n === RESTORE_SENTINEL || n === `state.json${PENDING}` || /^state\.json\.\d+\.[0-9a-f]+\.tmp$/.test(n)) {
       try { f.unlinkSync(join(gateDir, n)); removed.push(n); } catch { /* left */ }
     }
   }

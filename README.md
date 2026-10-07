@@ -4,7 +4,7 @@
 
 **Dai un task a Claude Code e lascialo lavorare finché non è davvero finito.**
 
-![versione](https://img.shields.io/badge/versione-3.0.0-blue)
+![versione](https://img.shields.io/badge/versione-3.0.1-blue)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-mod%20%E2%89%A5%202.1.287-d97757)
 ![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![runtime](https://img.shields.io/badge/runtime-Node.js%20%E2%89%A5%2020-339933)
@@ -121,7 +121,7 @@ solo: a ogni fine risposta la mod inietta l'istruzione della fase successiva, in
 una riga di avanzamento in testa:
 
 ```
-[perseveranza v3.0.0 · ▸impl ▰▰▱▱▱ 2/5 · it7/23 · 84k tok] Task: aggiungi la paginazione…
+[perseveranza v3.0.1 · ▸impl ▰▰▱▱▱ 2/5 · it7/23 · 84k tok] Task: aggiungi la paginazione…
 ```
 
 Quando è finito ricevi la notifica «Progetto finito e verificato · commit+push confermati».
@@ -252,7 +252,17 @@ verifica finale si divide in tre lenti che lavorano in parallelo (vedi sotto).
   avviso a trenta minuti, kill e ripristino a sessanta (`PERSEVERANZA_RESTORE_AFTER_MS`),
   perché una sessione ferma su una domanda all'utente non scrive nulla e l'avviso è la sua
   occasione. Al massimo tre ripristini per run; nessun rilancio senza un processo
-  registrato. Disattivo di default; verificato a mano su Windows prima di scriverlo.
+  registrato. Prima di terminare o lanciare qualcosa crea in esclusiva
+  `.perseveranza/restore-launched.json` (chi lo crea vince il ripristino: due sentinelle che si
+  credono entrambe proprietarie lanciano una volta sola) e scrive l'interruzione in
+  `state.json`: se una delle due scritture fallisce, o se lo stato c'è solo nella sua copia in
+  sospeso (una scrittura interrotta), avvisa e basta. Un secondo ripristino non parte finché la
+  sessione riaperta non arriva a uno Stop. Quel file non blocca per sempre: datato nel futuro
+  (un orologio tornato indietro) è scartato; uno rimasto da una sentinella morta prima del
+  lancio è considerato abbandonato dopo il doppio della soglia di ripristino (almeno dieci
+  minuti) e il tentativo conta fra i tre; una cartella al suo posto è spostata da parte. Uno di
+  un lancio riuscito aspetta lo Stop della sessione riaperta, che può essere ferma su un prompt.
+  Disattivo di default; verificato a mano su Windows prima di scriverlo.
   `PERSEVERANZA_CLAUDE_BIN` indica il binario `claude` se non è nel `PATH`;
   `PERSEVERANZA_ACTIVITY_HEARTBEAT_MS` regola il battito del verbo `test`.
 - **Dopo un ripristino si riconcilia, in sola lettura.** La sessione riaperta ispeziona
@@ -323,7 +333,7 @@ Le opzioni di `/perseveranza`:
 | `--max-retries N` | fix concessi per step prima della pausa (default 3) |
 | `--commit` | commit atomico dopo ogni step validato |
 | `--test "cmd"` | la suite (se non la passi, Claude la individua) |
-| `--approve-plan` | pausa dopo il piano: approvi tu con `resume` |
+| `--approve-plan` | pausa dopo il piano: approvi tu con `/pf resume` (Claude non può) |
 | `--verifiers <lenti>` | lenti della verifica finale tra `general`, `correctness`, `security`, `tests` (default `auto`: le ultime tre con complessità `high`, altrimenti `general`) |
 | `--external off` | nessun confronto con modelli esterni |
 | `--advisor off` | nessun advisor interno (default `on`) |
@@ -400,9 +410,10 @@ strumento `perseveranza`.
 
 - **Lo strumento `perseveranza`** (`mcp__perseveranza__perseveranza`) è per Claude, e prende solo
   i verbi che leggono o muovono lo stato del loop: `status`, `history`, `explain`, `report`,
-  `complexity`, `claim-done`, `pause`, `resume`, con gli argomenti come li scrive l'istruzione
+  `complexity`, `claim-done`, `pause`, con gli argomenti come li scrive l'istruzione
   (`{"verb": "report", "args": "pass"}`). La suite e i modelli esterni Claude li lancia con Bash:
-  `node "<root>/src/cli/perseveranza.mjs" test --if-needed -- <cmd>`.
+  `node "<root>/src/cli/perseveranza.mjs" test --if-needed -- <cmd>`. Riprendere un loop in
+  pausa è tuo (`/pf resume`): dalla 3.0.1 lo strumento non ha `resume`.
 - **`arm` controlla la mod.** Dentro una sessione di Claude Code cerca il segno di vita che la mod
   scrive (`~/.perseveranza/mod-alive/<sessione>.json`, all'avvio e alle chiamate di strumenti
   della sessione): se c'è, le istruzioni nominano lo strumento; se manca, rifiuta e dice perché.
@@ -418,10 +429,32 @@ non esegue niente che i permessi di Bash governerebbero. Con lo strumento Claude
   comandi di shell, che Claude lancia con Bash e che i tuoi permessi di Bash governano;
 - armare, disarmare o prendere il loop di un'altra sessione (`arm`, `disarm`,
   `resume --takeover`): sono tuoi, con `/pf`;
+- riprendere un loop in pausa (`resume`): la pausa è dove il loop aspetta te, per approvare il
+  piano (`--approve-plan`) o dopo un'escalation (i tentativi finiti), e `resume` toglie la pausa e
+  azzera i contatori dei tentativi. Se Claude potesse farlo da sé approverebbe il proprio piano e
+  supererebbe il limite che chiede un umano: lo fai tu, con `/pf resume`. `pause` invece Claude
+  può usarlo (fermarsi per chiederti qualcosa ti passa la mano, non scavalca niente);
 - cambiare il loop di un'altra sessione: ogni verbo che cambia qualcosa è rifiutato (anche quando
   il proprietario non si legge);
 - far partire un processo senza un loop armato (tranne `status`) o con argomenti fuori dallo
   schema: tutto è controllato prima, e il CLI parte con una lista di argomenti, mai una shell.
+
+Con lo strumento Claude **può** mandare i segnali del proprio loop, e servono: `report pass|fail`
+registra l'esito di una review o della verifica finale quando il subagent non ha scritto il suo
+file (un file di verdetto valido decide comunque; nella verifica finale a lenti un `pass`
+dichiarato non copre nessuna lente), e `claim-done` dichiara il lavoro finito, ma è accettato
+solo con il piano tutto spuntato e (quando il loop conosce una suite) un suo verde registrato
+per l'albero corrente, e porta alla
+pulizia e alla verifica finale avversariale, non alla chiusura. Nessuno dei due toglie una pausa,
+ma quando la macchina li accetta agiscono sul loop: un `pass` della review azzera i tentativi
+(`retries`) e fa avanzare il passo, un `claim-done` accettato azzera i tentativi e avvia la
+pulizia o la verifica finale. Per questo, con il loop in pausa, `report` e `claim-done` sono
+rifiutati, dallo strumento come dalla shell, e non registrano niente: un esito mandato mentre il
+loop aspetta una persona sarebbe usato dal primo Stop dopo il `/pf resume`. Vale anche nelle
+corse: un esito arrivato mentre gira lo Stop che mette in pausa non entra nello stato in pausa
+(il journal lo segna come `outcome-dropped-paused`), e se una pausa arriva subito dopo la
+scrittura del verbo l'esito è ritirato e il verbo lo dice; l'uscita del verbo corrisponde sempre
+a ciò che è su disco. Dopo il resume si registrano come sempre.
 
 Il CLI rifiuta a sua volta gli stessi verbi quando la chiamata viene dallo strumento: due muri,
 non uno. Claude non può eseguire `/pf` (Claude Code rifiuta un comando di una mod dallo strumento
