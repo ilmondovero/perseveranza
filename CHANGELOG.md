@@ -3,6 +3,47 @@
 Modifiche degne di nota, con il **perché** (non solo il cosa). La versione vive in
 `.claude-plugin/plugin.json`, in `package.json` e nei badge dei README; non si usano tag git.
 
+## 3.0.2
+
+### Correzioni multi-piattaforma
+
+La CI (Ubuntu, macOS e Windows con Node 20 e 22) era rossa dalla 3.0.0: la suite era stata
+provata solo su Windows. Due difetti veri del codice, visibili su macOS (quattro test rossi), e
+sei test che davano per scontato Windows o una macchina lenta, più uno che dava per scontato un
+utente non root. Dettagli e classificazione in `docs/PIANO-MOD.md`. Versione in `plugin.json` e
+`package.json` invariata (la decide chi rilascia).
+
+- **`node install.mjs` da un percorso con un collegamento non faceva niente.** Lo script
+  confrontava il proprio URL (Node carica il modulo principale dal percorso reale) con
+  `argv[1]` così come scritto: su macOS, dove le cartelle temporanee stanno sotto `/var` (un
+  collegamento a `/private/var`), o da un checkout raggiunto con un symlink o una junction, i due
+  non coincidevano e l'installatore usciva con 0 senza installare, disinstallare né dire niente.
+  Ora `argv[1]` passa da `realpath`, come negli altri punti di ingresso. Nello stesso caso il
+  rifiuto di una cartella di installazione dentro il checkout confrontava il percorso reale del
+  checkout con quello **scritto** della cartella di installazione (che non esiste ancora): ora
+  anche lei è risolta, la parte che esiste per il suo percorso reale e il resto come scritto
+  (`realPathOr` in `src/shell/paths.mjs`).
+- **`arm` riconosce la cartella home di perseveranza anche sotto un altro nome.** Il rifiuto di
+  armare una cartella il cui `.perseveranza` sarebbe la home (config e archivio delle corse:
+  disarmare li sposterebbe con la corsa) confrontava due stringhe: con un collegamento nel
+  percorso della home o del progetto (macOS `/var`, una home collegata) o le maiuscole diverse su
+  un volume che non le distingue (il default di macOS) passava. Ora due cartelle esistenti sono la
+  stessa se coincidono dispositivo e inode, altrimenti si confrontano i percorsi reali
+  (`samePath` in `src/shell/paths.mjs`).
+- **Test.** Il watchdog che non muore su Linux e macOS era il processo figlio del test, ucciso e
+  mai raccolto (uno zombie risponde al segnale 0) perché le attese sincrone non lasciavano girare
+  il ciclo degli eventi: ora il test aspetta la sua uscita. Il `state.json` in sola lettura non
+  rifiuta un salvataggio su POSIX (un rename sopra un file in sola lettura è permesso, conta la
+  cartella): il test ora rende in sola lettura la cartella del loop, e da root (dove i permessi
+  non rifiutano niente) fa rifiutare la scrittura dall'fs dello Stop. Quattro test del ripristino
+  dipendevano dal tempo: una decisione presa all'ora di caricamento del file (su una macchina
+  veloce, meno di un secondo prima, il loop sembrava vivo) e sentinelle datate esattamente al
+  limite di abbandono (scadute solo se passava un millisecondo; su Windows anche l'arrotondamento
+  di `utimes`): ora la decisione è presa all'ora della chiamata e le sentinelle stanno un minuto
+  oltre il limite, e un test nuovo prova il limite stesso con un orologio dato. Da root, dove
+  `chmod 444` non rifiuta niente, il test di un `settings.json` non scrivibile fa girare
+  l'installatore come utente `nobody`.
+
 ## 3.0.1
 
 Correzioni di sicurezza e affidabilità trovate da una code review statica del diff della 3.0.0.

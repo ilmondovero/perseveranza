@@ -658,7 +658,7 @@ test('watchdog: alerts on real silence, re-sleeps on life, yields to a newer one
   assert.equal(spawnSync(process.execPath, [WATCHDOG], { encoding: 'utf8', env: p.env }).status, 2);
 });
 
-test('the Stop hook and arm spawn ONE live watchdog per loop unless PERSEVERANZA_NO_WATCHDOG; a foreign or pausing Stop spawns none', () => {
+test('the Stop hook and arm spawn ONE live watchdog per loop unless PERSEVERANZA_NO_WATCHDOG; a foreign or pausing Stop spawns none', async () => {
   const p = project();
   const env = { ...p.env }; delete env.PERSEVERANZA_NO_WATCHDOG;
   // a 1 s threshold makes the spawned watchdog speak and exit almost at once, leaving no stray process
@@ -678,13 +678,19 @@ test('the Stop hook and arm spawn ONE live watchdog per loop unless PERSEVERANZA
   // a live incumbent: a Stop spawns nothing (a process that surely outlives the Stop stands
   // for it; the 1 s watchdog itself may be gone before a slow Stop starts)
   const incumbent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  // the incumbent is this test's own child: on Linux and macOS a killed child stays a zombie (a
+  // pid that signal 0 still reaches, alive() true) until its parent reaps it, and Node reaps
+  // only from its event loop, which the synchronous waits above never yield to. So the end of
+  // the incumbent is awaited (its 'exit' comes after the reap), then checked as before.
+  const exited = new Promise((r) => { incumbent.once('exit', r); });
   const incumbentAt = new Date().toISOString();
   try {
     writeFileSync(gate(p, 'watchdog.json'), JSON.stringify({ pid: incumbent.pid, spawnedAt: incumbentAt }));
     fire(p, { session_id: 'A' }, { PERSEVERANZA_NO_WATCHDOG: '', PERSEVERANZA_STALE_MS: '1000' });
     assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, incumbent.pid, 'one live watchdog per loop');
   } finally { incumbent.kill(); }
-  assert.ok(until(() => !alive(incumbent.pid)));
+  await Promise.race([exited, new Promise((r) => { setTimeout(r, 60000).unref(); })]);
+  assert.ok(until(() => !alive(incumbent.pid)), 'the incumbent is gone before the next Stop');
   // it exited: a foreign Stop still spawns nothing, the owner's Stop spawns a new one
   fire(p, { session_id: 'B' }, { PERSEVERANZA_NO_WATCHDOG: '', PERSEVERANZA_STALE_MS: '1000' });
   assert.equal(JSON.parse(readFileSync(gate(p, 'watchdog.json'), 'utf8')).pid, incumbent.pid, 'a foreign Stop spawns nothing');

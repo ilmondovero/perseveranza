@@ -197,14 +197,38 @@ test('a flush after the run was archived creates nothing and says no-loop', () =
 });
 
 // ---------------------------------------------------------------- a save that does not land
+// A save of state.json the file system refuses, the same refusal on every platform:
+//   Windows: the read-only attribute on state.json refuses the rename over it and the write in
+//     place alike;
+//   Linux, macOS: a file's own mode does not protect it from a rename over it (the folder's
+//     does: the save's temporary-and-rename went through and the save simply landed), so the
+//     loop folder is made read-only, which refuses the temporary the save writes first;
+//   root (a container): permissions refuse nothing (CAP_DAC_OVERRIDE), so the refusal is made
+//     where the system call would make it, in the fs the Stop writes state.json through.
+// -> { io (for the Stop), undo }
+function refuseStateSaves(p) {
+  const statePath = gate(p, 'state.json');
+  if (process.platform === 'win32') {
+    chmodSync(statePath, 0o444);
+    return { io: {}, undo: () => chmodSync(statePath, 0o644) };
+  }
+  if (typeof process.getuid === 'function' && process.getuid() !== 0) {
+    chmodSync(gate(p, ''), 0o555);
+    return { io: {}, undo: () => chmodSync(gate(p, ''), 0o755) };
+  }
+  const eacces = (path) => Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' });
+  const fs = { writeFileSync: (path, ...rest) => { if (basename(String(path)).startsWith('state.json')) throw eacces(path); return writeFileSync(path, ...rest); } };
+  return { io: { fs }, undo: () => {} };
+}
+
 test('inbox: state.json read-only -> the save fails, nothing removed, nothing marked counted; after the fix the 777 count once', () => {
   const p = pausedLoop();
   delta(p, 777);
   const statePath = gate(p, 'state.json');
   const before = readFileSync(statePath, 'utf8');
-  chmodSync(statePath, 0o444);
   let r;
-  try { r = stopIn(p); } finally { chmodSync(statePath, 0o644); }
+  const refusal = refuseStateSaves(p);
+  try { r = stopIn(p, refusal.io); } finally { refusal.undo(); }
   assert.equal(r.outcome, 'paused', 'the Stop still answers');
   assert.equal(readFileSync(statePath, 'utf8'), before, 'the refused save left the file as it was');
   assert.equal(inbox(p).length, 1, 'the delta is still in the inbox');

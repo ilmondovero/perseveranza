@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { gate, writeNewState, VerbError, positiveInt } from '../shared.mjs';
 import { defaultState, COMPLEXITIES, LENSES, AUTO_LENSES_HIGH, ADVISOR_MODEL_RE, DEFAULT_ADVISOR_MODEL } from '../../core/state.mjs';
 import { appendJournal } from '../../shell/journal.mjs';
@@ -10,7 +10,7 @@ import { baselineDirty } from '../../shell/git.mjs';
 import { detectAvailable, hasBinary, modelLabel, PROVIDERS, checkProvider } from '../../providers/registry.mjs';
 import { effectiveEnv, disabledProviders, detectLang, lastChecks, recordCheck, disableProvider, providerTimeoutOverride, reachabilitySummary } from '../../providers/config.mjs';
 import { packPath } from '../../shell/packs.mjs';
-import { ROOT, home } from '../../shell/paths.mjs';
+import { ROOT, home, samePath } from '../../shell/paths.mjs';
 import { legacyRunNotice, legacyEnvNotice } from '../../shell/legacy.mjs';
 import { readModFault, modFaultText, clearModFault } from '../../shell/mod-fault.mjs';
 import { currentSession, readAlive, pruneAlive, aliveDir, MOD_OFF_CAUSES } from '../../shell/mod-alive.mjs';
@@ -209,9 +209,3 @@ export async function run({ argv, cwd, env }) {
 }
 
 export { join };
-
-function samePath(a, b) {
-  // resolve() normalises separators and drops a trailing one; Windows paths ignore case
-  const [x, y] = [resolve(a), resolve(b)];
-  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
-}

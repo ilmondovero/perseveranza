@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, utimesSync, statSync as statSyncReal } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { decide, run, restore, restoreLaunchedAt, dropRestoreSentinel, clearInterrupted, markInterrupted, readSentinel, restoreTimes, UNREADABLE_RETRY_MS, MAX_UNREADABLE, MAX_RESTORES, SENTINEL_FUTURE_MS, SENTINEL_ABANDON_MIN_MS } from '../../src/shell/watchdog.mjs';
+import { decide, run, restore, restoreLaunchedAt, sentinelVerdict, dropRestoreSentinel, clearInterrupted, markInterrupted, readSentinel, restoreTimes, UNREADABLE_RETRY_MS, MAX_UNREADABLE, MAX_RESTORES, SENTINEL_FUTURE_MS, SENTINEL_ABANDON_MIN_MS } from '../../src/shell/watchdog.mjs';
 import { cleanStateResidues, RESTORE_SENTINEL } from '../../src/shell/state-file.mjs';
 import { normalizeState } from '../../src/core/state.mjs';
 import { DISARMED_MARK, RETAINED_STATE } from '../../src/shell/archive.mjs';
@@ -190,7 +190,22 @@ function fakeIo(g, { alive = true, killed = true, launched = true } = {}) {
   };
 }
 const NOENV = { PERSEVERANZA_NO_NOTIFY: '1' };
-const alertOn = (g) => decide(g.gateDir, opts({ staleMs: 1000 }));
+// The alert a restore acts on, decided at the time of the call. Not at T (the time this file
+// was loaded): a sentinel or an interruption stamped "a second ago" is younger than T for the
+// first second of the run, the 1 s threshold not yet passed, so decide() slept and returned no
+// state (a TypeError on a fast machine, a pass on a slow one).
+const alertOn = (g) => {
+  const d = decide(g.gateDir, opts({ now: Date.now(), staleMs: 1000 }));
+  assert.equal(d.action, 'alert', `the fixture is a silent loop: ${JSON.stringify(d)}`);
+  return d;
+};
+// The abandon interval restore() applies with NOENV: twice the restore threshold, itself twice the
+// 30 min stale default, so exactly 2 h.
+// A fixture meant to be past it is stamped a minute beyond: one stamped at exactly 2 h ago is
+// abandoned only if a millisecond passes before restore() reads the clock (strictly more than
+// the interval), which a fast machine does not guarantee.
+const ABANDON_MS = restoreTimes(NOENV).abandonMs;
+const PAST_ABANDON_MS = ABANDON_MS + 60_000;
 const failWrites = (prefix, code) => ({ writeFileSync: (p, t, ...rest) => { if (String(p).startsWith(prefix)) throw Object.assign(new Error(code), { code }); return writeFileSync(p, t, ...rest); } });
 
 test('decide: restorable only on a whole state.json, not on its pending copy alone', () => {
@@ -375,12 +390,13 @@ test('restore: the launch is stamped at the call, in the sentinel and the interr
 
 test('restore: the sentinel is claimed exclusively; a watchdog that read it absent and lost the claim launches nothing', () => {
   const g = hungGate();
-  // the other watchdog claimed between this one's read and its claim
+  // this watchdog decided on the silence, then the other one claimed between its read and its claim
+  const d = alertOn(g);
   putSentinel(g, { at: new Date().toISOString(), session: 'sess-H', by: 1, nonce: 'other', phase: 'claimed' });
   const io = fakeIo(g);
   const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
   io.fs = { statSync: (p, ...r) => { if (String(p) === g.sentinel) throw enoent(); return statSyncReal(p, ...r); } };
-  const r = restore(g.gateDir, alertOn(g), NOENV, io);
+  const r = restore(g.gateDir, d, NOENV, io);
   assert.equal(r.attempted, false); assert.match(r.why, /another watchdog has just claimed this restore/);
   assert.deepEqual(io.calls.map((c) => c.op), ['info'], 'nothing killed or launched');
   assert.equal(readJson(g.statePath).signals.interrupted, null, 'no interruption marked');
@@ -422,7 +438,7 @@ test('a sentinel dated in the future: never a block; retired by the watchdog, dr
 
 test('a claim abandoned by a dead watchdog (killed between the marks and the launch) expires: retired, counted, the restore goes on', () => {
   const H = 3600_000;
-  const at = ago(2 * H);
+  const at = ago(PAST_ABANDON_MS);
   const g = hungGate();
   patch(g, (s) => { s.signals.interrupted = { at, silentMs: 1, phase: 'implement', pending: [] }; });
   putSentinel(g, { at, session: 'sess-H', by: 999999, nonce: 'dead', phase: 'claimed' });
@@ -458,17 +474,30 @@ test('an abandoned attempt counts toward the restore limit', () => {
   const g = hungGate();
   const lines = Array.from({ length: MAX_RESTORES - 1 }, () => JSON.stringify({ ts: new Date().toISOString(), type: 'watchdog', action: 'restored' })).join('\n');
   writeFileSync(join(g.gateDir, 'journal.jsonl'), `${lines}\n`);
-  putSentinel(g, { at: ago(2 * 3600_000), session: 'sess-H', by: 999999, nonce: 'dead', phase: 'claimed' });
+  putSentinel(g, { at: ago(PAST_ABANDON_MS), session: 'sess-H', by: 999999, nonce: 'dead', phase: 'claimed' });
   const io = fakeIo(g); io.alive = () => false;
   const r = restore(g.gateDir, alertOn(g), NOENV, io);
   assert.match(r.why, new RegExp(`restore limit \\(${MAX_RESTORES}\\)`), JSON.stringify(r));
   assert.deepEqual(io.calls, []);
 });
 
+// the boundary itself, on a clock given rather than read: abandoned only strictly past it
+test('the abandon interval is a strict bound: at it a claim or an unreadable sentinel still blocks, a millisecond past it expires', () => {
+  const now = Date.now();
+  const state = { owner: { sessionId: 'sess-H', lastFireAt: now - 20 * 3600_000 } };
+  const claim = (at) => ({ kind: 'record', at, phase: 'claimed', by: 999999, nonce: 'n', text: 'x' });
+  const torn = (mtimeMs) => ({ kind: 'unreadable', text: '{torn', mtimeMs });
+  const v = (sen) => sentinelVerdict(sen, state, { now, abandonMs: ABANDON_MS, isAlive: () => false });
+  assert.ok(v(claim(now - ABANDON_MS)).block, 'a claim exactly at the interval');
+  assert.equal(v(claim(now - ABANDON_MS - 1)).abandoned, true);
+  assert.ok(v(torn(now - ABANDON_MS)).block, 'an unreadable one exactly at the interval');
+  assert.equal(v(torn(now - ABANDON_MS - 1)).abandoned, true);
+});
+
 test('an unreadable sentinel expires too; a directory at its path is moved aside and blocks nothing', () => {
   const g = hungGate();
   putSentinel(g, '{torn');
-  const old = (Date.now() - 2 * 3600_000) / 1000;
+  const old = (Date.now() - PAST_ABANDON_MS) / 1000;
   utimesSync(g.sentinel, old, old);
   const r = restore(g.gateDir, alertOn(g), NOENV, fakeIo(g));
   assert.equal(r.launched, true, JSON.stringify(r));

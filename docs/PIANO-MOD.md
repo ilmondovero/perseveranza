@@ -2111,3 +2111,104 @@ si chiama ora "3.0.0" invece di "Non rilasciato (3.0.0)".
   una scrittura dopo uno spawn già riuscito.
 - La vita del watchdog di una sentinella si controlla dal pid (`by`): un pid riusato da un altro
   processo la fa sembrare viva, e la sentinella non scade (si chiude, non si apre).
+
+## Correzioni 3.0.2: multi-piattaforma
+
+La CI (`.github/workflows/ci.yml`: Ubuntu, macOS e Windows per Node 20 e 22, `npm test` da utente
+non root) era rossa sui push della 3.0.0 (run 37418271949) e della 3.0.1 (run 37579624960): la
+suite era stata provata solo su Windows. Nove test rossi; ognuno classificato come (a) test non
+portabile, corretto senza togliergli ciò che prova, o (b) difetto vero del codice, corretto con un
+test che lo prende. Versione lasciata a 3.0.1 in `plugin.json` e `package.json`: la decide chi
+rilascia (la voce del CHANGELOG è "3.0.2").
+
+### I nove test
+
+| CI | Test | Dove | Classe | Causa |
+|----|------|------|--------|-------|
+| 44 | lo Stop e `arm` avviano UN watchdog vivo | ubuntu, macos | (a) | l'"incumbent" è un figlio del test: ucciso, resta zombie finché Node non lo raccoglie, e Node raccoglie solo dal ciclo degli eventi, che le attese sincrone (`spawnSync`) non lasciano girare. `process.kill(pid, 0)` raggiunge uno zombie: `alive()` vero per 60 s |
+| 69 | `arm` rifiuta la cartella home | macos | **(b)** | `samePath` di `arm` confrontava stringhe: il processo figlio vede la cwd reale (`/private/var/...`), `PERSEVERANZA_HOME` è scritta con `/var/...` |
+| 230 | inbox, `state.json` in sola lettura | ubuntu, macos | (a) | su POSIX il modo di un file non impedisce un rename sopra di lui (decide la cartella): il salvataggio temporaneo-e-rename riusciva, e il conto era giusto |
+| 241 | il checkout a `<claude>/perseveranza`: la disinstallazione rifiuta | macos | **(b)** | `install.mjs` lanciato da un percorso con un collegamento non partiva (vedi sotto): exit 0 senza una parola |
+| 246 | una copia che fallisce: `settings.json` non scritto | macos | **(b)** | lo stesso |
+| 247 | una cartella di installazione dentro il checkout: rifiutata | macos | **(b)** | lo stesso, e dietro un secondo difetto: la cartella di installazione (che non esiste ancora) non era risolta col suo percorso reale |
+| 551 | la sentinella fallisce chiusa | ubuntu | (a) | `alertOn` decideva all'ora `T` del caricamento del file: una sentinella "di un secondo fa", nel primo secondo della corsa, è più giovane di `T` e conta come vita; `decide` dormiva e non dava lo stato (TypeError su `d.state.owner`). Su una macchina lenta il secondo era già passato |
+| 552 | `interrupted.at` dopo l'ultimo Stop rifiuta | ubuntu | (a) | lo stesso, con l'interruzione "di un secondo fa" |
+| 558 | un tentativo abbandonato conta nel limite | ubuntu, macos | (a) | la sentinella era datata esattamente all'intervallo di abbandono (2 h con l'ambiente del test), che va superato strettamente: scadeva solo se passava un millisecondo prima della lettura dell'orologio |
+| 559 | una sentinella illeggibile scade | macos; windows node 20, instabile | (a) | lo stesso con l'`mtime` (`utimes` in secondi frazionari, arrotondato dal file system): passava o no a seconda del millisecondo |
+
+### (b) `install.mjs` da un percorso con un collegamento
+
+Node carica il modulo principale dal percorso reale, quindi `import.meta.url` è `/private/var/...`
+mentre `argv[1]` è `/var/...`: il confronto con `resolve(argv[1])` falliva e `main` non girava.
+Su macOS succede a ogni checkout sotto le cartelle temporanee e a chiunque raggiunga il checkout
+con un symlink o una junction (anche su Windows: provato con una junction). Ora `argv[1]` passa
+da `realpathSync`, come negli altri punti di ingresso (`perseveranza.mjs`, `watchdog.mjs`,
+`mod-bridge.mjs`...). `scripts/legacy-hashes.mjs` (uno script di chi rilascia, non installato)
+ha lo stesso confronto senza realpath: lasciato, fuori dalla CI.
+
+Il controllo "la cartella di installazione non sta dentro il checkout" risolveva la cartella di
+installazione con `realpathSync` o, se non esiste (il caso normale prima del primo install), col
+percorso scritto: il checkout reale (`/private/var/x`) non era un prefisso di `/var/x/inner/...`
+e l'install procedeva dentro il checkout. Ora `realPathOr` (`src/shell/paths.mjs`, usato da
+`install.mjs` e da `arm`) risolve l'antenato più profondo che esiste e vi appende il resto come
+scritto.
+
+### (b) `arm` e la cartella home sotto un altro nome
+
+`samePath(gateDir, home)` ora sta in `src/shell/paths.mjs`: uguali come scritti (maiuscole
+ignorate su Windows), altrimenti due cartelle che esistono sono la stessa se coincidono
+dispositivo e inode (`statSync` con `bigint`: un collegamento in uno dei due percorsi, le
+maiuscole su un volume che non le distingue, il default di macOS), altrimenti (una delle due non
+c'è, un file system senza inode) i percorsi reali di `realPathOr`. Prima un progetto il cui
+`.perseveranza` era la home raggiunta da un collegamento si armava, e `disarm` avrebbe archiviato
+(spostato) config e archivio delle corse con la corsa.
+
+### (a) I test corretti, e cosa provano ancora
+
+- Test 44: aspetta l'evento `exit` dell'incumbent (arriva dopo la raccolta), con un tetto di
+  60 s, poi controlla `!alive(pid)` come prima. Il watchdog vero non ha questo problema: lo
+  avviano processi che escono subito (il bridge della mod, il CLI di `arm`, il watchdog che si
+  sostituisce dopo un ripristino), quindi passa a init, che lo raccoglie.
+- Test 230: il rifiuto del file system su ogni piattaforma. Windows: l'attributo di sola lettura
+  su `state.json` (rifiuta rename e scrittura sul posto). POSIX da utente: la cartella del loop in
+  sola lettura (rifiuta il temporaneo, `EACCES`). Root (un container): i permessi non rifiutano
+  niente, quindi il rifiuto `EACCES` arriva dall'fs con cui lo Stop scrive `state.json` (`io.fs`).
+  Le asserzioni sono le stesse: il salvataggio fallito, niente rimosso, niente segnato, poi il 777
+  contato una volta.
+- 551, 552, 558, 559 (`test/unit/watchdog.test.mjs`): `alertOn` decide all'ora della chiamata e
+  verifica che la decisione sia un avviso (un errore chiaro invece di un TypeError); le sentinelle
+  "scadute" stanno un minuto oltre l'intervallo (`restoreTimes(NOENV).abandonMs + 60 s`). Il test
+  della rivendicazione esclusiva decide prima che l'altro watchdog rivendichi (com'è la corsa
+  vera), invece di contare su una sentinella vista come futura dall'ora `T`. Un test nuovo prova
+  il limite stesso con un orologio dato (`sentinelVerdict`): all'intervallo blocca, un
+  millisecondo oltre scade, per una rivendicazione e per una sentinella illeggibile.
+- Uno in più, solo da root (la CI non gira da root): "un `settings.json` che non si può scrivere"
+  usava `chmod 444`, che per root non rifiuta niente; da root l'installatore ora gira come utente
+  `nobody` padrone della home di prova, e il rifiuto è vero.
+
+### Prove
+
+- Linux in Docker (`node:20-bookworm`, `node:22-bookworm`; il repository montato in sola lettura
+  e copiato nel container con `.git`): sul commit 205689a, da utente 1000 con `TMPDIR` dietro un
+  symlink (la situazione di macOS), i file toccati danno 7 rossi: 44, 69, 230, 241, 246, 247, 558
+  (551 e 552 dipendono da quanto è passato dal caricamento del file: in CI rossi, qui no). Gli
+  stessi file dopo le correzioni: 143 verdi. La suite intera dopo le correzioni, due giri per
+  Node 20 e 22, da root e da utente 1000, ognuno una volta con `TMPDIR` dietro un symlink:
+  **596 test, 594 verdi, 0 rossi, 2 saltati** in tutti e otto (i due saltati sono i test I3 dei
+  lock di condivisione, solo Windows, saltati anche nella CI Linux da prima).
+- Windows: `npm test` **596 test, 0 skip, 0 fail** da solo (240 s) e con 6 loop di CPU in
+  parallelo (534 s), e di nuovo da solo dopo l'ultima modifica al codice e ai test (237 s).
+- Mutazioni mirate sui due difetti (b), 13: uccise 11 su Windows e 12 su Linux (TMPDIR dietro un
+  symlink). Sopravvive "maiuscole distinte su win32 nel confronto rapido", equivalente: il
+  confronto finale dei percorsi reali le ignora su win32 comunque. "Maiuscole ignorate ovunque"
+  muore solo su un file system che le distingue (Linux, non Windows), "ordine invertito della
+  coda mancante" è morta dopo un'asserzione aggiunta su `realPathOr`.
+- `claude plugin validate . --strict`: passato. `claude plugin test .`: 205 pass, 0 fail.
+
+### Limiti
+
+- macOS non si prova da qui: le correzioni vengono dai log della CI (exit 0 senza output
+  dell'installatore, la cwd reale in `/private/var`) e dalla stessa situazione riprodotta su
+  Linux con `TMPDIR` dietro un symlink, che fa fallire e poi passare gli stessi test. Il volume
+  che ignora le maiuscole è coperto da dispositivo e inode, non provato su APFS.
+- Che la CI torni verde lo dice solo un push.

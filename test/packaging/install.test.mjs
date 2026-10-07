@@ -479,6 +479,26 @@ test('an install directory inside the checkout it is copied from: refused', () =
   assert.ok(!existsSync(join(src, 'inner')), 'nothing made inside the checkout, not even the config dir or its lock');
 });
 
+// A path with a link in it (macOS reaches its temp folders through /var -> /private/var; a
+// checkout or a config dir may be linked): Node loads the installer by its real path, so a run
+// through the link must still be a run (it used to exit 0 having done nothing), and the guard
+// against an install inside the checkout must compare real paths, the install directory's
+// included before it exists.
+test('install.mjs reached through a link: it runs, and an install directory inside the checkout is refused under either name', () => {
+  const src = checkoutCopy();
+  const via = join(temp('prs-install-link-'), 'via');
+  symlinkSync(src, via, 'junction');
+  const help = spawnSync(process.execPath, [join(via, 'install.mjs'), '--help'], { encoding: 'utf8' });
+  assert.equal(help.status, 0, out(help));
+  assert.match(help.stdout, /Usage: node install\.mjs/, 'a run, not a silent exit');
+  for (const [runFrom, claude, label] of [[via, join(src, 'inner', '.claude'), 'run through the link'], [src, join(via, 'inner', '.claude'), 'the config dir named through the link']]) {
+    const r = spawnSync(process.execPath, [join(runFrom, 'install.mjs'), '--claude-dir', claude], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: '' } });
+    assert.equal(r.status, 1, `${label}: ${out(r)}`);
+    assert.match(r.stderr, /inside this checkout/, label);
+    assert.ok(!existsSync(join(src, 'inner')), `${label}: nothing made inside the checkout`);
+  }
+});
+
 test('the copy is checked file by file against the marker read back, a failed swap puts the old copy back, and a removal takes the marker last', () => {
   const d = temp('prs-install-unit-');
   // a copy that writes something else than the source: refused
@@ -975,12 +995,23 @@ test('a settings.json that is not what it should be: refused, nothing touched (n
   assert.deepEqual(e.settings(), { env: { [PLUGIN_DIRS_VAR]: e.ours } });
 });
 
+// As root a file's mode refuses nothing (CAP_DAC_OVERRIDE: the open for writing succeeds and the
+// install rightly goes ahead), so there the installer runs as an unprivileged user (nobody) that
+// owns the throw-away home: the read-only settings.json is then refused for real.
+const NOBODY = 65534;
+const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+function runUnprivileged(t) {
+  const own = spawnSync('chown', ['-R', `${NOBODY}:${NOBODY}`, t.h], { encoding: 'utf8' });
+  assert.equal(own.status, 0, own.stderr);
+  return spawnSync(process.execPath, [INSTALL], { encoding: 'utf8', env: t.env, cwd: t.h, uid: NOBODY, gid: NOBODY });
+}
+
 test('a settings.json that cannot be written: refused before the copy, nothing touched', () => {
   const t = home();
   t.write({ keep: true });
   chmodSync(t.settingsPath, 0o444);
   try {
-    const r = t.run();
+    const r = asRoot ? runUnprivileged(t) : t.run();
     assert.equal(r.status, 1, out(r));
     assert.match(r.stderr, /cannot be written/);
     assert.ok(!existsSync(t.dir));

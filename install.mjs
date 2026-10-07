@@ -74,6 +74,7 @@ import { homedir, hostname } from 'node:os';
 import { createHash, randomBytes } from 'node:crypto';
 import { ALL_FILES, COMMAND_FILES, CLI_ENTRY } from './manifest.mjs';
 import { LEGACY_SETTINGS_HOOK_SCRIPTS, LEGACY_PLUGIN_HOOK_SCRIPTS, LEGACY_V1_CLI_FILE, LEGACY_HASHES } from './src/shell/legacy.mjs';
+import { realPathOr } from './src/shell/paths.mjs';
 
 export const PLUGIN_DIRS_VAR = 'CLAUDE_CODE_PLUGIN_DIRS';
 export const INSTALL_DIRNAME = 'perseveranza';
@@ -98,7 +99,9 @@ export function normPath(p, platform = process.platform) {
 export function sameDir(a, b, platform = process.platform) {
   return normPath(a, platform) === normPath(b, platform);
 }
-const realOr = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
+// symlinks resolved, a missing tail (the install directory before the first run) kept as
+// written under its deepest existing ancestor: see realPathOr
+const realOr = realPathOr;
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 const nonce = () => randomBytes(8).toString('hex');
 const list = (xs, n = 5) => `${xs.slice(0, n).join(', ')}${xs.length > n ? `, ... (${xs.length} in all)` : ''}`;
@@ -1115,4 +1118,10 @@ function run({ src, claudeDir, uninstall }) {
   return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = main(process.argv.slice(2));
+// Run as a script? Node loads the main module by its real path, so argv[1] is compared through
+// realpath too: `node install.mjs` from a path with a symlink in it (macOS /var, a linked
+// checkout) is still a run, never a silent exit 0 that changed nothing.
+function isMainModule() {
+  try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1] || '.')).href; } catch { return false; }
+}
+if (process.argv[1] && isMainModule()) process.exitCode = main(process.argv.slice(2));

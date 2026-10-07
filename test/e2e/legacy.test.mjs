@@ -2,11 +2,11 @@
 // live in src/shell/legacy.mjs only: what is left of a 2.x run is pointed out, never touched.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, symlinkSync, realpathSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { project, arm, cli, fire, gate, writePlan, freshDir } from '../helpers/cli.mjs';
-import { GATE_DIRNAME, ARCHIVE_GATE_DIRNAME } from '../../src/shell/paths.mjs';
+import { GATE_DIRNAME, ARCHIVE_GATE_DIRNAME, samePath, realPathOr } from '../../src/shell/paths.mjs';
 import { LEGACY_GATE_DIRNAME, LEGACY_ARCHIVE_DIRNAME, LEGACY_ENV, legacyRun, archivedGateDir, printable } from '../../src/shell/legacy.mjs';
 import { listRuns } from '../../src/shell/archive.mjs';
 import { gitFinish } from '../../src/shell/git.mjs';
@@ -193,6 +193,52 @@ test('arm refuses a directory whose loop folder would be the perseveranza home',
   assert.ok(r.out.includes('holds the perseveranza config and the runs archive'), r.out);
   assert.equal(existsSync(join(dir, GATE_DIRNAME, 'state.json')), false);
   assert.equal(readFileSync(join(dir, GATE_DIRNAME, 'config.json'), 'utf8'), '{}');
+});
+
+// The same folder under another name: a link (a junction on Windows) in the path of the home or
+// of the project, the way macOS reaches its temp folders (/var -> /private/var). Compared as
+// strings the two names differed and arm went ahead in the home.
+test('arm refuses the perseveranza home reached under another name: through a link, existing or not yet made', () => {
+  const p = project();
+  const refused = (dir, homeAt, label) => {
+    const r = cli({ ...p, dir, env: { ...p.env, PERSEVERANZA_HOME: homeAt } }, 'arm', 'task', '--external', 'off');
+    assert.equal(r.code, 1, `${label}: ${r.out}`);
+    assert.ok(r.out.includes('holds the perseveranza config and the runs archive'), `${label}: ${r.out}`);
+  };
+  const real = freshDir('prs-homeproj-');
+  const link = join(freshDir('prs-homelink-'), 'via');
+  symlinkSync(real, link, 'junction');
+  mkdirSync(join(real, GATE_DIRNAME));
+  writeFileSync(join(real, GATE_DIRNAME, 'config.json'), '{}');
+  refused(real, join(link, GATE_DIRNAME), 'the home named through the link');
+  refused(link, join(real, GATE_DIRNAME), 'the project entered through the link');
+  assert.equal(existsSync(join(real, GATE_DIRNAME, 'state.json')), false);
+  assert.equal(readFileSync(join(real, GATE_DIRNAME, 'config.json'), 'utf8'), '{}');
+  // the home not made yet: the part of the path that exists is resolved
+  const bare = freshDir('prs-homeproj-');
+  const bareLink = join(freshDir('prs-homelink-'), 'via');
+  symlinkSync(bare, bareLink, 'junction');
+  refused(bare, join(bareLink, GATE_DIRNAME), 'a home still to be made');
+  assert.equal(existsSync(join(bare, GATE_DIRNAME, 'state.json')), false);
+  // a different folder is not the home, link or not
+  const other = freshDir('prs-homeproj-');
+  const r = cli({ ...p, dir: other, env: { ...p.env, PERSEVERANZA_HOME: join(link, GATE_DIRNAME) } }, 'arm', 'task', '--external', 'off', '--no-git-finish');
+  assert.equal(r.code, 0, r.out);
+});
+
+test('samePath: one folder under two names, never two folders under one', () => {
+  const real = freshDir('prs-same-');
+  const link = join(freshDir('prs-samelink-'), 'via');
+  symlinkSync(real, link, 'junction');
+  mkdirSync(join(real, 'a'));
+  assert.equal(samePath(real, link), true);
+  assert.equal(samePath(join(link, 'a'), join(real, 'a', '')), true);
+  assert.equal(samePath(join(link, 'missing', 'x'), join(real, 'missing', 'x')), true, 'not there: by the real path of what exists');
+  assert.equal(realPathOr(join(link, 'a', 'missing', 'x')), join(realpathSync(real), 'a', 'missing', 'x'), 'the missing tail kept in order');
+  assert.equal(samePath(join(real, 'a'), real), false);
+  assert.equal(samePath(join(link, 'a'), join(real, 'b')), false);
+  assert.equal(samePath('/X/y', '/x/y', 'win32'), true, 'Windows ignores case');
+  if (process.platform !== 'win32') assert.equal(samePath('/no-such-root/X', '/no-such-root/x', 'linux'), false);
 });
 
 test('the end-of-project commit never sweeps a leftover old folder into the repository', () => {
